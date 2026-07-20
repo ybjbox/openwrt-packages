@@ -6,6 +6,17 @@ OpenWrt / LuCI DHCP 静态分配中文备注与活动租约增强插件。
 
 ---
 
+## 📌 版本适配与支持说明
+
+| 项目 | 支持版本 / 架构要求 |
+| :--- | :--- |
+| **OpenWrt 版本** | OpenWrt 21.02 / 22.03 / 23.05 / 24.10 / 25.12 主线及所有衍生固件 |
+| **ImmortalWrt 版本** | ImmortalWrt 全系版本（包含 23.05 / 24.10 / 25.12-nss 架构等） |
+| **LuCI 架构要求** | LuCI 客户端渲染架构 (LuCI JS / Client-side UI) |
+| **硬件平台** | 适用于所有硬件架构（x86_64, ARM, MIPS, Qualcomm IPQ 等全平台通用） |
+
+---
+
 ## ✨ 核心特性
 
 - 📝 **静态分配独立备注框**：在“网络 -> DHCP/DNS -> 静态地址分配”中提供独立的 `Comment` 输入框，不继承任何下拉选择逻辑，干净无 bug。
@@ -53,4 +64,4 @@ rm -rf /tmp/luci-indexcache /tmp/luci-modulecache/* 2>/dev/null
 
 ## 📄 开源协议
 
-本项目基于 [Apache License 2.0](LICENSE) 开源发布。
+本项目基于 [Apache License 2.0](../LICENSE) 开源发布。

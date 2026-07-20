@@ -4,13 +4,13 @@
 
 ---
 
-## 📦 包含插件列表
+## 📦 包含插件列表与适配说明
 
-| 插件名称 | 说明 | 状态 |
-| :--- | :--- | :---: |
-| [**luci-app-dhcp-comment**](./luci-app-dhcp-comment) | LuCI DHCP 静态地址分配中文备注与活动租约列表显示增强 | 🟢 已稳定 |
-| [**athena-custom**](./athena-custom) | 雅典娜（IPQ6018）路由器专属默认初始化配置与性能优化包 | 🟢 已稳定 |
-| [**sysupgrade-clash-cleaner**](./sysupgrade-clash-cleaner) | 固件保留配置升级时自动清理 OpenClash 大文件缓存（防止 Web 端卡死） | 🟢 已稳定 |
+| 插件名称 | 说明 | 适配 OpenWrt 版本 | 状态 |
+| :--- | :--- | :--- | :---: |
+| [**luci-app-dhcp-comment**](./luci-app-dhcp-comment) | LuCI DHCP 静态地址分配中文备注与活动租约列表显示增强 | OpenWrt 21.02 ~ 25.12 / ImmortalWrt (LuCI JS) | 🟢 已稳定 |
+| [**athena-custom**](./athena-custom) | 雅典娜（IPQ6018）路由器专属默认初始化配置与性能优化包 | OpenWrt 23.05 ~ 25.12 / ImmortalWrt (qualcommax) | 🟢 已稳定 |
+| [**sysupgrade-clash-cleaner**](./sysupgrade-clash-cleaner) | 固件保留配置升级时自动清理 OpenClash Smart 内核大文件缓存 | 所有 OpenWrt / ImmortalWrt 全系版本 | 🟢 已稳定 |
 
 ---
 

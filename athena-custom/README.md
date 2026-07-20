@@ -1,6 +1,16 @@
 # athena-custom
 
-雅典娜（IPQ6018）路由器专属默认初始化配置插件包。
+雅典娜（IPQ6018）路由器专属默认初始化配置与性能优化插件包。
+
+---
+
+## 📌 版本适配与硬件说明
+
+| 项目 | 支持版本 / 硬件要求 |
+| :--- | :--- |
+| **目标硬件** | 京东云雅典娜 (JDCloud Athena / AX6600 / Qualcomm IPQ6018) |
+| **OpenWrt / ImmortalWrt 版本** | OpenWrt 23.05 / 24.10 / 25.12 及 ImmortalWrt `qualcommax` 平台分支 |
+| **架构类型** | ARM64 (`aarch64_cortex-a53`) |
 
 ---
 
