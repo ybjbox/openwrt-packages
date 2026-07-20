@@ -1,0 +1,11 @@
+#!/bin/sh
+
+# 首次开机自动将包含中文备注特性的 dhcp.js 与 40_dhcp.js 替换至 LuCI 运行路径
+src_dir="/usr/share/luci-app-dhcp-comment"
+if [ -d "$src_dir" ]; then
+    [ -f "$src_dir/dhcp.js" ] && cp -f "$src_dir/dhcp.js" /www/luci-static/resources/view/network/dhcp.js 2>/dev/null || true
+    [ -f "$src_dir/40_dhcp.js" ] && cp -f "$src_dir/40_dhcp.js" /www/luci-static/resources/view/status/include/40_dhcp.js 2>/dev/null || true
+    rm -rf /tmp/luci-indexcache /tmp/luci-modulecache/* 2>/dev/null || true
+fi
+
+exit 0
