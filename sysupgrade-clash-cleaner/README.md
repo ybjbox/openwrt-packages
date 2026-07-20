@@ -6,21 +6,30 @@ OpenWrt 刷机升级（Sysupgrade）保留配置防卡死清理插件包。
 
 ## ✨ 解决痛点
 
-在使用 OpenClash 等代理插件时，系统会自动积累几百兆的节点权重与日志大文件（`smart_weight_data.csv` 及其备份）。
-在通过 Web 界面（LuCI）进行“保留配置刷机升级”时，原生 OpenWrt 会把这几百兆大文件一同打包压缩，导致路由器 CPU 满载、Web 界面超时卡死且升级无响应。
+在使用 OpenClash 插件并开启 **Smart 内核（智能权重选择内核）** 时，内核会在后台持续学习并生成节点延迟与权重的数据库（`smart_weight_data.csv` 及其历史备份文件）。
 
-本插件在固件升级打包阶段自动过滤该大文件缓存，使备份数据保持极精简，刷机升级**秒级完成**！
+长时间运行后，该权重缓存文件可能会增长到几百兆（MB）。在通过 Web 界面（LuCI）进行“保留配置刷机升级”时，原生 OpenWrt 的备份规则会默认把这几百兆的 Smart 内核数据一同打包压缩，导致路由器 CPU 100% 满载、Web 界面超时卡死且刷机提示无响应。
+
+本插件自动在固件升级打包阶段剔除 Smart 内核的 `smart_weight_data` 大文件缓存，使备份包恢复极小体积，刷机升级**秒级完成**！
 
 ---
 
-## 🛠️ 安装与使用
+## 🛠️ 安装与编译说明
+
+在您的 OpenWrt / ImmortalWrt 源码根目录下：
 
 ```bash
-# 克隆仓库至 package 目录
+# 克隆本仓库至 package 目录
 git clone https://github.com/ybjbox/openwrt-packages.git package/openwrt-packages
 
-# 在 make menuconfig 中勾选即可
+# 在 make menuconfig 中勾选
 make menuconfig
+```
+
+勾选位置：
+```text
+Utilities --->
+    <*> sysupgrade-clash-cleaner.......... Filter large OpenClash Smart kernel cache during sysupgrade
 ```
 
 ---
