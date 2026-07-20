@@ -1,0 +1,11 @@
+#!/bin/sh
+
+# 在 sysupgrade 备份过程动态过滤 OpenClash 的 smart_weight_data 几百兆缓存大文件
+sysupgrade_bin="/sbin/sysupgrade"
+if [ -f "$sysupgrade_bin" ]; then
+    if ! grep -q "smart_weight_data" "$sysupgrade_bin"; then
+        sed -i 's,s,^/,sed -i "/smart_weight_data/d" "$CONFFILES"\ns,^/,' "$sysupgrade_bin" 2>/dev/null || true
+    fi
+fi
+
+exit 0
