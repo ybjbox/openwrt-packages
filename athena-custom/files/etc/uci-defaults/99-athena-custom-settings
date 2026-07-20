@@ -1,0 +1,98 @@
+#!/bin/sh
+
+# 1. 默认 PPPoE 拨号设置 (仅在凭据不为空时配置，否则保留默认 DHCP 模式)
+if [ -n "${MY_PPPOE_USERNAME:-}" ] && [ -n "${MY_PPPOE_PASSWORD:-}" ]; then
+    uci set network.wan.proto='pppoe'
+    uci set network.wan.username="${MY_PPPOE_USERNAME}"
+    uci set network.wan.password="${MY_PPPOE_PASSWORD}"
+fi
+
+# 2. 默认关闭 IPv6 支持
+uci set network.wan6.disabled='1'
+uci set network.lan.delegate='0'
+uci set network.lan.ipv6='0'
+uci set network.wan.ipv6='0'
+uci set dhcp.lan.dhcpv6='disabled'
+uci -q delete dhcp.lan.ra
+uci -q delete dhcp.lan.dhcpv6
+/etc/init.d/odhcpd disable 2>/dev/null || true
+
+# 3. 默认无线配置 (2.4G 与双 5G 独立命名，双 5G 名字相同实现自动无缝漫游)
+wireless_idx=0
+while uci get wireless.@wifi-iface[$wireless_idx] >/dev/null 2>&1; do
+    dev_name=$(uci get wireless.@wifi-iface[$wireless_idx].device)
+    hw_band=$(uci -q get wireless.$dev_name.band)
+    hw_mode=$(uci -q get wireless.$dev_name.hwmode)
+    
+    if [ "$hw_band" = "2g" ] || [ "$hw_mode" = "11g" ]; then
+        [ -n "${MY_WIFI_SSID_2G:-}" ] && uci set wireless.@wifi-iface[$wireless_idx].ssid="${MY_WIFI_SSID_2G}"
+    else
+        [ -n "${MY_WIFI_SSID_5G:-}" ] && uci set wireless.@wifi-iface[$wireless_idx].ssid="${MY_WIFI_SSID_5G}"
+    fi
+    
+    if [ -n "${MY_WIFI_PASSWORD:-}" ]; then
+        uci set wireless.@wifi-iface[$wireless_idx].encryption='psk2'
+        uci set wireless.@wifi-iface[$wireless_idx].key="${MY_WIFI_PASSWORD}"
+    fi
+    wireless_idx=$((wireless_idx + 1))
+done
+
+# 启用所有无线网卡，并根据频段自适应配置信道与频宽
+radio_idx=0
+while uci get wireless.radio$radio_idx >/dev/null 2>&1; do
+    uci set wireless.radio$radio_idx.disabled='0'
+    
+    hw_band=$(uci -q get wireless.radio$radio_idx.band)
+    hw_mode=$(uci -q get wireless.radio$radio_idx.hwmode)
+    
+    if [ "$hw_band" = "2g" ] || [ "$hw_mode" = "11g" ]; then
+        uci set wireless.radio$radio_idx.channel='11'
+        uci set wireless.radio$radio_idx.htmode='HT20'
+    else
+        uci set wireless.radio$radio_idx.channel='auto'
+    fi
+
+    radio_idx=$((radio_idx + 1))
+done
+
+# 4. 默认主题设置为 Aurora
+uci set luci.main.mediaurlbase='/luci-static/aurora'
+
+# 4.5 适配 QuickFile 文件管理器的 Nginx 监听与 SSL 重定向设置
+if [ -f /etc/config/nginx ]; then
+    uci set nginx.global.uci_enable='true'
+    uci del nginx._lan 2>/dev/null || true
+    uci del nginx._redirect2ssl 2>/dev/null || true
+    uci add nginx server >/dev/null 2>&1 || true
+    uci rename nginx.@server[0]='_lan' 2>/dev/null || true
+    uci set nginx._lan.server_name='_lan'
+    uci add_list nginx._lan.listen='80 default_server'
+    uci add_list nginx._lan.listen='[::]:80 default_server'
+    uci add_list nginx._lan.include='conf.d/*.locations'
+    uci set nginx._lan.access_log='off; # logd openwrt'
+    uci commit nginx
+fi
+
+# 4.6 解除 uWSGI 进程的虚拟内存上限防止显示未安装
+sed -i 's/limit-as = 1000/; limit-as = 1000/g' /etc/uwsgi/vassals/*.ini 2>/dev/null || true
+/etc/init.d/uwsgi restart 2>/dev/null || true
+
+# 5. 提交并应用所有配置
+uci commit network
+uci commit dhcp
+uci commit wireless
+uci commit luci
+
+# 6. 修改默认后台密码
+if [ -n "${MY_ADMIN_PASSWORD:-}" ]; then
+    echo -e "${MY_ADMIN_PASSWORD}\n${MY_ADMIN_PASSWORD}" | passwd root
+fi
+
+# 7. 修改默认软件源为南京大学源
+if [ -f /etc/apk/repositories.d/distfeeds.list ]; then
+    sed -i -e '/istore/!{/nas/!s,https://downloads.immortalwrt.org,https://mirror.nju.edu.cn/immortalwrt,g}' \
+           -e 's,https://mirrors.vsean.net/openwrt,https://mirror.nju.edu.cn/immortalwrt,g' \
+           /etc/apk/repositories.d/distfeeds.list
+fi
+
+exit 0
