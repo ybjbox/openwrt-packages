@@ -1,10 +1,18 @@
 #!/bin/sh
 
-# 1. 默认 PPPoE 拨号设置 (仅在凭据不为空时配置，否则保留默认 DHCP 模式)
-if [ -n "${MY_PPPOE_USERNAME:-}" ] && [ -n "${MY_PPPOE_PASSWORD:-}" ]; then
+# 定义占位变量 (编译期由 Roc-script.sh 动态替换)
+PPPOE_USER="__MY_PPPOE_USERNAME__"
+PPPOE_PASS="__MY_PPPOE_PASSWORD__"
+WIFI_2G="__MY_WIFI_SSID_2G__"
+WIFI_5G="__MY_WIFI_SSID_5G__"
+WIFI_PASS="__MY_WIFI_PASSWORD__"
+ADMIN_PASS="__MY_ADMIN_PASSWORD__"
+
+# 1. 默认 PPPoE 拨号设置 (凭据有效且非未替换占位符时应用)
+if [ -n "$PPPOE_USER" ] && [ "$PPPOE_USER" != "__MY_PPPOE_USERNAME__" ] && [ -n "$PPPOE_PASS" ] && [ "$PPPOE_PASS" != "__MY_PPPOE_PASSWORD__" ]; then
     uci set network.wan.proto='pppoe'
-    uci set network.wan.username="${MY_PPPOE_USERNAME}"
-    uci set network.wan.password="${MY_PPPOE_PASSWORD}"
+    uci set network.wan.username="$PPPOE_USER"
+    uci set network.wan.password="$PPPOE_PASS"
 fi
 
 # 2. 默认关闭 IPv6 支持
@@ -25,14 +33,18 @@ while uci get wireless.@wifi-iface[$wireless_idx] >/dev/null 2>&1; do
     hw_mode=$(uci -q get wireless.$dev_name.hwmode)
     
     if [ "$hw_band" = "2g" ] || [ "$hw_mode" = "11g" ]; then
-        [ -n "${MY_WIFI_SSID_2G:-}" ] && uci set wireless.@wifi-iface[$wireless_idx].ssid="${MY_WIFI_SSID_2G}"
+        if [ -n "$WIFI_2G" ] && [ "$WIFI_2G" != "__MY_WIFI_SSID_2G__" ]; then
+            uci set wireless.@wifi-iface[$wireless_idx].ssid="$WIFI_2G"
+        fi
     else
-        [ -n "${MY_WIFI_SSID_5G:-}" ] && uci set wireless.@wifi-iface[$wireless_idx].ssid="${MY_WIFI_SSID_5G}"
+        if [ -n "$WIFI_5G" ] && [ "$WIFI_5G" != "__MY_WIFI_SSID_5G__" ]; then
+            uci set wireless.@wifi-iface[$wireless_idx].ssid="$WIFI_5G"
+        fi
     fi
     
-    if [ -n "${MY_WIFI_PASSWORD:-}" ]; then
+    if [ -n "$WIFI_PASS" ] && [ "$WIFI_PASS" != "__MY_WIFI_PASSWORD__" ]; then
         uci set wireless.@wifi-iface[$wireless_idx].encryption='psk2'
-        uci set wireless.@wifi-iface[$wireless_idx].key="${MY_WIFI_PASSWORD}"
+        uci set wireless.@wifi-iface[$wireless_idx].key="$WIFI_PASS"
     fi
     wireless_idx=$((wireless_idx + 1))
 done
@@ -84,8 +96,8 @@ uci commit wireless
 uci commit luci
 
 # 6. 修改默认后台密码
-if [ -n "${MY_ADMIN_PASSWORD:-}" ]; then
-    echo -e "${MY_ADMIN_PASSWORD}\n${MY_ADMIN_PASSWORD}" | passwd root
+if [ -n "$ADMIN_PASS" ] && [ "$ADMIN_PASS" != "__MY_ADMIN_PASSWORD__" ]; then
+    echo -e "${ADMIN_PASS}\n${ADMIN_PASS}" | passwd root
 fi
 
 # 7. 修改默认软件源为南京大学源
