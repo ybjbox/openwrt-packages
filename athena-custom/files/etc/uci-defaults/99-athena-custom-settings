@@ -25,7 +25,12 @@ uci -q delete dhcp.lan.ra
 uci -q delete dhcp.lan.dhcpv6
 /etc/init.d/odhcpd disable 2>/dev/null || true
 
-# 3. 默认无线配置 (2.4G 与双 5G 独立命名，双 5G 名字相同实现自动无缝漫游)
+# 3. 默认无线配置
+# 关键修复：确保 /etc/config/wireless 已由硬件检测生成
+if [ ! -s /etc/config/wireless ]; then
+    wifi detect > /etc/config/wireless 2>/dev/null || true
+fi
+
 wireless_idx=0
 while uci get wireless.@wifi-iface[$wireless_idx] >/dev/null 2>&1; do
     dev_name=$(uci get wireless.@wifi-iface[$wireless_idx].device)
