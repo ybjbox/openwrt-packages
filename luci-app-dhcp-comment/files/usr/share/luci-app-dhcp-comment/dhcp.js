@@ -65,7 +65,7 @@ return view.extend({
 		return Promise.all([
 			callHostHints(),
 			callDUIDHints(),
-			getDHCPPools(),
+			L.resolveDefault(getDHCPPools(), {}),
 			network.getNetworks(),
 			L.hasSystemFeature('ufpd') ? callUfpList() : null,
 			callNetworkDevices(),
