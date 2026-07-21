@@ -105,7 +105,7 @@ return view.extend({
 		o.rmempty = false;
 		o.datatype = 'list(macaddr)';
 		L.toArray(hosts).forEach(function(host) {
-			o.value(host.macaddrs[0], host.name ? '%s (%s)'.format(host.macaddrs[0], host.name) : host.macaddrs[0]);
+			if (host && Array.isArray(host.macaddrs) && host.macaddrs.length > 0) o.value(host.macaddrs[0], host.name ? '%s (%s)'.format(host.macaddrs[0], host.name) : host.macaddrs[0]);
 		});
 
 		o = ss.option(form.Value, 'ip', _('IPv4 address'));
