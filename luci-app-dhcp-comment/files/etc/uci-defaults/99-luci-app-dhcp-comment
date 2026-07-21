@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# 对原生 Network DHCP 页面与 Status 概览页面实施差量增强注入与 DUID ip6addrs 修复
+# 对原生 Network DHCP 页面与 Status 概览页面实施差量增强注入，支持下划线主机名与 DUID ip6addrs 修复
 python3 -c '
 import os
 
@@ -8,7 +8,11 @@ dhcp_path = "/www/luci-static/resources/view/network/dhcp.js"
 if os.path.exists(dhcp_path):
     with open(dhcp_path, "r", encoding="utf-8") as f: code = f.read()
 
-    # 0. 修复原生 OpenWrt 恢复备份时在 DUID ip6addrs[0] 处的 TypeError 崩溃 Bug
+    # 0.1 放宽主机名校验正则，支持带下划线 _ 的智能设备默认名称 (如 viomi-waterheater-e4_miap8647)
+    if "validateHostname" in code:
+        code = code.replace("if(!label.match(/^[a-z0-9_](?:[a-z0-9-]{0,61}[a-z0-9])?$/i))", "if(!label.match(/^[a-z0-9_-]+$/i))")
+
+    # 0.2 修复原生 OpenWrt 恢复备份时在 DUID ip6addrs[0] 处的 TypeError 崩溃 Bug
     if "duids[duid_iaid].ip6addrs[0]" in code:
         code = code.replace("duids[duid_iaid].ip6addrs[0]", "(duids[duid_iaid].ip6addrs && duids[duid_iaid].ip6addrs.length ? duids[duid_iaid].ip6addrs[0] : null)")
 
