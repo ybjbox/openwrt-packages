@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# 对原生 Network DHCP 页面与 Status 概览页面实施差量增强注入，百分百保留原版所有功能与布局
+# 对原生 Network DHCP 页面与 Status 概览页面实施差量增强注入与 DUID ip6addrs 修复
 python3 -c '
 import os
 
@@ -8,33 +8,48 @@ dhcp_path = "/www/luci-static/resources/view/network/dhcp.js"
 if os.path.exists(dhcp_path):
     with open(dhcp_path, "r", encoding="utf-8") as f: code = f.read()
 
+    # 0. 修复原生 OpenWrt 恢复备份时在 DUID ip6addrs[0] 处的 TypeError 崩溃 Bug
+    if "duids[duid_iaid].ip6addrs[0]" in code:
+        code = code.replace("duids[duid_iaid].ip6addrs[0]", "(duids[duid_iaid].ip6addrs && duids[duid_iaid].ip6addrs.length ? duids[duid_iaid].ip6addrs[0] : null)")
+
     # 1. 静态分配插入单行 Comment 控件
-    if "var co = ss.option" not in code:
+    if "var co = ss.option" not in code and "var co=ss.option" not in code:
         t1 = "so = ss.option(form.Value, \x27leasetime\x27,"
+        t1_mini = "so=ss.option(form.Value,\x27leasetime\x27,"
         r1 = "var co = ss.option(form.Value, \x27comment\x27, _(\x27Comment\x27));\n\t\tco.rmempty = true;\n\n\t\t" + t1
-        code = code.replace(t1, r1)
+        r1_mini = "var co=ss.option(form.Value,\x27comment\x27,_(\x27Comment\x27));co.rmempty=true;" + t1_mini
+        if t1 in code:
+            code = code.replace(t1, r1)
+        elif t1_mini in code:
+            code = code.replace(t1_mini, r1_mini)
 
     # 2. 关联显示活动租约中文备注
     if "mac_comments" not in code:
         t2 = "return callDHCPLeases().then(function(leaseinfo) {"
+        t2_mini = "return callDHCPLeases().then(function(leaseinfo){"
         r2 = "return Promise.all([ callDHCPLeases(), L.resolveDefault(uci.load(\x27dhcp\x27)) ]).then(function(res) {\n\t\t\t\t\tconst leaseinfo = res[0] || {};\n\t\t\t\t\tconst mac_comments = {}; uci.sections(\x27dhcp\x27, \x27host\x27).forEach(function(s) { L.toArray(s.mac).forEach(function(m) { if (s.comment) mac_comments[m.toLowerCase()] = s.comment; }); });"
-        code = code.replace(t2, r2)
+        r2_mini = "return Promise.all([callDHCPLeases(),L.resolveDefault(uci.load(\x27dhcp\x27))]).then(function(res){\nconst leaseinfo=res[0]||{};\nconst mac_comments={};uci.sections(\x27dhcp\x27,\x27host\x27).forEach(function(s){L.toArray(s.mac).forEach(function(m){if(s.comment)mac_comments[m.toLowerCase()]=s.comment;});});"
+        if t2 in code:
+            code = code.replace(t2, r2)
+        elif t2_mini in code:
+            code = code.replace(t2_mini, r2_mini)
 
         code = code.replace(
             "const columns = [\n\t\t\t\t\t\t\t\t\x27%h\x27.format(host || \x27-\x27),",
             "var cmt = lease.macaddr ? mac_comments[lease.macaddr.toLowerCase()] : null;\n\t\t\t\t\t\t\tif (cmt) { var raw_h = lease.hostname || name; host = raw_h ? (cmt + \x27 (\x27 + raw_h + \x27)\x27) : cmt; }\n\n\t\t\t\t\t\t\tconst columns = [\n\t\t\t\t\t\t\t\t\x27%s\x27.format(host || \x27-\x27),"
+        )
+        code = code.replace(
+            "const columns=[\x27%h\x27.format(host||'-'),lease.ipaddr,",
+            "var cmt=lease.macaddr?mac_comments[lease.macaddr.toLowerCase()]:null;if(cmt){var raw_h=lease.hostname||name;host=raw_h?(cmt+\x27 (\x27+raw_h+\x27)\x27):cmt;}\nconst columns=[\x27%s\x27.format(host||\x27-\x27),lease.ipaddr,"
         )
 
         code = code.replace(
             "const columns = [\n\t\t\t\t\t\t\t\t\x27%h\x27.format(host || \x27-\x27),\n\t\t\t\t\t\t\t\tlease.ip6addrs",
             "var cmt6 = lease.macaddr ? mac_comments[lease.macaddr.toLowerCase()] : null;\n\t\t\t\t\t\t\tif (cmt6) { var raw_h = lease.hostname || name; host = raw_h ? (cmt6 + \x27 (\x27 + raw_h + \x27)\x27) : cmt6; }\n\n\t\t\t\t\t\t\tconst columns = [\n\t\t\t\t\t\t\t\t\x27%s\x27.format(host || \x27-\x27),\n\t\t\t\t\t\t\t\tlease.ip6addrs"
         )
-
-    # 3. 边界防御防护
-    if "Array.isArray(host.macaddrs)" not in code:
         code = code.replace(
-            "o.value(host.macaddrs[0],",
-            "if (host && Array.isArray(host.macaddrs) && host.macaddrs.length > 0) o.value(host.macaddrs[0],"
+            "const columns=[\x27%h\x27.format(host||'-'),lease.ip6addrs?",
+            "var cmt6=lease.macaddr?mac_comments[lease.macaddr.toLowerCase()]:null;if(cmt6){var raw_h=lease.hostname||name;host=raw_h?(cmt6+\x27 (\x27+raw_h+\x27)\x27):cmt6;}\nconst columns=[\x27%s\x27.format(host||\x27-\x27),lease.ip6addrs?"
         )
 
     with open(dhcp_path, "w", encoding="utf-8") as f: f.write(code)
