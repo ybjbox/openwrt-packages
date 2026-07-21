@@ -62,19 +62,16 @@ status_path = "/www/luci-static/resources/view/status/include/40_dhcp.js"
 if os.path.exists(status_path):
     with open(status_path, "r", encoding="utf-8") as f: code = f.read()
 
-    if "uci.load(\x27dhcp\x27)" not in code:
-        code = code.replace("network.getHostHints()", "network.getHostHints(),\n\t\t\tL.resolveDefault(uci.load(\x27dhcp\x27))")
-
     if "mac_comments" not in code:
-        t = "const machints = host_hints.getMACHints(false);"
-        h = "const machints = host_hints.getMACHints(false);\n\t\tvar mac_comments = {}; uci.sections(\x27dhcp\x27, \x27host\x27).forEach(function(s) { L.toArray(s.mac).forEach(function(m) { if (s.comment) mac_comments[m.toLowerCase()] = s.comment; }); });\n\t\t"
+        t = "const machints=host_hints.getMACHints(false);"
+        h = "const machints=host_hints.getMACHints(false);const mac_comments={};uci.sections(\x27dhcp\x27,\x27host\x27).forEach(function(s){L.toArray(s.mac).forEach(function(m){if(s.comment)mac_comments[m.toLowerCase()]=s.comment;});});"
         code = code.replace(t, h)
 
-        code = code.replace(
-            "if (hint && lease.hostname && lease.hostname != hint[1])",
-            "if (lease.macaddr && mac_comments[lease.macaddr.toLowerCase()]) { var cmt = mac_comments[lease.macaddr.toLowerCase()], raw_h = lease.hostname || (hint ? hint[1] : null); host = raw_h ? (cmt + \x27 (\x27 + raw_h + \x27)\x27) : cmt; }\n\t\t\telse if (hint && lease.hostname && lease.hostname != hint[1])"
-        )
-        code = code.replace("\x27%h\x27.format(host || \x27-\x27)", "\x27%s\x27.format(host || \x27-\x27)")
+        t_host = "if(hint&&lease.hostname&&lease.hostname!=hint[1])"
+        r_host = "var cmt=lease.macaddr?mac_comments[lease.macaddr.toLowerCase()]:null;if(cmt){var raw_h=lease.hostname||(hint?hint[1]:null);host=raw_h?(cmt+\x27 (\x27+raw_h+\x27)\x27):cmt;}else if(hint&&lease.hostname&&lease.hostname!=hint[1])"
+        code = code.replace(t_host, r_host)
+
+        code = code.replace("\x27%h\x27.format(host||\x27-\x27)", "\x27%s\x27.format(host||\x27-\x27)")
 
     with open(status_path, "w", encoding="utf-8") as f: f.write(code)
 '
