@@ -42,7 +42,7 @@ fi
 # 4. AppFilter 网页端用户列表切入 (网页端极简纯中文显示)
 if [ -f "$APPFILTER_USER" ]; then
     if ! grep -q "mac_comments" "$APPFILTER_USER"; then
-        sed -i 's/function render_user_list(data) {/function render_user_list(data) {var mac_comments={};try{var dhcp_sections=<%=luci.jsonc.stringify(luci.model.uci.cursor():get_all("dhcp"))%>;if(dhcp_sections){for(var k in dhcp_sections){var s=dhcp_sections[k];if(s&&s[".type"]==="host"&&s.comment){var macs=Array.isArray(s.mac)?s.mac:[s.mac];macs.forEach(function(m){if(m)mac_comments[m.toLowerCase()]=s.comment;});}}}}catch(e){}if(data&&Array.isArray(data.list)){data.list.forEach(function(item){if(item&&item.mac){var cmt=mac_comments[item.mac.toLowerCase()];if(cmt){if(item.nickname&&item.nickname!==cmt)return;item.hostname=cmt;}}});}/g' "$APPFILTER_USER"
+        sed -i 's/function render_user_list(data) {/function render_user_list(data) {var mac_comments={};try{var dhcp_sections=<%=luci.jsonc.stringify(luci.model.uci.cursor():get_all("dhcp"))%>;if(dhcp_sections){for(var k in dhcp_sections){var s=dhcp_sections[k];if(s&&s[".type"]==="host"&&s.comment){var macs=Array.isArray(s.mac)?s.mac:[s.mac];macs.forEach(function(m){if(m)mac_comments[m.toLowerCase()]=s.comment;});}}}}catch(e){}if(data&&Array.isArray(data.list)){data.list.forEach(function(item){if(item&&item.mac){var cmt=mac_comments[item.mac.toLowerCase()];if(cmt){if(item.nickname&&item.nickname!==cmt)return;item.hostname=cmt;}}});}/' "$APPFILTER_USER"
     fi
 fi
 
