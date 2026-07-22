@@ -1,36 +1,90 @@
 #!/bin/sh
 
-# 纯 POSIX Shell 差量切入脚本 (经 Node.js V8 引擎 AST 语法校验 100% 通过，绝无 Unexpected token 报错)
+# 纯 POSIX Shell 差量切入脚本 (全面支持 DHCP / Bandix / AppFilter 网页端及 OPAssistant 手机 App 独立 /etc/config/user_info C-binary 原生全自动同步)
 
 DHCP_JS="/www/luci-static/resources/view/network/dhcp.js"
 STATUS_JS="/www/luci-static/resources/view/status/include/40_dhcp.js"
+BANDIX_INDEX="/www/luci-static/resources/view/bandix/index.js"
+APPFILTER_USER="/usr/lib/lua/luci/view/admin_network/user_status.htm"
+APPFILTER_CTRL="/usr/lib/lua/luci/controller/appfilter.lua"
 
+# 1. DHCP 页面切入 (极简纯中文显示)
 if [ -f "$DHCP_JS" ]; then
-    # 1. 放宽主机名校验规则 (使包含下划线 _ 的设备如 viomi-waterheater-e4_miap8647 顺畅保存)
     sed -i 's/function validateHostname(sid,s){/function validateHostname(sid,s){return true;/g' "$DHCP_JS"
+    sed -i 's/duids[duid_iaid].ip6addrs[0]/(duids[duid_iaid].ip6addrs && duids[duid_iaid].ip6addrs.length ? duids[duid_iaid].ip6addrs[0] : null)/g' "$DHCP_JS"
     
-    # 2. 修复原生 OpenWrt 在恢复旧备份时读取 DUID ip6addrs[0] 出现的空指针崩溃 Bug
-    sed -i 's/duids\[duid_iaid\]\.ip6addrs\[0\]/(duids[duid_iaid].ip6addrs \&\& duids[duid_iaid].ip6addrs.length ? duids[duid_iaid].ip6addrs[0] : null)/g' "$DHCP_JS"
-    
-    # 3. 静态地址分配弹窗插入 Comment 中文备注输入框 (精准捕获包含 leading so= 防止生成 so=var co 坏死语法)
     if ! grep -q "co=ss.option(form.Value,'comment'" "$DHCP_JS"; then
         sed -i "s/so=ss.option(form.Value,'leasetime'/var co=ss.option(form.Value,'comment',_('Comment'));co.rmempty=true;so=ss.option(form.Value,'leasetime'/g" "$DHCP_JS"
     fi
 
-    # 4. 网络-DHCP/DNS 页面底部的活动 DHCP 租约表格同步呈现中文设备备注 (IIFE 内联切入，防覆盖)
     if ! grep -q "mac_comments" "$DHCP_JS"; then
         sed -i 's/return callDHCPLeases().then(function(leaseinfo){/return Promise.all([callDHCPLeases(),L.resolveDefault(uci.load("dhcp"))]).then(function(res){const leaseinfo=res[0]||{};const mac_comments={};uci.sections("dhcp","host").forEach(function(s){L.toArray(s.mac).forEach(function(m){if(s.comment)mac_comments[m.toLowerCase()]=s.comment;});});/g' "$DHCP_JS"
-        sed -i "s~'%h'.format(host||'-')~'%s'.format((function(){var c=lease.macaddr?mac_comments[lease.macaddr.toLowerCase()]:null;return c?(lease.hostname?c+' ('+lease.hostname+')':c):(host||'-');})())~g" "$DHCP_JS"
+        sed -i "s~'%h'.format(host||'-')~'%s'.format((function(){var c=lease.macaddr?mac_comments[lease.macaddr.toLowerCase()]:null;return c?c:(host||'-');})())~g" "$DHCP_JS"
     fi
 fi
 
+# 2. 状态-概览切入 (极简纯中文显示)
 if [ -f "$STATUS_JS" ]; then
-    # 5. 在“状态 -> 概览”页面的活动 DHCP 租约表格中关联并呈现中文设备备注 (IIFE 内联切入)
     if ! grep -q "mac_comments" "$STATUS_JS"; then
         sed -i 's/const machints=host_hints.getMACHints(false);/const machints=host_hints.getMACHints(false);const mac_comments={};uci.sections("dhcp","host").forEach(function(s){L.toArray(s.mac).forEach(function(m){if(s.comment)mac_comments[m.toLowerCase()]=s.comment;});});/g' "$STATUS_JS"
-        sed -i "s~'%h'.format(host||'-')~'%s'.format((function(){var c=lease.macaddr?mac_comments[lease.macaddr.toLowerCase()]:null;return c?(lease.hostname?c+' ('+lease.hostname+')':c):(host||'-');})())~g" "$STATUS_JS"
+        sed -i "s~'%h'.format(host||'-')~'%s'.format((function(){var c=lease.macaddr?mac_comments[lease.macaddr.toLowerCase()]:null;return c?c:(host||'-');})())~g" "$STATUS_JS"
     fi
 fi
+
+# 3. Bandix 设备列表切入 (基于 filteredDevices 唯一精准锚点)
+if [ -f "$BANDIX_INDEX" ]; then
+    if ! grep -q "mac_comments" "$BANDIX_INDEX"; then
+        sed -i "s/return Promise.all([uci.load('bandix'),uci.load('luci'),/return Promise.all([uci.load('bandix'),uci.load('dhcp'),uci.load('luci'),/g" "$BANDIX_INDEX"
+        sed -i 's/var filteredDevices=/if(stats&&Array.isArray(stats.d)){try{var mac_comments={};uci.sections("dhcp","host").forEach(function(s){L.toArray(s.mac).forEach(function(m){if(s.comment)mac_comments[m.toLowerCase()]=s.comment;});});stats.d.forEach(function(device){if(device&&device.mac){var cmt=mac_comments[device.mac.toLowerCase()];if(cmt){var curHost=(device.host||"").trim().replace(/\.lan$/i,"");if(curHost!==""&&typeof device.sys_host!=="undefined"&&curHost!==device.sys_host&&curHost.indexOf(cmt)===-1){device.host=curHost;}else{device.host=cmt;}}}});}catch(e){}}var filteredDevices=/g' "$BANDIX_INDEX"
+    fi
+fi
+
+# 4. AppFilter 网页端用户列表切入 (网页端极简纯中文显示)
+if [ -f "$APPFILTER_USER" ]; then
+    if ! grep -q "mac_comments" "$APPFILTER_USER"; then
+        sed -i 's/function render_user_list(data) {/function render_user_list(data) {var mac_comments={};try{var dhcp_sections=<%=luci.jsonc.stringify(luci.model.uci.cursor():get_all("dhcp"))%>;if(dhcp_sections){for(var k in dhcp_sections){var s=dhcp_sections[k];if(s&&s[".type"]==="host"&&s.comment){var macs=Array.isArray(s.mac)?s.mac:[s.mac];macs.forEach(function(m){if(m)mac_comments[m.toLowerCase()]=s.comment;});}}}}catch(e){}if(data&&Array.isArray(data.list)){data.list.forEach(function(item){if(item&&item.mac){var cmt=mac_comments[item.mac.toLowerCase()];if(cmt){if(item.nickname&&item.nickname!==cmt)return;item.hostname=cmt;}}});}/g' "$APPFILTER_USER"
+    fi
+fi
+
+# 5. OPAssistant 手机 App 接口切入 (全 API 端点拦截)
+if [ -f "$APPFILTER_CTRL" ]; then
+    if ! grep -q "inject_mac_comments" "$APPFILTER_CTRL"; then
+        sed -i 's/function get_hostname_by_mac/local function inject_mac_comments(resp_obj) if not resp_obj then return end local list = nil if type(resp_obj.data) == "table" and type(resp_obj.data.list) == "table" then list = resp_obj.data.list elseif type(resp_obj.dev_list) == "table" then list = resp_obj.dev_list elseif type(resp_obj.list) == "table" then list = resp_obj.list end if type(list) == "table" then local uci = require "luci.model.uci".cursor() local mac_comments = {} uci:foreach("dhcp", "host", function(s) if s.mac and s.comment then local macs = type(s.mac) == "table" and s.mac or { s.mac } for _, m in ipairs(macs) do mac_comments[m:lower()] = s.comment end end end) for _, item in ipairs(list) do if type(item) == "table" and item.mac then local cmt = mac_comments[item.mac:lower()] if cmt then if not item.nickname or item.nickname == "" then item.hostname = cmt end end end end end end
+function get_hostname_by_mac/g' "$APPFILTER_CTRL"
+        sed -i 's/local visit_obj=utl.ubus("appfilter", "dev_list", {});/local visit_obj=utl.ubus("appfilter", "dev_list", {}); inject_mac_comments(visit_obj);/g' "$APPFILTER_CTRL"
+        sed -i 's/local class_obj=utl.ubus("appfilter", "get_all_users", params);/local class_obj=utl.ubus("appfilter", "get_all_users", params); inject_mac_comments(class_obj);/g' "$APPFILTER_CTRL"
+        sed -i 's/local resp_obj=utl.ubus("appfilter", "get_app_filter_user", {});/local resp_obj=utl.ubus("appfilter", "get_app_filter_user", {}); inject_mac_comments(resp_obj);/g' "$APPFILTER_CTRL"
+    fi
+fi
+
+# 6. 终极破局：全自动将 DHCP comment 镜像同步至独立 UCI 配置文件 /etc/config/user_info 供 C 语言守护进程 oafd 镜像输出 nickname
+touch /etc/config/user_info 2>/dev/null || true
+uci show dhcp 2>/dev/null | grep ".comment=" | while read -r line; do
+    sid=$(echo "$line" | cut -d. -f2)
+    comment=$(uci -q get "dhcp.$sid.comment")
+    mac=$(uci -q get "dhcp.$sid.mac")
+    [ -z "$mac" ] && continue
+    [ -z "$comment" ] && continue
+    for m in $mac; do
+        lmac=$(echo "$m" | tr 'A-Z' 'a-z')
+        found=0
+        for u in $(uci show user_info 2>/dev/null | grep "=user_info" | cut -d. -f2 | cut -d= -f1); do
+            exist_mac=$(uci -q get "user_info.$u.mac" | tr 'A-Z' 'a-z')
+            if [ "$exist_mac" = "$lmac" ]; then
+                found=1
+                uci set "user_info.$u.nickname=$comment"
+                break
+            fi
+        done
+        if [ "$found" -eq 0 ]; then
+            uci add user_info user_info >/dev/null
+            uci set user_info.@user_info[-1].mac="$lmac"
+            uci set user_info.@user_info[-1].nickname="$comment"
+        fi
+    done
+done
+uci commit user_info 2>/dev/null || true
+/etc/init.d/appfilter restart 2>/dev/null || true
 
 rm -rf /tmp/luci-modulecache/* /tmp/luci-indexcache 2>/dev/null || true
 exit 0

@@ -1,0 +1,15 @@
+{
+    "luci-app-dhcp-comment": {
+        "description": "Grant access to dhcp_comment configuration",
+        "read": {
+            "uci": [
+                "dhcp_comment"
+            ]
+        },
+        "write": {
+            "uci": [
+                "dhcp_comment"
+            ]
+        }
+    }
+}
