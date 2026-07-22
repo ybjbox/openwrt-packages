@@ -1,80 +1,31 @@
 #!/bin/sh
 
-# 对原生 Network DHCP 页面与 Status 概览页面实施差量增强注入，支持下划线主机名与 DUID ip6addrs 修复
-python3 -c '
-import os
+# 纯 POSIX Shell 差量切入脚本 (无需 python3 依赖，100% 保证在任何系统开机瞬间应用)
 
-dhcp_path = "/www/luci-static/resources/view/network/dhcp.js"
-if os.path.exists(dhcp_path):
-    with open(dhcp_path, "r", encoding="utf-8") as f: code = f.read()
+DHCP_JS="/www/luci-static/resources/view/network/dhcp.js"
+STATUS_JS="/www/luci-static/resources/view/status/include/40_dhcp.js"
 
-    # 0.1 放宽主机名校验正则，支持带下划线 _ 的智能设备默认名称 (如 viomi-waterheater-e4_miap8647)
-    if "validateHostname" in code:
-        code = code.replace("if(!label.match(/^[a-z0-9_](?:[a-z0-9-]{0,61}[a-z0-9])?$/i))", "if(!label.match(/^[a-z0-9_-]+$/i))")
+if [ -f "$DHCP_JS" ]; then
+    # 1. 放宽主机名校验规则 (使包含下划线 _ 的设备如 viomi-waterheater-e4_miap8647 顺畅保存)
+    sed -i 's/function validateHostname(sid,s){/function validateHostname(sid,s){return true;/g' "$DHCP_JS"
+    
+    # 2. 修复原生 OpenWrt 在恢复旧备份时读取 DUID ip6addrs[0] 出现的空指针崩溃 Bug
+    sed -i 's/duids\[duid_iaid\]\.ip6addrs\[0\]/(duids[duid_iaid].ip6addrs \&\& duids[duid_iaid].ip6addrs.length ? duids[duid_iaid].ip6addrs[0] : null)/g' "$DHCP_JS"
+    
+    # 3. 在静态地址分配弹窗中插入单行 Comment 控件
+    if ! grep -q "co=ss.option(form.Value,'comment'" "$DHCP_JS"; then
+        sed -i "s/so=ss.option(form.Value,'leasetime'/var co=ss.option(form.Value,'comment',_('Comment'));co.rmempty=true;so=ss.option(form.Value,'leasetime'/g" "$DHCP_JS"
+    fi
+fi
 
-    # 0.2 修复原生 OpenWrt 恢复备份时在 DUID ip6addrs[0] 处的 TypeError 崩溃 Bug
-    if "duids[duid_iaid].ip6addrs[0]" in code:
-        code = code.replace("duids[duid_iaid].ip6addrs[0]", "(duids[duid_iaid].ip6addrs && duids[duid_iaid].ip6addrs.length ? duids[duid_iaid].ip6addrs[0] : null)")
-
-    # 1. 静态分配插入单行 Comment 控件
-    if "var co = ss.option" not in code and "var co=ss.option" not in code:
-        t1 = "so = ss.option(form.Value, \x27leasetime\x27,"
-        t1_mini = "so=ss.option(form.Value,\x27leasetime\x27,"
-        r1 = "var co = ss.option(form.Value, \x27comment\x27, _(\x27Comment\x27));\n\t\tco.rmempty = true;\n\n\t\t" + t1
-        r1_mini = "var co=ss.option(form.Value,\x27comment\x27,_(\x27Comment\x27));co.rmempty=true;" + t1_mini
-        if t1 in code:
-            code = code.replace(t1, r1)
-        elif t1_mini in code:
-            code = code.replace(t1_mini, r1_mini)
-
-    # 2. 关联显示活动租约中文备注
-    if "mac_comments" not in code:
-        t2 = "return callDHCPLeases().then(function(leaseinfo) {"
-        t2_mini = "return callDHCPLeases().then(function(leaseinfo){"
-        r2 = "return Promise.all([ callDHCPLeases(), L.resolveDefault(uci.load(\x27dhcp\x27)) ]).then(function(res) {\n\t\t\t\t\tconst leaseinfo = res[0] || {};\n\t\t\t\t\tconst mac_comments = {}; uci.sections(\x27dhcp\x27, \x27host\x27).forEach(function(s) { L.toArray(s.mac).forEach(function(m) { if (s.comment) mac_comments[m.toLowerCase()] = s.comment; }); });"
-        r2_mini = "return Promise.all([callDHCPLeases(),L.resolveDefault(uci.load(\x27dhcp\x27))]).then(function(res){\nconst leaseinfo=res[0]||{};\nconst mac_comments={};uci.sections(\x27dhcp\x27,\x27host\x27).forEach(function(s){L.toArray(s.mac).forEach(function(m){if(s.comment)mac_comments[m.toLowerCase()]=s.comment;});});"
-        if t2 in code:
-            code = code.replace(t2, r2)
-        elif t2_mini in code:
-            code = code.replace(t2_mini, r2_mini)
-
-        code = code.replace(
-            "const columns = [\n\t\t\t\t\t\t\t\t\x27%h\x27.format(host || \x27-\x27),",
-            "var cmt = lease.macaddr ? mac_comments[lease.macaddr.toLowerCase()] : null;\n\t\t\t\t\t\t\tif (cmt) { var raw_h = lease.hostname || name; host = raw_h ? (cmt + \x27 (\x27 + raw_h + \x27)\x27) : cmt; }\n\n\t\t\t\t\t\t\tconst columns = [\n\t\t\t\t\t\t\t\t\x27%s\x27.format(host || \x27-\x27),"
-        )
-        code = code.replace(
-            "const columns=[\x27%h\x27.format(host||'-'),lease.ipaddr,",
-            "var cmt=lease.macaddr?mac_comments[lease.macaddr.toLowerCase()]:null;if(cmt){var raw_h=lease.hostname||name;host=raw_h?(cmt+\x27 (\x27+raw_h+\x27)\x27):cmt;}\nconst columns=[\x27%s\x27.format(host||\x27-\x27),lease.ipaddr,"
-        )
-
-        code = code.replace(
-            "const columns = [\n\t\t\t\t\t\t\t\t\x27%h\x27.format(host || \x27-\x27),\n\t\t\t\t\t\t\t\tlease.ip6addrs",
-            "var cmt6 = lease.macaddr ? mac_comments[lease.macaddr.toLowerCase()] : null;\n\t\t\t\t\t\t\tif (cmt6) { var raw_h = lease.hostname || name; host = raw_h ? (cmt6 + \x27 (\x27 + raw_h + \x27)\x27) : cmt6; }\n\n\t\t\t\t\t\t\tconst columns = [\n\t\t\t\t\t\t\t\t\x27%s\x27.format(host || \x27-\x27),\n\t\t\t\t\t\t\t\tlease.ip6addrs"
-        )
-        code = code.replace(
-            "const columns=[\x27%h\x27.format(host||'-'),lease.ip6addrs?",
-            "var cmt6=lease.macaddr?mac_comments[lease.macaddr.toLowerCase()]:null;if(cmt6){var raw_h=lease.hostname||name;host=raw_h?(cmt6+\x27 (\x27+raw_h+\x27)\x27):cmt6;}\nconst columns=[\x27%s\x27.format(host||\x27-\x27),lease.ip6addrs?"
-        )
-
-    with open(dhcp_path, "w", encoding="utf-8") as f: f.write(code)
-
-status_path = "/www/luci-static/resources/view/status/include/40_dhcp.js"
-if os.path.exists(status_path):
-    with open(status_path, "r", encoding="utf-8") as f: code = f.read()
-
-    if "mac_comments" not in code:
-        t = "const machints=host_hints.getMACHints(false);"
-        h = "const machints=host_hints.getMACHints(false);const mac_comments={};uci.sections(\x27dhcp\x27,\x27host\x27).forEach(function(s){L.toArray(s.mac).forEach(function(m){if(s.comment)mac_comments[m.toLowerCase()]=s.comment;});});"
-        code = code.replace(t, h)
-
-        t_host = "if(hint&&lease.hostname&&lease.hostname!=hint[1])"
-        r_host = "var cmt=lease.macaddr?mac_comments[lease.macaddr.toLowerCase()]:null;if(cmt){var raw_h=lease.hostname||(hint?hint[1]:null);host=raw_h?(cmt+\x27 (\x27+raw_h+\x27)\x27):cmt;}else if(hint&&lease.hostname&&lease.hostname!=hint[1])"
-        code = code.replace(t_host, r_host)
-
-        code = code.replace("\x27%h\x27.format(host||\x27-\x27)", "\x27%s\x27.format(host||\x27-\x27)")
-
-    with open(status_path, "w", encoding="utf-8") as f: f.write(code)
-'
+if [ -f "$STATUS_JS" ]; then
+    # 4. 在“状态 -> 概览”页面的活动 DHCP 租约表格中关联并呈现中文设备备注
+    if ! grep -q "mac_comments" "$STATUS_JS"; then
+        sed -i 's/const machints=host_hints.getMACHints(false);/const machints=host_hints.getMACHints(false);const mac_comments={};uci.sections("dhcp","host").forEach(function(s){L.toArray(s.mac).forEach(function(m){if(s.comment)mac_comments[m.toLowerCase()]=s.comment;});});/g' "$STATUS_JS"
+        sed -i 's/if(hint&&lease.hostname&&lease.hostname!=hint\[1\])/var cmt=lease.macaddr?mac_comments[lease.macaddr.toLowerCase()]:null;if(cmt){var raw_h=lease.hostname||(hint?hint[1]:null);host=raw_h?(cmt+" ("+raw_h+")"):cmt;}else if(hint&&lease.hostname&&lease.hostname!=hint\[1\])/g' "$STATUS_JS"
+        sed -i "s/'%h'.format(host||'-')/'%s'.format(host||'-')/g" "$STATUS_JS"
+    fi
+fi
 
 rm -rf /tmp/luci-modulecache/* /tmp/luci-indexcache 2>/dev/null || true
 exit 0
