@@ -15,7 +15,7 @@ define Package/luci-app-dhcp-comment
   SUBMENU:=3. Applications
   TITLE:=LuCI support for DHCP Chinese Comment Enhancer
   DEPENDS:=+luci-base
-  PKG_ARCH:=all
+  PKGARCH:=all
 endef
 
 define Package/luci-app-dhcp-comment/description
