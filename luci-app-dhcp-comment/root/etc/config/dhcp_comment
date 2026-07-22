@@ -1,0 +1,6 @@
+config global 'global'
+	option enabled '1'
+	option enable_dhcp_leases '1'
+	option enable_bandix '1'
+	option enable_appfilter '1'
+	option enable_opassistant '1'

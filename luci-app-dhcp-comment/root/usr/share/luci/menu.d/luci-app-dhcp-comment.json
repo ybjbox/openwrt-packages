@@ -1,0 +1,14 @@
+{
+    "admin/services/dhcp_comment": {
+        "title": "DHCP 中文备注增强",
+        "action": {
+            "type": "view",
+            "path": "dhcp_comment/settings"
+        },
+        "depends": {
+            "acl": [
+                "luci-app-dhcp-comment"
+            ]
+        }
+    }
+}
