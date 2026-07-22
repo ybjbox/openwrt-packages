@@ -10,19 +10,27 @@ if [ -f "$DHCP_JS" ]; then
     sed -i 's/function validateHostname(sid,s){/function validateHostname(sid,s){return true;/g' "$DHCP_JS"
     
     # 2. 修复原生 OpenWrt 在恢复旧备份时读取 DUID ip6addrs[0] 出现的空指针崩溃 Bug
-    sed -i 's/duids[duid_iaid].ip6addrs[0]/(duids[duid_iaid].ip6addrs && duids[duid_iaid].ip6addrs.length ? duids[duid_iaid].ip6addrs[0] : null)/g' "$DHCP_JS"
+    sed -i 's/duids\[duid_iaid\]\.ip6addrs\[0\]/(duids[duid_iaid].ip6addrs \&\& duids[duid_iaid].ip6addrs.length ? duids[duid_iaid].ip6addrs[0] : null)/g' "$DHCP_JS"
     
-    # 3. 在静态地址分配弹窗中插入单行 Comment 控件
+    # 3. 静态地址分配弹窗插入 Comment 中文备注输入框 (精准锚点切入)
     if ! grep -q "co=ss.option(form.Value,'comment'" "$DHCP_JS"; then
-        sed -i "s/so=ss.option(form.Value,'leasetime'/var co=ss.option(form.Value,'comment',_('Comment'));co.rmempty=true;so=ss.option(form.Value,'leasetime'/g" "$DHCP_JS"
+        sed -i "s/ss.option(form.Value,'leasetime'/co=ss.option(form.Value,'comment',_('Comment'));co.rmempty=true;so=ss.option(form.Value,'leasetime'/g" "$DHCP_JS"
+    fi
+
+    # 4. 网络-DHCP/DNS 页面底部的活动 DHCP 租约表格同步呈现中文设备备注
+    if ! grep -q "mac_comments" "$DHCP_JS"; then
+        sed -i 's/return callDHCPLeases().then(function(leaseinfo){/return Promise.all([callDHCPLeases(),L.resolveDefault(uci.load("dhcp"))]).then(function(res){const leaseinfo=res[0]||{};const mac_comments={};uci.sections("dhcp","host").forEach(function(s){L.toArray(s.mac).forEach(function(m){if(s.comment)mac_comments[m.toLowerCase()]=s.comment;});});/g' "$DHCP_JS"
+        sed -i 's/const hint=lease.macaddr?hosts\[lease.macaddr\]:null;/const hint=lease.macaddr?hosts[lease.macaddr]:null;const cmt=lease.macaddr?mac_comments[lease.macaddr.toLowerCase()]:null;/g' "$DHCP_JS"
+        sed -i 's/if(name&&lease.hostname&&lease.hostname!=name)/if(cmt){var raw_h=lease.hostname||name;host=raw_h?(cmt+" ("+raw_h+")"):cmt;}else if(name&&lease.hostname&&lease.hostname!=name)/g' "$DHCP_JS"
+        sed -i "s/'%h'.format(host||'-')/'%s'.format(host||'-')/g" "$DHCP_JS"
     fi
 fi
 
 if [ -f "$STATUS_JS" ]; then
-    # 4. 在“状态 -> 概览”页面的活动 DHCP 租约表格中关联并呈现中文设备备注
+    # 5. 在“状态 -> 概览”页面的活动 DHCP 租约表格中关联并呈现中文设备备注
     if ! grep -q "mac_comments" "$STATUS_JS"; then
         sed -i 's/const machints=host_hints.getMACHints(false);/const machints=host_hints.getMACHints(false);const mac_comments={};uci.sections("dhcp","host").forEach(function(s){L.toArray(s.mac).forEach(function(m){if(s.comment)mac_comments[m.toLowerCase()]=s.comment;});});/g' "$STATUS_JS"
-        sed -i 's/if(hint&&lease.hostname&&lease.hostname!=hint[1])/var cmt=lease.macaddr?mac_comments[lease.macaddr.toLowerCase()]:null;if(cmt){var raw_h=lease.hostname||(hint?hint[1]:null);host=raw_h?(cmt+" ("+raw_h+")"):cmt;}else if(hint&&lease.hostname&&lease.hostname!=hint[1])/g' "$STATUS_JS"
+        sed -i 's/if(hint&&lease.hostname&&lease.hostname!=hint\[1\])/var cmt=lease.macaddr?mac_comments[lease.macaddr.toLowerCase()]:null;if(cmt){var raw_h=lease.hostname||(hint?hint[1]:null);host=raw_h?(cmt+" ("+raw_h+")"):cmt;}else if(hint&&lease.hostname&&lease.hostname!=hint\[1\])/g' "$STATUS_JS"
         sed -i "s/'%h'.format(host||'-')/'%s'.format(host||'-')/g" "$STATUS_JS"
     fi
 fi
