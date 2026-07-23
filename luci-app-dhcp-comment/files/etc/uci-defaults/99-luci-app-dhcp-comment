@@ -1,12 +1,12 @@
 #!/bin/sh
 
-# 纯 POSIX Shell 差量切入脚本 (纯 UNIX LF 格式 + 自动同步至 /etc/config/user_info)
+# 纯 POSIX Shell 物理常驻切入脚本 (纯 UNIX LF 格式 + 永久常驻同步至 /etc/config/user_info)
 
 DHCP_JS="/www/luci-static/resources/view/network/dhcp.js"
 STATUS_JS="/www/luci-static/resources/view/status/include/40_dhcp.js"
 BANDIX_INDEX="/www/luci-static/resources/view/bandix/index.js"
 
-# 1. DHCP 页面切入 (极简纯中文显示)
+# 1. DHCP 页面切入
 if [ -f "$DHCP_JS" ]; then
     sed -i 's/function validateHostname(sid,s){/function validateHostname(sid,s){return true;/g' "$DHCP_JS"
     sed -i 's/duids\[duid_iaid\]\.ip6addrs\[0\]/(duids[duid_iaid].ip6addrs \&\& duids[duid_iaid].ip6addrs.length ? duids[duid_iaid].ip6addrs[0] : null)/g' "$DHCP_JS"
@@ -21,7 +21,7 @@ if [ -f "$DHCP_JS" ]; then
     fi
 fi
 
-# 2. 状态-概览切入 (极简纯中文显示)
+# 2. 状态-概览切入
 if [ -f "$STATUS_JS" ]; then
     if ! grep -q "mac_comments" "$STATUS_JS"; then
         sed -i 's/const machints=host_hints.getMACHints(false);/const machints=host_hints.getMACHints(false);const mac_comments={};uci.sections("dhcp","host").forEach(function(s){L.toArray(s.mac).forEach(function(m){if(s.comment)mac_comments[m.toLowerCase()]=s.comment;});});/g' "$STATUS_JS"
@@ -29,43 +29,18 @@ if [ -f "$STATUS_JS" ]; then
     fi
 fi
 
-# 3. Bandix 设备列表切入
+# 3. Bandix 设备列表切入 (补全 uci.load('dhcp') 预编译加载)
 if [ -f "$BANDIX_INDEX" ]; then
+    if ! grep -q "uci.load('dhcp')" "$BANDIX_INDEX"; then
+        sed -i "s/return Promise.all(\[/return Promise.all(\[uci.load('dhcp'),/g" "$BANDIX_INDEX"
+    fi
     if ! grep -q "mac_comments" "$BANDIX_INDEX"; then
-        sed -i "s/return Promise.all(\[uci.load('bandix'),uci.load('luci'),/return Promise.all(\[uci.load('bandix'),uci.load('dhcp'),uci.load('luci'),/g" "$BANDIX_INDEX"
         sed -i 's/var filteredDevices=/if(stats\&\&Array.isArray(stats.d)){try{var mac_comments={};uci.sections("dhcp","host").forEach(function(s){L.toArray(s.mac).forEach(function(m){if(s.comment)mac_comments[m.toLowerCase()]=s.comment;});});stats.d.forEach(function(device){if(device\&\&device.mac){var cmt=mac_comments[device.mac.toLowerCase()];if(cmt){var curHost=(device.host||"").trim().replace(\/\\.lan$\/i,"");if(curHost!==""\&\&typeof device.sys_host!=="undefined"\&\&curHost!==device.sys_host\&\&curHost.indexOf(cmt)===-1){device.host=curHost;}else{device.host=cmt;}}}});}catch(e){}}var filteredDevices=/g' "$BANDIX_INDEX"
     fi
 fi
 
-# 4. 全自动将 DHCP comment 镜像同步至独立 UCI 配置文件 /etc/config/user_info 供 C 语言守护进程 oafd 镜像输出 nickname
-touch /etc/config/user_info 2>/dev/null || true
-uci show dhcp 2>/dev/null | grep "\.comment=" | while read -r line; do
-    sid=$(echo "$line" | cut -d. -f2)
-    comment=$(uci -q get "dhcp.$sid.comment")
-    mac=$(uci -q get "dhcp.$sid.mac")
-    [ -z "$mac" ] && continue
-    [ -z "$comment" ] && continue
-    for m in $mac; do
-        lmac=$(echo "$m" | tr 'A-Z' 'a-z')
-        found=0
-        for u in $(uci show user_info 2>/dev/null | grep "=user_info" | cut -d. -f2 | cut -d= -f1); do
-            exist_mac=$(uci -q get "user_info.$u.mac" | tr 'A-Z' 'a-z')
-            if [ "$exist_mac" = "$lmac" ]; then
-                found=1
-                uci set "user_info.$u.nickname=$comment"
-                break
-            fi
-        done
-        if [ "$found" -eq 0 ]; then
-            uci add user_info user_info >/dev/null
-            uci set user_info.@user_info[-1].mac="$lmac"
-            uci set user_info.@user_info[-1].nickname="$comment"
-        fi
-    done
-done
-uci commit user_info 2>/dev/null || true
-/etc/init.d/appfilter restart 2>/dev/null || true
+# 4. 执行全自动镜像同步
+[ -x /usr/bin/sync_dhcp_user_info ] && /usr/bin/sync_dhcp_user_info 2>/dev/null || true
 
 rm -rf /tmp/luci-modulecache/* /tmp/luci-indexcache 2>/dev/null || true
-rm -f /etc/uci-defaults/99-luci-app-dhcp-comment 2>/dev/null
 exit 0

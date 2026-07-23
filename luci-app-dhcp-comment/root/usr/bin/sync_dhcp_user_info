@@ -1,0 +1,29 @@
+#!/bin/sh
+
+touch /etc/config/user_info 2>/dev/null || true
+uci show dhcp 2>/dev/null | grep "\.comment=" | while read -r line; do
+    sid=$(echo "$line" | cut -d. -f2)
+    comment=$(uci -q get "dhcp.$sid.comment")
+    mac=$(uci -q get "dhcp.$sid.mac")
+    [ -z "$mac" ] && continue
+    [ -z "$comment" ] && continue
+    for m in $mac; do
+        lmac=$(echo "$m" | tr 'A-Z' 'a-z')
+        found=0
+        for u in $(uci show user_info 2>/dev/null | grep "=user_info" | cut -d. -f2 | cut -d= -f1); do
+            exist_mac=$(uci -q get "user_info.$u.mac" | tr 'A-Z' 'a-z')
+            if [ "$exist_mac" = "$lmac" ]; then
+                found=1
+                uci set "user_info.$u.nickname=$comment"
+                break
+            fi
+        done
+        if [ "$found" -eq 0 ]; then
+            uci add user_info user_info >/dev/null
+            uci set user_info.@user_info[-1].mac="$lmac"
+            uci set user_info.@user_info[-1].nickname="$comment"
+        fi
+    done
+done
+uci commit user_info 2>/dev/null || true
+/etc/init.d/appfilter restart 2>/dev/null || true
