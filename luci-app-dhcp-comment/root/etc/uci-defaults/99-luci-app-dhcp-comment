@@ -29,10 +29,11 @@ if [ -f "$STATUS_JS" ]; then
     fi
 fi
 
-# 3. Bandix 设备列表切入 (补全 uci.load('dhcp') 预编译加载)
+# 3. Bandix 设备列表切入 (精准限定在 load: function() 避免破坏 updateDeviceData 的 results[0] 下标)
 if [ -f "$BANDIX_INDEX" ]; then
     if ! grep -q "uci.load('dhcp')" "$BANDIX_INDEX"; then
-        sed -i "s/return Promise.all(\[/return Promise.all(\[uci.load('dhcp'),/g" "$BANDIX_INDEX"
+        sed -i "s/load:function(){return Promise.all(\[/load:function(){return Promise.all(\[uci.load('dhcp'),/g" "$BANDIX_INDEX"
+        sed -i "s/load: function(){return Promise.all(\[/load: function(){return Promise.all(\[uci.load('dhcp'),/g" "$BANDIX_INDEX"
     fi
     if ! grep -q "mac_comments" "$BANDIX_INDEX"; then
         sed -i 's/var filteredDevices=/if(stats\&\&Array.isArray(stats.d)){try{var mac_comments={};uci.sections("dhcp","host").forEach(function(s){L.toArray(s.mac).forEach(function(m){if(s.comment)mac_comments[m.toLowerCase()]=s.comment;});});stats.d.forEach(function(device){if(device\&\&device.mac){var cmt=mac_comments[device.mac.toLowerCase()];if(cmt){var curHost=(device.host||"").trim().replace(\/\\.lan$\/i,"");if(curHost!==""\&\&typeof device.sys_host!=="undefined"\&\&curHost!==device.sys_host\&\&curHost.indexOf(cmt)===-1){device.host=curHost;}else{device.host=cmt;}}}});}catch(e){}}var filteredDevices=/g' "$BANDIX_INDEX"
