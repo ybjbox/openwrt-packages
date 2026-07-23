@@ -1,22 +1,27 @@
-#!/bin/sh
+#!/usr/bin/env lua
 
-# 1. 物理重筑 user_info，确保 @user_info[%d] 下标完美连续
-rm -f /etc/config/user_info
-touch /etc/config/user_info
+local uci_lib = require "luci.model.uci"
+local uci = uci_lib.cursor(nil, nil)
 
-# 2. 顺序追加，避免 Subshell 内存遗失
-for s in $(uci show dhcp | grep "=host" | cut -d. -f2 | cut -d= -f1); do
-    mac=$(uci -q get "dhcp.$s.mac")
-    comment=$(uci -q get "dhcp.$s.comment")
-    if [ -n "$mac" ] && [ -n "$comment" ]; then
-        for m in $mac; do
-            lmac=$(echo "$m" | tr 'A-Z' 'a-z')
-            uci add user_info user_info >/dev/null
-            uci set user_info.@user_info[-1].mac="$lmac"
-            uci set user_info.@user_info[-1].nickname="$comment"
-        done
-    fi
-done
+local dhcp_comments = {}
+uci:foreach("dhcp", "host", function(s)
+    if s.mac and s.comment then
+        local macs = (type(s.mac) == "table") and s.mac or { s.mac }
+        for _, m in pairs(macs) do
+            if type(m) == "string" then
+                dhcp_comments[m:lower()] = s.comment
+            end
+        end
+    end
+end)
 
-uci commit user_info 2>/dev/null || true
-/etc/init.d/appfilter restart >/dev/null 2>&1 || true
+uci:delete_all("user_info", "user_info")
+
+for mac, comment in pairs(dhcp_comments) do
+    local sid = uci:add("user_info", "user_info")
+    uci:set("user_info", sid, "mac", mac)
+    uci:set("user_info", sid, "nickname", comment)
+end
+
+uci:commit("user_info")
+os.execute("/etc/init.d/appfilter restart >/dev/null 2>&1 || true")

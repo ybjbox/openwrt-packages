@@ -6,6 +6,7 @@ DHCP_JS="/www/luci-static/resources/view/network/dhcp.js"
 STATUS_JS="/www/luci-static/resources/view/status/include/40_dhcp.js"
 BANDIX_INDEX="/www/luci-static/resources/view/bandix/index.js"
 BANDIX_CONN="/www/luci-static/resources/view/bandix/connection.js"
+DNSMASQ_INIT="/etc/init.d/dnsmasq"
 
 # 1. DHCP 页面切入
 if [ -f "$DHCP_JS" ]; then
@@ -42,19 +43,26 @@ if [ -f "$BANDIX_INDEX" ]; then
     fi
 fi
 
-# 4. Bandix 连接选项卡切入
+# 4. Bandix 连接选项卡切入 (去掉 /g 标志，单次精密切入避免语法错乱)
 if [ -f "$BANDIX_CONN" ]; then
     if ! grep -q "uci.load('dhcp')" "$BANDIX_CONN"; then
         sed -i "s/load:function(){return Promise.all(\[/load:function(){return Promise.all(\[uci.load('dhcp'),/g" "$BANDIX_CONN"
         sed -i "s/load: function(){return Promise.all(\[/load: function(){return Promise.all(\[uci.load('dhcp'),/g" "$BANDIX_CONN"
     fi
     if ! grep -q "mac_comments" "$BANDIX_CONN"; then
-        sed -i 's/function updateDeviceTable(devices){/function updateDeviceTable(devices){if(Array.isArray(devices)){try{var mac_comments={};uci.sections("dhcp","host").forEach(function(s){L.toArray(s.mac).forEach(function(m){if(m&&s.comment)mac_comments[m.toLowerCase()]=s.comment;});});devices.forEach(function(device){if(device&&device.mac){var cmt=mac_comments[device.mac.toLowerCase()];if(cmt)device.host=cmt;}});}catch(e){}}/g' "$BANDIX_CONN"
+        sed -i 's/function updateDeviceTable(devices){/function updateDeviceTable(devices){if(Array.isArray(devices)){try{var mac_comments={};uci.sections("dhcp","host").forEach(function(s){L.toArray(s.mac).forEach(function(m){if(m&&s.comment)mac_comments[m.toLowerCase()]=s.comment;});});devices.forEach(function(device){if(device&&device.mac){var cmt=mac_comments[device.mac.toLowerCase()];if(cmt)device.host=cmt;}});}catch(e){}}/' "$BANDIX_CONN"
     fi
 fi
 
-# 5. 执行 AppFilter 物理镜像同步
-[ -x /usr/bin/sync_dhcp_user_info ] && /usr/bin/sync_dhcp_user_info 2>/dev/null || true
+# 5. dnsmasq 系统级 start_service 物理切入 (全系统范围实时同步防线)
+if [ -f "$DNSMASQ_INIT" ]; then
+    if ! grep -q "sync_dhcp_user_info" "$DNSMASQ_INIT"; then
+        sed -i '/start_service() {/a \tlua /usr/bin/sync_dhcp_user_info >/dev/null 2>&1' "$DNSMASQ_INIT"
+    fi
+fi
+
+# 6. 执行全自动初次同步
+[ -x /usr/bin/sync_dhcp_user_info ] && /usr/bin/sync_dhcp_user_info >/dev/null 2>&1 || true
 
 rm -rf /tmp/luci-modulecache/* /tmp/luci-indexcache 2>/dev/null || true
 exit 0
