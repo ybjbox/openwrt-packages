@@ -1,14 +1,17 @@
 #!/usr/bin/env lua
 
 local uci_lib = require "luci.model.uci"
-local uci = uci_lib.cursor(nil, nil)
+local uci = uci_lib.cursor()
+
+uci:unload("dhcp")
+uci:load("dhcp")
 
 local dhcp_comments = {}
 uci:foreach("dhcp", "host", function(s)
-    if s.mac and s.comment then
+    if s.comment and s.mac then
         local macs = (type(s.mac) == "table") and s.mac or { s.mac }
         for _, m in pairs(macs) do
-            if type(m) == "string" then
+            if type(m) == "string" and #m > 0 then
                 dhcp_comments[m:lower()] = s.comment
             end
         end
@@ -18,19 +21,19 @@ end)
 -- 1. 同步 AppFilter user_info
 uci:delete_all("user_info", "user_info")
 for mac, comment in pairs(dhcp_comments) do
-    local sid = uci:add("user_info", "user_info")
-    uci:set("user_info", sid, "mac", mac)
+    local sid = uci:section("user_info", "user_info", nil, {})
+    uci:set("user_info", sid, "mac", mac:lower())
     uci:set("user_info", sid, "nickname", comment)
 end
 uci:commit("user_info")
 os.execute("/etc/init.d/appfilter restart >/dev/null 2>&1 || true")
 
--- 2. 物理同步 Bandix 磁盘主机绑定文件 hostname_bindings.txt
+-- 2. 同步 Bandix hostname_bindings.txt 并触发 bandixd 重载内存
 local bfile = io.open("/usr/share/bandix/hostname_bindings.txt", "w")
 if bfile then
     bfile:write("# mac hostname\n")
     for mac, comment in pairs(dhcp_comments) do
-        bfile:write(mac .. " " .. comment .. "\n")
+        bfile:write(mac:lower() .. " " .. comment .. "\n")
     end
     bfile:close()
     os.execute("ubus call luci.bandix clearData >/dev/null 2>&1 || true")

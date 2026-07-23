@@ -1,82 +1,12 @@
 #!/bin/sh
 
-# 纯 POSIX Shell 物理常驻切入脚本 (纯 UNIX LF 格式)
-
-DHCP_JS="/www/luci-static/resources/view/network/dhcp.js"
-STATUS_JS="/www/luci-static/resources/view/status/include/40_dhcp.js"
-BANDIX_INDEX="/www/luci-static/resources/view/bandix/index.js"
-BANDIX_CONN="/www/luci-static/resources/view/bandix/connection.js"
-BANDIX_DNS="/www/luci-static/resources/view/bandix/dns.js"
-DNSMASQ_INIT="/etc/init.d/dnsmasq"
-
-# 1. DHCP 页面切入
-if [ -f "$DHCP_JS" ]; then
-    sed -i 's/function validateHostname(sid,s){/function validateHostname(sid,s){return true;/g' "$DHCP_JS"
-    sed -i 's/duids\[duid_iaid\]\.ip6addrs\[0\]/(duids[duid_iaid].ip6addrs \&\& duids[duid_iaid].ip6addrs.length ? duids[duid_iaid].ip6addrs[0] : null)/g' "$DHCP_JS"
-    
-    if ! grep -q "co=ss.option(form.Value,'comment'" "$DHCP_JS"; then
-        sed -i "s/so=ss.option(form.Value,'leasetime'/var co=ss.option(form.Value,'comment',_('Comment'));co.rmempty=true;so=ss.option(form.Value,'leasetime'/g" "$DHCP_JS"
-    fi
-
-    if ! grep -q "mac_comments" "$DHCP_JS"; then
-        sed -i 's/return callDHCPLeases().then(function(leaseinfo){/return Promise.all([callDHCPLeases(),L.resolveDefault(uci.load("dhcp"))]).then(function(res){const leaseinfo=res[0]||{};const mac_comments={};uci.sections("dhcp","host").forEach(function(s){L.toArray(s.mac).forEach(function(m){if(s.comment)mac_comments[m.toLowerCase()]=s.comment;});});/g' "$DHCP_JS"
-        sed -i "s~'%h'.format(host||'-')~'%s'.format((function(){var c=lease.macaddr?mac_comments[lease.macaddr.toLowerCase()]:null;return c?c:(host||'-');})())~g" "$DHCP_JS"
+if [ -f /etc/init.d/dnsmasq ]; then
+    if ! grep -q "sync_dhcp_user_info" /etc/init.d/dnsmasq; then
+        sed -i '/start_service() {/a \t/usr/bin/sync_dhcp_user_info >/dev/null 2>&1' /etc/init.d/dnsmasq
+        sed -i '/reload_service() {/a \t/usr/bin/sync_dhcp_user_info >/dev/null 2>&1' /etc/init.d/dnsmasq
     fi
 fi
 
-# 2. 状态-概览切入
-if [ -f "$STATUS_JS" ]; then
-    if ! grep -q "mac_comments" "$STATUS_JS"; then
-        sed -i 's/const machints=host_hints.getMACHints(false);/const machints=host_hints.getMACHints(false);const mac_comments={};uci.sections("dhcp","host").forEach(function(s){L.toArray(s.mac).forEach(function(m){if(s.comment)mac_comments[m.toLowerCase()]=s.comment;});});/g' "$STATUS_JS"
-        sed -i "s~'%h'.format(host||'-')~'%s'.format((function(){var c=lease.macaddr?mac_comments[lease.macaddr.toLowerCase()]:null;return c?c:(host||'-');})())~g" "$STATUS_JS"
-    fi
-fi
+/usr/bin/sync_dhcp_user_info >/dev/null 2>&1 || true
 
-# 3. Bandix 设备列表 & 流量用量排行榜切入
-if [ -f "$BANDIX_INDEX" ]; then
-    if ! grep -q "uci.load('dhcp')" "$BANDIX_INDEX"; then
-        sed -i "s/load:function(){return Promise.all(\[/load:function(){return Promise.all(\[uci.load('dhcp'),/g" "$BANDIX_INDEX"
-        sed -i "s/load: function(){return Promise.all(\[/load: function(){return Promise.all(\[uci.load('dhcp'),/g" "$BANDIX_INDEX"
-    fi
-    if ! grep -q "dhcp_comments" "$BANDIX_INDEX"; then
-        sed -i 's/var filteredDevices=/if(stats\&\&Array.isArray(stats.d)){try{var dhcp_comments={};uci.sections("dhcp","host").forEach(function(s){if(s.comment){var cmt=s.comment;if(s.name)dhcp_comments[s.name.toLowerCase()]=cmt;if(s.ip)dhcp_comments[s.ip]=cmt;L.toArray(s.mac).forEach(function(m){if(m)dhcp_comments[m.toLowerCase()]=cmt;});dhcp_comments[cmt.toLowerCase()]=cmt;}});stats.d.forEach(function(device){if(device){var k=(device.mac||device.host||device.ip4||"").toLowerCase();var cleanK=k.replace(/\.lan$/i,"");var cmt=dhcp_comments[k]||dhcp_comments[cleanK];if(cmt)device.host=cmt;}});}catch(e){}}var filteredDevices=/g' "$BANDIX_INDEX"
-        sed -i 's/function renderUsageRanking(data,showAll){/function renderUsageRanking(data,showAll){if(Array.isArray(data)){try{var mac_comments={};uci.sections("dhcp","host").forEach(function(s){L.toArray(s.mac).forEach(function(m){if(s.comment)mac_comments[m.toLowerCase()]=s.comment;});});data.forEach(function(item){if(item\&\&item.mac){var cmt=mac_comments[item.mac.toLowerCase()];if(cmt)item.host=cmt;}});}catch(e){}}/g' "$BANDIX_INDEX"
-    fi
-fi
-
-# 4. Bandix 连接选项卡切入
-if [ -f "$BANDIX_CONN" ]; then
-    if ! grep -q "uci.load('dhcp')" "$BANDIX_CONN"; then
-        sed -i "s/load:function(){return Promise.all(\[/load:function(){return Promise.all(\[uci.load('dhcp'),/g" "$BANDIX_CONN"
-        sed -i "s/load: function(){return Promise.all(\[/load: function(){return Promise.all(\[uci.load('dhcp'),/g" "$BANDIX_CONN"
-    fi
-    if ! grep -q "dhcp_comments" "$BANDIX_CONN"; then
-        sed -i 's/function updateDeviceTable(devices){/function updateDeviceTable(devices){if(Array.isArray(devices)){try{var dhcp_comments={};uci.sections("dhcp","host").forEach(function(s){if(s.comment){var cmt=s.comment;if(s.name)dhcp_comments[s.name.toLowerCase()]=cmt;if(s.ip)dhcp_comments[s.ip]=cmt;L.toArray(s.mac).forEach(function(m){if(m)dhcp_comments[m.toLowerCase()]=cmt;});dhcp_comments[cmt.toLowerCase()]=cmt;}});devices.forEach(function(device){if(device){var k=(device.mac||device.host||device.ip4||"").toLowerCase();var cleanK=k.replace(/\.lan$/i,"");var cmt=dhcp_comments[k]||dhcp_comments[cleanK];if(cmt)device.host=cmt;}});}catch(e){}}/' "$BANDIX_CONN"
-    fi
-fi
-
-# 5. Bandix DNS 选项卡切入 (全站统一标准继承 + 轮询重载 + 精美去重 formatDeviceName)
-if [ -f "$BANDIX_DNS" ]; then
-    if ! grep -q "uci.load('dhcp')" "$BANDIX_DNS"; then
-        sed -i "s/load:function(){return Promise.all(\[/load:function(){return Promise.all(\[uci.load('dhcp'),/g" "$BANDIX_DNS"
-        sed -i "s/load: function(){return Promise.all(\[/load: function(){return Promise.all(\[uci.load('dhcp'),/g" "$BANDIX_DNS"
-    fi
-    if ! grep -q "dhcp_comments" "$BANDIX_DNS"; then
-        sed -i 's/function updateStats(){var statsGrid=document.getElementById('dns-stats-grid');if(!statsGrid)return Promise.resolve();return callGetDnsStats().then(function(result){/function updateStats(){var statsGrid=document.getElementById('dns-stats-grid');if(!statsGrid)return Promise.resolve();return Promise.all([callGetDnsStats(),L.resolveDefault(uci.load('dhcp'),null)]).then(function(resArray){var result=resArray[0];/g' "$BANDIX_DNS"
-        sed -i 's/if(stats.top_devices&&stats.top_devices.length>0){/if(stats.top_devices&&stats.top_devices.length>0){try{var dhcp_comments={};uci.sections("dhcp","host").forEach(function(s){if(s.comment){var cmt=s.comment;if(s.name)dhcp_comments[s.name.toLowerCase()]=cmt;if(s.ip)dhcp_comments[s.ip]=cmt;L.toArray(s.mac).forEach(function(m){if(m)dhcp_comments[m.toLowerCase()]=cmt;});dhcp_comments[cmt.toLowerCase()]=cmt;}});stats.top_devices.forEach(function(item){if(item&&item.name){var k=item.name.toLowerCase();var cleanK=k.replace(/\.lan$/i,"");var cmt=dhcp_comments[k]||dhcp_comments[cleanK];if(cmt)item.name=cmt;}});}catch(e){}/' "$BANDIX_DNS"
-        sed -i 's/function formatDeviceName(device){var parts=\[\];/function formatDeviceName(device){var parts=\[\];var ip=device\&\&device.is_query?device.source_ip:(device?device.destination_ip:null);var name=null;try{var dhcp_comments={};uci.sections("dhcp","host").forEach(function(s){if(s.comment){var cmt=s.comment;if(s.name)dhcp_comments[s.name.toLowerCase()]=cmt;if(s.ip)dhcp_comments[s.ip]=cmt;L.toArray(s.mac).forEach(function(m){if(m)dhcp_comments[m.toLowerCase()]=cmt;});dhcp_comments[cmt.toLowerCase()]=cmt;}});var k=(device\&\&(device.mac||device.device_name||ip||"")).toLowerCase();var cleanK=k.replace(/\.lan$/i,"");name=dhcp_comments[k]||dhcp_comments[cleanK]||(device?device.device_name:null);}catch(e){if(device)name=device.device_name;}if(name){parts.push(name);}if(ip\&\&parts.indexOf(ip)===-1\&\&name!==ip){parts.push(ip);}if(parts.length===0){return _("Unknown Device");}return parts.join(" / ");}/' "$BANDIX_DNS"
-    fi
-fi
-
-# 6. dnsmasq 系统级 start_service 物理切入 (全系统范围实时同步防线)
-if [ -f "$DNSMASQ_INIT" ]; then
-    if ! grep -q "sync_dhcp_user_info" "$DNSMASQ_INIT"; then
-        sed -i '/start_service() {/a \tlua /usr/bin/sync_dhcp_user_info >/dev/null 2>&1' "$DNSMASQ_INIT"
-    fi
-fi
-
-# 7. 执行全自动初次物理深层双重同步
-[ -x /usr/bin/sync_dhcp_user_info ] && /usr/bin/sync_dhcp_user_info >/dev/null 2>&1 || true
-
-rm -rf /tmp/luci-modulecache/* /tmp/luci-indexcache 2>/dev/null || true
 exit 0
