@@ -44,7 +44,7 @@ if [ -f "$BANDIX_INDEX" ]; then
     fi
 fi
 
-# 4. Bandix 连接选项卡切入 (去掉 /g 标志，单次精密切入)
+# 4. Bandix 连接选项卡切入
 if [ -f "$BANDIX_CONN" ]; then
     if ! grep -q "uci.load('dhcp')" "$BANDIX_CONN"; then
         sed -i "s/load:function(){return Promise.all(\[/load:function(){return Promise.all(\[uci.load('dhcp'),/g" "$BANDIX_CONN"
@@ -55,7 +55,7 @@ if [ -f "$BANDIX_CONN" ]; then
     fi
 fi
 
-# 5. Bandix DNS 选项卡切入 (100% 全站统一标准继承 + 轮询重载)
+# 5. Bandix DNS 选项卡切入 (全站统一标准继承 + 轮询重载 + 精美去重 formatDeviceName)
 if [ -f "$BANDIX_DNS" ]; then
     if ! grep -q "uci.load('dhcp')" "$BANDIX_DNS"; then
         sed -i "s/load:function(){return Promise.all(\[/load:function(){return Promise.all(\[uci.load('dhcp'),/g" "$BANDIX_DNS"
@@ -64,6 +64,7 @@ if [ -f "$BANDIX_DNS" ]; then
     if ! grep -q "dhcp_comments" "$BANDIX_DNS"; then
         sed -i 's/function updateStats(){var statsGrid=document.getElementById('dns-stats-grid');if(!statsGrid)return Promise.resolve();return callGetDnsStats().then(function(result){/function updateStats(){var statsGrid=document.getElementById('dns-stats-grid');if(!statsGrid)return Promise.resolve();return Promise.all([callGetDnsStats(),L.resolveDefault(uci.load('dhcp'),null)]).then(function(resArray){var result=resArray[0];/g' "$BANDIX_DNS"
         sed -i 's/if(stats.top_devices&&stats.top_devices.length>0){/if(stats.top_devices&&stats.top_devices.length>0){try{var dhcp_comments={};uci.sections("dhcp","host").forEach(function(s){if(s.comment){var cmt=s.comment;if(s.name)dhcp_comments[s.name.toLowerCase()]=cmt;if(s.ip)dhcp_comments[s.ip]=cmt;L.toArray(s.mac).forEach(function(m){if(m)dhcp_comments[m.toLowerCase()]=cmt;});dhcp_comments[cmt.toLowerCase()]=cmt;}});stats.top_devices.forEach(function(item){if(item&&item.name){var k=item.name.toLowerCase();var cleanK=k.replace(/\.lan$/i,"");var cmt=dhcp_comments[k]||dhcp_comments[cleanK];if(cmt)item.name=cmt;}});}catch(e){}/' "$BANDIX_DNS"
+        sed -i 's/function formatDeviceName(device){var parts=\[\];/function formatDeviceName(device){var parts=\[\];var ip=device\&\&device.is_query?device.source_ip:(device?device.destination_ip:null);var name=null;try{var dhcp_comments={};uci.sections("dhcp","host").forEach(function(s){if(s.comment){var cmt=s.comment;if(s.name)dhcp_comments[s.name.toLowerCase()]=cmt;if(s.ip)dhcp_comments[s.ip]=cmt;L.toArray(s.mac).forEach(function(m){if(m)dhcp_comments[m.toLowerCase()]=cmt;});dhcp_comments[cmt.toLowerCase()]=cmt;}});var k=(device\&\&(device.mac||device.device_name||ip||"")).toLowerCase();var cleanK=k.replace(/\.lan$/i,"");name=dhcp_comments[k]||dhcp_comments[cleanK]||(device?device.device_name:null);}catch(e){if(device)name=device.device_name;}if(name){parts.push(name);}if(ip\&\&parts.indexOf(ip)===-1\&\&name!==ip){parts.push(ip);}if(parts.length===0){return _("Unknown Device");}return parts.join(" / ");}/' "$BANDIX_DNS"
     fi
 fi
 
