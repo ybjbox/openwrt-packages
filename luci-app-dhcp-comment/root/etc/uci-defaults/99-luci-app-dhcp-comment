@@ -1,10 +1,11 @@
 #!/bin/sh
 
-# 纯 POSIX Shell 物理常驻切入脚本 (纯 UNIX LF 格式 + 极简无瑕继承至 Bandix 设备列表 & 流量用量排行榜)
+# 纯 POSIX Shell 物理常驻切入脚本 (纯 UNIX LF 格式)
 
 DHCP_JS="/www/luci-static/resources/view/network/dhcp.js"
 STATUS_JS="/www/luci-static/resources/view/status/include/40_dhcp.js"
 BANDIX_INDEX="/www/luci-static/resources/view/bandix/index.js"
+BANDIX_CONN="/www/luci-static/resources/view/bandix/connection.js"
 
 # 1. DHCP 页面切入
 if [ -f "$DHCP_JS" ]; then
@@ -41,7 +42,18 @@ if [ -f "$BANDIX_INDEX" ]; then
     fi
 fi
 
-# 4. 执行全自动镜像同步
+# 4. Bandix 连接选项卡切入
+if [ -f "$BANDIX_CONN" ]; then
+    if ! grep -q "uci.load('dhcp')" "$BANDIX_CONN"; then
+        sed -i "s/load:function(){return Promise.all(\[/load:function(){return Promise.all(\[uci.load('dhcp'),/g" "$BANDIX_CONN"
+        sed -i "s/load: function(){return Promise.all(\[/load: function(){return Promise.all(\[uci.load('dhcp'),/g" "$BANDIX_CONN"
+    fi
+    if ! grep -q "mac_comments" "$BANDIX_CONN"; then
+        sed -i 's/function updateDeviceTable(devices){/function updateDeviceTable(devices){if(Array.isArray(devices)){try{var mac_comments={};uci.sections("dhcp","host").forEach(function(s){L.toArray(s.mac).forEach(function(m){if(m&&s.comment)mac_comments[m.toLowerCase()]=s.comment;});});devices.forEach(function(device){if(device&&device.mac){var cmt=mac_comments[device.mac.toLowerCase()];if(cmt)device.host=cmt;}});}catch(e){}}/g' "$BANDIX_CONN"
+    fi
+fi
+
+# 5. 执行 AppFilter 物理镜像同步
 [ -x /usr/bin/sync_dhcp_user_info ] && /usr/bin/sync_dhcp_user_info 2>/dev/null || true
 
 rm -rf /tmp/luci-modulecache/* /tmp/luci-indexcache 2>/dev/null || true
