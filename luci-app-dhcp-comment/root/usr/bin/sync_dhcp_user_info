@@ -15,13 +15,24 @@ uci:foreach("dhcp", "host", function(s)
     end
 end)
 
+-- 1. 同步 AppFilter user_info
 uci:delete_all("user_info", "user_info")
-
 for mac, comment in pairs(dhcp_comments) do
     local sid = uci:add("user_info", "user_info")
     uci:set("user_info", sid, "mac", mac)
     uci:set("user_info", sid, "nickname", comment)
 end
-
 uci:commit("user_info")
 os.execute("/etc/init.d/appfilter restart >/dev/null 2>&1 || true")
+
+-- 2. 物理同步 Bandix 磁盘主机绑定文件 hostname_bindings.txt
+local bfile = io.open("/usr/share/bandix/hostname_bindings.txt", "w")
+if bfile then
+    bfile:write("# mac hostname\n")
+    for mac, comment in pairs(dhcp_comments) do
+        bfile:write(mac .. " " .. comment .. "\n")
+    end
+    bfile:close()
+    os.execute("ubus call luci.bandix clearData >/dev/null 2>&1 || true")
+    os.execute("/etc/init.d/bandix restart >/dev/null 2>&1 || true")
+end
