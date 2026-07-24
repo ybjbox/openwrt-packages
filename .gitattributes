@@ -4,3 +4,4 @@
 # 这两个目录只在 CI(Linux) 下执行，必须 LF。
 tests/** text eol=lf
 .github/workflows/** text eol=lf
+.github/workflows/*.yml text eol=lf

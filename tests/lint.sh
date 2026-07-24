@@ -1,54 +1,132 @@
 #!/bin/sh
-# lint.sh — 静态规范检查 (红线守卫)
+# luci-app-dhcp-comment CI lint.
+# POSIX sh; intended to run under BusyBox ash (alpine container).
+# Uses ONLY shell builtins + sed + grep + find (all provided by BusyBox).
 #
-# 做三件事, 任一失败 exit 1 并打印明确 FAIL 原因:
-#   1) sh -n 语法检查: 所有 */root/etc/uci-defaults/* 与名为 sync_dhcp_user_info 的文件
-#   2) 红线①: 包内不得 ship dhcp.js / bandix/*.js
-#   3) 红线③: 跨包不得 ship 同名 root/ 文件路径 (固件编译 0 opkg 同名冲突)
-#
-# 健壮性说明:
-#   - 管道子 shell 内的 `exit 1` 不会传播到脚本主体, 故用 fail 标志累积失败,
-#     在末尾统一 `exit 1`, 确保非零退出可靠。
-#   - 所有 grep 末尾补 `|| true`, 避免 "无匹配" 的返回码 1 误杀 set -e。
-set -e
-
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$REPO_ROOT" || exit 1
+# Checks:
+#   1) sh -n syntax for every shell script in the repo
+#   2) RED LINE 1: never ship dhcp.js / bandix*.js under a package root/www/
+#   3) RED LINE 3: no cross-package same-name file (opkg install conflict)
+#   4) RED LINE 2: weak hint that the sync script restarts bandix (info only)
+set -u
 
 fail=0
-note_fail() {
-    echo "FAIL: $1"
-    fail=1
-}
 
-# ---------- 1. sh -n 语法检查 ----------
-echo "[lint] 1/3 sh -n 语法检查"
-for f in $(find . -path '*/root/etc/uci-defaults/*' -type f 2>/dev/null) \
-         $(find . -type f -name 'sync_dhcp_user_info' 2>/dev/null); do
-    if ! sh -n "$f" 2>/tmp/lint_shn.err; then
-        note_fail "语法错误: $f"
-        sed 's/^/    /' /tmp/lint_shn.err
+# Temp files (BusyBox always has /tmp).
+ALL_FILES="/tmp/lint_all_files.$$"
+TMP_ERR="/tmp/lint_err.$$"
+TMP_DUP="/tmp/lint_dup.$$"
+SHELL_LIST="/tmp/lint_shell.$$"
+
+# --- collect every regular file, excluding build noise -----------------------
+# Excluded per CI spec: .git node_modules scratch tmp_* (and any tmp_* dir).
+find . \
+    \( -name .git -o -name node_modules -o -name scratch -o -name 'tmp_*' \) -prune -o \
+    -type f -print > "$ALL_FILES"
+
+# === [1/4] shell syntax check (sh -n) ========================================
+echo "=== [1/4] Shell syntax check (sh -n) ==="
+: > "$SHELL_LIST"
+
+# .sh files anywhere in the repo.
+while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    case "$f" in
+        *.sh) echo "$f" >> "$SHELL_LIST" ;;
+    esac
+done < "$ALL_FILES"
+
+# No-extension package scripts (uci-defaults / init.d / usr/bin).
+while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    case "$f" in
+        */root/etc/uci-defaults/*|*/root/etc/init.d/*|*/root/usr/bin/*)
+            echo "$f" >> "$SHELL_LIST" ;;
+    esac
+done < "$ALL_FILES"
+
+# Run sh -n only on files whose shebang indicates a shell interpreter.
+while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    first=$(head -n 1 "$f" 2>/dev/null)
+    case "$first" in
+        *bin/sh*|*bin/bash*|*bin/dash*|*bin/ash*) ;;
+        *) continue ;;
+    esac
+    if sh -n "$f" 2>"$TMP_ERR"; then
+        echo "[PASS] shell syntax: $f"
+    else
+        echo "[FAIL] shell syntax: $f"
+        sed 's/^/    /' "$TMP_ERR"
+        fail=1
     fi
-done
+done < "$SHELL_LIST"
 
-# ---------- 2. 红线①: 不得 ship dhcp.js / bandix/*.js ----------
-echo "[lint] 2/3 红线① 检查 (禁止 ship dhcp.js / bandix/*.js)"
-bad_www=$(find . -path '*/root/www/*' -type f 2>/dev/null \
-          | grep -E '(resources/view/network/dhcp\.js|/bandix/)' || true)
-if [ -n "$bad_www" ]; then
-    note_fail "发现被禁止的原厂页面文件 (红线①):${bad_www}"
+# === [2/4] RED LINE 1: no forbidden js shipped under root/www ================
+echo "=== [2/4] Red line 1: forbidden js under root/www/ ==="
+rl1=0
+while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    case "$f" in
+        *root/www/*)
+            case "$f" in
+                *resources/view/network/dhcp.js|*/bandix/*.js)
+                    echo "[FAIL] red-line-1 violation: $f"
+                    rl1=1
+                    ;;
+            esac
+            ;;
+    esac
+done < "$ALL_FILES"
+if [ "$rl1" = 0 ]; then
+    echo "[PASS] red-line-1: no forbidden js shipped under root/www/"
+fi
+[ "$rl1" = 0 ] || fail=1
+
+# === [3/4] RED LINE 3: no cross-package duplicate installed file =============
+echo "=== [3/4] Red line 3: cross-package duplicate file paths ==="
+# Strip the package prefix up to and including /root/, then detect duplicates.
+while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    case "$f" in
+        */root/*) echo "${f#*/root/}" ;;
+    esac
+done < "$ALL_FILES" | sort | uniq -d > "$TMP_DUP"
+if [ -s "$TMP_DUP" ]; then
+    echo "[FAIL] red-line-3: duplicate installed file path(s) across packages:"
+    sed 's/^/    /' "$TMP_DUP"
+    fail=1
+else
+    echo "[PASS] red-line-3: no cross-package duplicate file paths"
 fi
 
-# ---------- 3. 红线③: 跨包同名 root/ 文件路径冲突 ----------
-echo "[lint] 3/3 红线③ 检查 (跨包同名 root/ 文件路径)"
-dups=$(find . -path '*/root/*' -type f 2>/dev/null \
-       | sed 's#.*/root/##' | sort | uniq -d)
-if [ -n "$dups" ]; then
-    note_fail "存在跨包同名 root 文件路径 (红线③):${dups}"
+# === [4/4] RED LINE 2: bandix restart hint (info only, never fails) ==========
+echo "=== [4/4] Red line 2: bandix restart hint (info only) ==="
+hint=0
+while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    case "$f" in
+        */root/usr/bin/*|*/root/etc/*) ;;
+        *) continue ;;
+    esac
+    if grep -q "bandix" "$f" 2>/dev/null && \
+       grep -Eq "restart|/etc/init.d/bandix|service bandix" "$f" 2>/dev/null; then
+        echo "[INFO] possible bandix restart logic in: $f"
+        hint=1
+    fi
+done < "$ALL_FILES"
+if [ "$hint" = 0 ]; then
+    echo "[INFO] no explicit bandix restart logic detected; ensure the sync"
+    echo "      script restarts bandix after rewriting hostname_bindings.txt"
 fi
 
-if [ "$fail" -ne 0 ]; then
-    echo "[lint] 检查未通过 ($fail 处失败)"
-    exit 1
+# --- cleanup ---
+rm -f "$ALL_FILES" "$TMP_ERR" "$TMP_DUP" "$SHELL_LIST" 2>/dev/null
+
+echo "=== lint summary ==="
+if [ "$fail" = 0 ]; then
+    echo "[PASS] all lint checks passed"
+else
+    echo "[FAIL] lint found issues"
 fi
-echo "[lint] PASS"
+exit $fail

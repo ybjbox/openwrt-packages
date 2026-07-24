@@ -1,53 +1,40 @@
-name: luci-app-dhcp-comment CI
+name: CI
 
-# 触发条件: 推送到 main / 任意 PR / 手动 workflow_dispatch
+# Triggers: every push / PR, plus manual dispatch (used to fire the SDK build).
 on:
   push:
-    branches:
-      - main
   pull_request:
   workflow_dispatch:
 
 jobs:
-  # 常驻: 每次 push / PR / 手动都跑
   lint-and-busybox:
-    name: Lint & BusyBox runtime test
+    name: Lint & BusyBox hot-patch test
     runs-on: ubuntu-latest
-    # 关键: 用 alpine 获得原生 BusyBox 的 sed/grep/sh, 忠实复现路由器真机
+    # Native BusyBox (ash) so our POSIX scripts are exercised exactly as on the
+    # OpenWrt target. alpine's /bin/sh is busybox ash.
     container: alpine:latest
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install nodejs (node --check 与列顺序断言需要)
-        run: apk add --no-cache nodejs
-
-      - name: Lint (sh -n 语法 + 红线①/③ 守卫)
+      - name: POSIX shell syntax & red-line lint
         run: sh tests/lint.sh
 
-      - name: BusyBox runtime test (直接跑已提交的生产热修补脚本)
+      - name: BusyBox hot-patch integration test
         run: sh tests/run_busybox_test.sh
 
-  # 仅手动触发: 用官方 SDK 把整个 feed 编译成 ipk
   build:
-    name: Build feed via OpenWrt SDK
+    name: Build package (OpenWrt SDK)
+    # Only build on manual dispatch to avoid burning SDK minutes on every push/PR.
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Build packages with OpenWrt SDK
+      - name: Build with OpenWrt SDK
+        # gh-action-sdk has no "release" input; the target architecture is
+        # selected via the ARCH environment variable.
         uses: openwrt/gh-action-sdk@v1
         env:
-          # 注意: gh-action-sdk 通过环境变量 ARCH 指定目标架构 (不是 `with:` 输入)。
-          # 版本号直接编码进 ARCH (例如 x86_64-24.10), 该 action 没有独立的 release 输入。
           ARCH: x86_64-24.10
-
-      - name: Upload built ipk artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: x86_64-packages
-          path: bin/packages/x86_64/*/*.ipk

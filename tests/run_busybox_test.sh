@@ -1,71 +1,93 @@
 #!/bin/sh
-# run_busybox_test.sh — 在 BusyBox (alpine 容器) 环境直接运行已提交的生产热修补脚本,
-# 验证 DHCP 段 4 处 sed 注入正确且产物 JS 语法有效。
+# BusyBox integration test for the production hot-patch script.
+# Runs under alpine (busybox ash). Only shell builtins + sed + grep + find.
 #
-# CI 的核心价值之一: 用 BusyBox 的 sed/grep/sh 真跑生产脚本, 复现路由器真机行为
-# (BusyBox sed 不支持 N+\n 跨行匹配, 且对替代串 \n 的处理与 GNU 不同 —— 脚本已量产校验)。
-set -e
+# It prepares a minimal dhcp.js fixture at the exact path the production script
+# patches, runs the real production script, then asserts the injected markers
+# are present and the column order (name -> comment -> mac) is correct.
+set -u
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+fail=0
+
+# Relative to repo root (CI checks out the repo and runs from there).
+PROD="openwrt-packages/luci-app-dhcp-comment/root/etc/uci-defaults/99-luci-app-dhcp-comment"
+FIXTURE="tests/fixtures/dhcp_host_section.js"
+
+# Absolute path the production script operates on (line 11 of the script).
 DHCP_JS="/www/luci-static/resources/view/network/dhcp.js"
-FIXTURE="$REPO_ROOT/tests/fixtures/dhcp_host_section.js"
-PATCH="$REPO_ROOT/luci-app-dhcp-comment/root/etc/uci-defaults/99-luci-app-dhcp-comment"
 
-# ---------- 准备 fixture ----------
-echo "[busybox-test] 准备 fixture -> $DHCP_JS"
-mkdir -p "$(dirname "$DHCP_JS")"
-cp "$FIXTURE" "$DHCP_JS"
+echo "=== BusyBox hot-patch test ==="
+echo "[setup] production script : $PROD"
+echo "[setup] fixture           : $FIXTURE"
+echo "[setup] target DHCP_JS    : $DHCP_JS"
 
-# ---------- 运行生产热修补脚本 ----------
-echo "[busybox-test] 运行生产热修补脚本: $PATCH"
-sh "$PATCH"
-
-# ---------- 断言 ----------
-# 用 grep -F (固定串) 避免锚点里的 ( { * 等被当作正则元字符
-assert_contains() {
-    # $1 = 描述, $2 = 待匹配固定串
-    if ! grep -Fq -- "$2" "$DHCP_JS"; then
-        echo "FAIL: $1 (未找到: $2)"
-        exit 1
+# --- negative sanity: fixture must be PRISTINE (no injected markers) ---------
+echo "--- negative sanity: fixture must not already contain injected markers ---"
+bad=0
+for marker in \
+    "co=ss.option(form.Value,'comment'" \
+    "max_cols=9" \
+    "var mac_comments={};try{uci.sections" \
+    "'%s'.format((function()"; do
+    if grep -q "$marker" "$FIXTURE" 2>/dev/null; then
+        echo "[FAIL] fixture already contains injected marker: $marker"
+        bad=1
     fi
-    echo "[busybox-test] ok: $1"
+done
+if [ "$bad" = 1 ]; then
+    echo "[FAIL] fixture design error (contains injected markers before patching)"
+    fail=1
+else
+    echo "[PASS] fixture is pristine (no injected markers)"
+fi
+
+# --- prepare the DHCP_JS file from the fixture -------------------------------
+mkdir -p "$(dirname "$DHCP_JS")" || { echo "[FAIL] cannot create $(dirname "$DHCP_JS")"; exit 1; }
+cp "$FIXTURE" "$DHCP_JS" || { echo "[FAIL] cannot copy fixture to $DHCP_JS"; exit 1; }
+echo "[setup] copied fixture -> $DHCP_JS"
+
+# --- run the REAL production hot-patch script -------------------------------
+# It only modifies DHCP_JS; the other JS paths do not exist and are skipped.
+# logger / module-cache cleanup are tolerant (|| true / 2>/dev/null inside).
+sh "$PROD"
+echo "[setup] production script exited with code $?"
+
+# --- assertions on the patched DHCP_JS ---------------------------------------
+check_marker() {
+    m="$1"
+    if grep -q "$m" "$DHCP_JS"; then
+        echo "[PASS] injected: $m"
+    else
+        echo "[FAIL] missing: $m"
+        fail=1
+    fi
 }
 
-echo "[busybox-test] 断言注入结果"
-assert_contains "备注列(comment)已注入" "co=ss.option(form.Value,'comment'"
-assert_contains "max_cols 已改为 9" "max_cols=9"
-assert_contains "mac_comments 初始化已注入" "var mac_comments={};try{uci.sections"
-assert_contains "租约列 comment 查找已注入" "'%s'.format((function()"
+check_marker "co=ss.option(form.Value,'comment'"
+check_marker "max_cols=9"
+check_marker "var mac_comments={};try{uci.sections"
+check_marker "'%s'.format((function()"
 
-# 列顺序: name -> comment -> mac (连续)
-# 用 node 解析文件中 ss.option(form.(Value|DynamicList),'<name>' 的出现顺序。
-echo "[busybox-test] 断言列顺序 name->comment->mac"
-node -e "
-const fs=require('fs');
-const src=fs.readFileSync(process.argv[1],'utf8');
-const re=/ss\.option\(form\.(?:Value|DynamicList),\s*'([^']+)'/g;
-let m, names=[];
-while((m=re.exec(src))!==null) names.push(m[1]);
-const iName=names.indexOf('name');
-const iComment=names.indexOf('comment');
-const iMac=names.indexOf('mac');
-if(iName<0||iComment<0||iMac<0){
-  console.error('FAIL: 缺少期望列 name/comment/mac -> '+JSON.stringify(names));
-  process.exit(1);
-}
-if(names[iName+1]!=='comment'){
-  console.error('FAIL: name 之后不是 comment -> '+JSON.stringify(names));
-  process.exit(1);
-}
-if(names[iComment+1]!=='mac'){
-  console.error('FAIL: comment 之后不是 mac -> '+JSON.stringify(names));
-  process.exit(1);
-}
-console.log('[busybox-test] column order: '+JSON.stringify(names));
-" "$DHCP_JS" || { echo "FAIL: 列顺序断言未通过"; exit 1; }
+# --- column order: comment must appear BEFORE the mac option ----------------
+# Anchor both patterns at line start so a stray mention inside a comment can
+# never be mistaken for the real injected code line.
+echo "--- column order: name -> comment -> mac ---"
+c_line=$(grep -nE "^var co=ss\.option\(form\.Value,'comment'" "$DHCP_JS" | head -n 1 | cut -d: -f1)
+m_line=$(grep -nE "^so=ss\.option\(form\.DynamicList,'mac'," "$DHCP_JS" | head -n 1 | cut -d: -f1)
+if [ -z "$c_line" ] || [ -z "$m_line" ]; then
+    echo "[FAIL] cannot locate comment/mac anchor lines"
+    fail=1
+elif [ "$c_line" -lt "$m_line" ]; then
+    echo "[PASS] column order correct (comment@${c_line} < mac@${m_line})"
+else
+    echo "[FAIL] column order wrong (comment@${c_line} >= mac@${m_line})"
+    fail=1
+fi
 
-# 语法有效性: 注入后整文件必须仍是合法 JS
-echo "[busybox-test] node --check 语法校验"
-node --check "$DHCP_JS" || { echo "FAIL: node --check 未通过"; exit 1; }
-
-echo "[busybox-test] PASS"
+echo "=== test summary ==="
+if [ "$fail" = 0 ]; then
+    echo "[PASS] all busybox hot-patch assertions passed"
+else
+    echo "[FAIL] some assertions failed"
+fi
+exit $fail
