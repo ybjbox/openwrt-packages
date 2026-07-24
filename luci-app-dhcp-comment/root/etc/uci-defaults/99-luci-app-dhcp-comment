@@ -1,43 +1,115 @@
 #!/bin/sh
+# luci-app-dhcp-comment 首次开机热修补脚本
+# 红线: 绝不 ship dhcp.js / bandix*.js, 所有页面修补在此运行时完成
+# 健壮性: CRLF 归一 / 幂等守卫 / 失败记日志 / 不改全局 validateHostname / 锚点空白符容忍(兼容 stock 与厂商构建)
+# 注意: 含 / 的串改用 # 或 ~ 作分隔符; 本文件 DHCP 段用 # 作分隔符, 替代串中的 \n 为换行(量产已校验)
+# BusyBox 兼容: 严禁用 N+\n 跨行匹配(真机 sed 不支持), 改用单行锚点(如 ss.option(form.DynamicList,'mac') 这类全文件唯一的选项前缀)
 
-# 1. 物理挂载 /etc/init.d/dnsmasq 重载与启动钩子
-if [ -f /etc/init.d/dnsmasq ]; then
-    if ! grep -q "sync_dhcp_user_info" /etc/init.d/dnsmasq; then
-        sed -i '/start_service() {/a \t/usr/bin/sync_dhcp_user_info >/dev/null 2>&1' /etc/init.d/dnsmasq
-        sed -i '/reload_service() {/a \t/usr/bin/sync_dhcp_user_info >/dev/null 2>&1' /etc/init.d/dnsmasq
-    fi
-fi
+LOG=/tmp/dhcp-comment-patch.log
+log(){ logger -t dhcp-comment "$1" 2>/dev/null || true; echo "$(date '+%H:%M:%S') $1" >>"$LOG" 2>/dev/null; }
 
-# 2. 确保同步脚本权限正确
-chmod +x /usr/bin/sync_dhcp_user_info >/dev/null 2>&1 || true
-
-# 3. 给 network/dhcp.js 开机热注入“中文备注”列（含独立写入 handlers 与放行 UTF-8 校验）
 DHCP_JS="/www/luci-static/resources/view/network/dhcp.js"
+STATUS_JS="/www/luci-static/resources/view/status/include/40_dhcp.js"
+BANDIX_INDEX="/www/luci-static/resources/view/bandix/index.js"
+BANDIX_CONN="/www/luci-static/resources/view/bandix/connection.js"
+BANDIX_DNS="/www/luci-static/resources/view/bandix/dns.js"
+DNSMASQ_INIT="/etc/init.d/dnsmasq"
+
+# CRLF 归一 (根除 \r 导致 sed 静默跳过)
+for f in "$DHCP_JS" "$STATUS_JS" "$BANDIX_INDEX" "$BANDIX_CONN" "$BANDIX_DNS"; do
+    [ -f "$f" ] && sed -i 's/\r$//' "$f"
+done
+
+# ---------- 1. DHCP/DNS 静态分配页 ----------
 if [ -f "$DHCP_JS" ]; then
-    if ! grep -q "form.Value,'comment'" "$DHCP_JS"; then
-        lua -e '
-            local f = io.open("'"$DHCP_JS"'", "r")
-            if not f then return end
-            local content = f:read("*a")
-            f:close()
+    if ! grep -q "co=ss.option(form.Value,'comment'" "$DHCP_JS"; then
+        # 单行锚点: 静态租约 mac 表单选项(ss.option(form.DynamicList,'mac') 全文件唯一)
+        # 用 # 作分隔符, 替代串以 \n(换行)+ & (整段匹配前缀) 把 comment 选项插入到 mac 之前
+        # => 列顺序 name(主机名) -> comment(中文备注,第2列) -> mac -> ...
+        sed -i "s#so=ss.option(form.DynamicList,'mac',#var co=ss.option(form.Value,'comment',_('Comment'),_('中文备注'));co.rmempty=true;co.validate=function(){return true;};co.write=function(section,value){uci.set('dhcp',section,'comment',value);}\n&#" "$DHCP_JS" \
+            && log "DHCP_JS: comment 列(第2列,主机名后)已注入" \
+            || log "DHCP_JS: comment 列注入 FAILED"
+    fi
+    if ! grep -q "max_cols=9" "$DHCP_JS"; then
+        sed -i 's/max_cols=8/max_cols=9/g' "$DHCP_JS" \
+            && log "DHCP_JS: max_cols 8->9" \
+            || log "DHCP_JS: max_cols 修改 FAILED"
+    fi
+    # 幂等守卫: 用初始化标记做哨兵(不是引用), 防止"引用已存在但定义缺失"的悬挂状态被错误跳过
+    if ! grep -q "var mac_comments={};try{uci.sections" "$DHCP_JS"; then
+        # 单行 sed, BusyBox 兼容: 在 callDHCPLeases 前注入 var mac_comments + try/catch 初始化
+        sed -i "s#return callDHCPLeases().then(function(leaseinfo) *{#var mac_comments={};try{uci.sections(\"dhcp\",\"host\").forEach(function(s){L.toArray(s.mac).forEach(function(m){if(s.comment)mac_comments[m.toLowerCase()]=s.comment;});});}catch(e){}return callDHCPLeases().then(function(leaseinfo){#g" "$DHCP_JS" \
+            && log "DHCP_JS: mac_comments 初始化已注入" \
+            || log "DHCP_JS: mac_comments 初始化 FAILED"
+        sed -i "s~'%h'.format(host *|| *'-')~'%s'.format((function(){var c=lease.macaddr?mac_comments[lease.macaddr.toLowerCase()]:null;return c?c:(host||'-');})())~g" "$DHCP_JS" \
+            && log "DHCP_JS: 租约列 mac_comments 查找已注入" \
+            || log "DHCP_JS: 租约列 mac_comments FAILED"
+    fi
+else
+    log "DHCP_JS 不存在, 跳过"
+fi
 
-            local target_name = "so=ss.option(form.Value,'name',_('Hostname'),_('The hostname for this host (optional).'));so.validate=validateHostname;so.rmempty=true;so.write=function(section,value){uci.set('dhcp',section,'name',value);uci.set('dhcp',section,'dns','1');};so.remove=function(section){uci.unset('dhcp',section,'name');uci.unset('dhcp',section,'dns');};"
-            local comment_patch = "so=ss.option(form.Value,'comment',_('Comment'),_('Custom comment for this host (optional).'));so.placeholder=_('中文备注');so.optional=true;so.datatype='string';so.validate=function(){return true;};so.write=function(section,value){uci.set('dhcp',section,'comment',value);};so.remove=function(section){uci.unset('dhcp',section,'comment');};"
+# ---------- 2. 状态-概览页 ----------
+if [ -f "$STATUS_JS" ]; then
+    if ! grep -q "mac_comments" "$STATUS_JS"; then
+        sed -i 's/const machints *= *host_hints.getMACHints(false);/const machints=host_hints.getMACHints(false);const mac_comments={};uci.sections("dhcp","host").forEach(function(s){L.toArray(s.mac).forEach(function(m){if(s.comment)mac_comments[m.toLowerCase()]=s.comment;});});/g' "$STATUS_JS"
+        sed -i "s~'%h'.format(host *|| *'-')~'%s'.format((function(){var c=lease.macaddr?mac_comments[lease.macaddr.toLowerCase()]:null;return c?c:(host||'-');})())~g" "$STATUS_JS"
+    fi
+else
+    log "STATUS_JS 不存在, 跳过"
+fi
 
-            if content:find(target_name, 1, true) then
-                local s, e = content:find(target_name, 1, true)
-                content = content:sub(1, e) .. comment_patch .. content:sub(e + 1)
-                local fw = io.open("'"$DHCP_JS"'", "w")
-                if fw then
-                    fw:write(content)
-                    fw:close()
-                end
-            end
-        '
+# ---------- 3. Bandix 设备列表 & 流量排行 ----------
+if [ -f "$BANDIX_INDEX" ]; then
+    if ! grep -q "uci.load('dhcp')" "$BANDIX_INDEX"; then
+        sed -i "s/uci.load('argon').catch(function(){return null;})/uci.load('argon').catch(function(){return null;}),uci.load('dhcp')/g" "$BANDIX_INDEX"
+    fi
+    if ! grep -q "dhcp_comments" "$BANDIX_INDEX"; then
+        sed -i 's#var filteredDevices=#if(stats\&\&Array.isArray(stats.d)){try{var dhcp_comments={};uci.sections("dhcp","host").forEach(function(s){if(s.comment){var cmt=s.comment;if(s.name)dhcp_comments[s.name.toLowerCase()]=cmt;if(s.ip)dhcp_comments[s.ip]=cmt;L.toArray(s.mac).forEach(function(m){if(m)dhcp_comments[m.toLowerCase()]=cmt;});dhcp_comments[cmt.toLowerCase()]=cmt;}});stats.d.forEach(function(device){if(device){var k=(device.mac||device.host||device.ip4||"").toLowerCase();var cleanK=k.replace(/\.lan$/i,"");var cmt=dhcp_comments[k]||dhcp_comments[cleanK];if(cmt)device.host=cmt;}});}catch(e){}}var filteredDevices=#g' "$BANDIX_INDEX"
+        sed -i 's#function renderUsageRanking(data,showAll){#function renderUsageRanking(data,showAll){if(Array.isArray(data)){try{var mac_comments={};uci.sections("dhcp","host").forEach(function(s){L.toArray(s.mac).forEach(function(m){if(s.comment)mac_comments[m.toLowerCase()]=s.comment;});});data.forEach(function(item){if(item\&\&item.mac){var cmt=mac_comments[item.mac.toLowerCase()];if(cmt)item.host=cmt;}});}catch(e){}}#g' "$BANDIX_INDEX"
+    fi
+else
+    log "BANDIX_INDEX 不存在, 跳过"
+fi
+
+# ---------- 4. Bandix 连接选项卡 ----------
+if [ -f "$BANDIX_CONN" ]; then
+    if ! grep -q "uci.load('dhcp')" "$BANDIX_CONN"; then
+        sed -i "s/uci.load('argon').catch(function(){return null;})/uci.load('argon').catch(function(){return null;}),uci.load('dhcp')/g" "$BANDIX_CONN"
+    fi
+    if ! grep -q "dhcp_comments" "$BANDIX_CONN"; then
+        sed -i 's#function updateDeviceTable(devices){#function updateDeviceTable(devices){if(Array.isArray(devices)){try{var dhcp_comments={};uci.sections("dhcp","host").forEach(function(s){if(s.comment){var cmt=s.comment;if(s.name)dhcp_comments[s.name.toLowerCase()]=cmt;if(s.ip)dhcp_comments[s.ip]=cmt;L.toArray(s.mac).forEach(function(m){if(m)dhcp_comments[m.toLowerCase()]=cmt;});dhcp_comments[cmt.toLowerCase()]=cmt;}});devices.forEach(function(device){if(device){var k=(device.mac||device.host||device.ip4||"").toLowerCase();var cleanK=k.replace(/\.lan$/i,"");var cmt=dhcp_comments[k]||dhcp_comments[cleanK];if(cmt)device.host=cmt;}});}catch(e){}}#g' "$BANDIX_CONN"
+    fi
+else
+    log "BANDIX_CONN 不存在, 跳过"
+fi
+
+# ---------- 5. Bandix DNS 选项卡 ----------
+if [ -f "$BANDIX_DNS" ]; then
+    if ! grep -q "uci.load('dhcp')" "$BANDIX_DNS"; then
+        sed -i "s/uci.load('argon').catch(function(){return null;})/uci.load('argon').catch(function(){return null;}),uci.load('dhcp')/g" "$BANDIX_DNS"
+    fi
+    if ! grep -q "dhcp_comments" "$BANDIX_DNS"; then
+        sed -i 's#return callGetDnsStats().then(function(result){#return Promise.all([callGetDnsStats(),L.resolveDefault(uci.load("dhcp"),null)]).then(function(resArray){var result=resArray[0];#g' "$BANDIX_DNS"
+        sed -i 's#if(stats.top_devices\&\&stats.top_devices.length>0){#if(stats.top_devices\&\&stats.top_devices.length>0){try{var dhcp_comments={};uci.sections("dhcp","host").forEach(function(s){if(s.comment){var cmt=s.comment;if(s.name)dhcp_comments[s.name.toLowerCase()]=cmt;if(s.ip)dhcp_comments[s.ip]=cmt;L.toArray(s.mac).forEach(function(m){if(m)dhcp_comments[m.toLowerCase()]=cmt;});dhcp_comments[cmt.toLowerCase()]=cmt;}});stats.top_devices.forEach(function(item){if(item\&\&item.name){var k=item.name.toLowerCase();var cleanK=k.replace(/\.lan$/i,"");var cmt=dhcp_comments[k]||dhcp_comments[cleanK];if(cmt)item.name=cmt;}});}catch(e){}#g' "$BANDIX_DNS"
+        sed -i 's#function formatDeviceName(device){var parts=\[\];#function formatDeviceName(device){var parts=\[\];try{var dhcp_comments={};uci.sections("dhcp","host").forEach(function(s){if(s.comment){var cmt=s.comment;if(s.name)dhcp_comments[s.name.toLowerCase()]=cmt;if(s.ip)dhcp_comments[s.ip]=cmt;L.toArray(s.mac).forEach(function(m){if(m)dhcp_comments[m.toLowerCase()]=cmt;});dhcp_comments[cmt.toLowerCase()]=cmt;}});var _k=(device\&\&(device.mac||device.device_name||(device.is_query?device.source_ip:device.destination_ip)||"")).toLowerCase();var _clean=_k.replace(/\.lan$/i,"");var _c=dhcp_comments[_k]||dhcp_comments[_clean];if(_c)device.device_name=_c;}catch(e){}#g' "$BANDIX_DNS"
+    fi
+else
+    log "BANDIX_DNS 不存在, 跳过"
+fi
+
+# ---------- 6. dnsmasq 钩子 (实时同步防线) ----------
+if [ -f "$DNSMASQ_INIT" ]; then
+    if ! grep -q "sync_dhcp_user_info" "$DNSMASQ_INIT"; then
+        # 注意: a 后直接跟命令路径, 不要写 \t (BusyBox/GNU sed 会把 \t 当字面 t 导致命令名损坏, 钩子静默失败)
+        sed -i '/start_service() {/a /usr/bin/sync_dhcp_user_info >/dev/null 2>&1' "$DNSMASQ_INIT"
+        sed -i '/reload_service() {/a /usr/bin/sync_dhcp_user_info >/dev/null 2>&1' "$DNSMASQ_INIT"
     fi
 fi
 
-# 4. 执行一次物理部署同步
-/usr/bin/sync_dhcp_user_info >/dev/null 2>&1 || true
+# ---------- 7. 首次全量同步 ----------
+[ -x /usr/bin/sync_dhcp_user_info ] && /usr/bin/sync_dhcp_user_info >/dev/null 2>&1 || true
 
+rm -rf /tmp/luci-modulecache/* /tmp/luci-indexcache 2>/dev/null || true
+log "热修补完成"
 exit 0

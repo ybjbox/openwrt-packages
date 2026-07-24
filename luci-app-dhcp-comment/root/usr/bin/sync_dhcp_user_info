@@ -1,41 +1,51 @@
-#!/usr/bin/env lua
+#!/bin/sh
+# sync_dhcp_user_info - 将 dhcp.@host[].comment 同步到 AppFilter(user_info) 与 Bandix(hostname_bindings.txt)
+# 纯 POSIX sh, 依赖 uci / sh; 红线: 写 hostname_bindings.txt 后必须重启 bandix 重载内存
 
-local uci_lib = require "luci.model.uci"
-local uci = uci_lib.cursor()
+CFG="dhcp_comment"
+ENABLED=$(uci -q get "${CFG}.global.enabled")
+[ "$ENABLED" = "1" ] || exit 0
 
-uci:unload("dhcp")
-uci:load("dhcp")
+ENABLE_APPFILTER=$(uci -q get "${CFG}.global.enable_appfilter")
+ENABLE_BANDIX=$(uci -q get "${CFG}.global.enable_bandix")
 
-local dhcp_comments = {}
-uci:foreach("dhcp", "host", function(s)
-    if s.comment and s.mac then
-        local macs = (type(s.mac) == "table") and s.mac or { s.mac }
-        for _, m in pairs(macs) do
-            if type(m) == "string" and #m > 0 then
-                dhcp_comments[m:lower()] = s.comment
-            end
-        end
-    end
-end)
+# 构建 mac(小写) -> comment 映射, 用 TAB 分隔避免备注含特殊字符
+MAP_FILE=$(mktemp)
+for sid in $(uci -q show dhcp | sed -n 's/^dhcp\.\(@host\[[0-9]*\]\)=host$/\1/p' | sort -u); do
+    comment=$(uci -q get "dhcp.${sid}.comment")
+    [ -n "$comment" ] || continue
+    for mac in $(uci -q get "dhcp.${sid}.mac"); do
+        [ -n "$mac" ] || continue
+        printf '%s\t%s\n' "$(echo "$mac" | tr 'A-Z' 'a-z')" "$comment" >> "$MAP_FILE"
+    done
+done
 
--- 1. 同步 AppFilter user_info
-uci:delete_all("user_info", "user_info")
-for mac, comment in pairs(dhcp_comments) do
-    local sid = uci:section("user_info", "user_info", nil, {})
-    uci:set("user_info", sid, "mac", mac:lower())
-    uci:set("user_info", sid, "nickname", comment)
-end
-uci:commit("user_info")
-os.execute("/etc/init.d/appfilter restart >/dev/null 2>&1 || true")
+# ---- AppFilter 用户列表 ----
+if [ "$ENABLE_APPFILTER" = "1" ]; then
+    while uci -q delete user_info.@user_info[0]; do :; done
+    while IFS="$(printf '\t')" read -r mac cmt; do
+        [ -n "$mac" ] || continue
+        nsid=$(uci -q add user_info user_info)
+        uci -q set "user_info.${nsid}.mac=${mac}"
+        uci -q set "user_info.${nsid}.nickname=${cmt}"
+    done < "$MAP_FILE"
+    uci -q commit user_info
+    /etc/init.d/appfilter restart >/dev/null 2>&1 || true
+fi
 
--- 2. 同步 Bandix hostname_bindings.txt 并触发 bandixd 重载内存
-local bfile = io.open("/usr/share/bandix/hostname_bindings.txt", "w")
-if bfile then
-    bfile:write("# mac hostname\n")
-    for mac, comment in pairs(dhcp_comments) do
-        bfile:write(mac:lower() .. " " .. comment .. "\n")
-    end
-    bfile:close()
-    os.execute("ubus call luci.bandix clearData >/dev/null 2>&1 || true")
-    os.execute("/etc/init.d/bandix restart >/dev/null 2>&1 || true")
-end
+# ---- Bandix 设备列表 / 流量统计 ----
+if [ "$ENABLE_BANDIX" = "1" ]; then
+    BF="/usr/share/bandix/hostname_bindings.txt"
+    mkdir -p "$(dirname "$BF")"
+    {
+        echo "# mac hostname"
+        while IFS="$(printf '\t')" read -r mac cmt; do
+            [ -n "$mac" ] && printf '%s %s\n' "$mac" "$cmt"
+        done < "$MAP_FILE"
+    } > "$BF"
+    ubus call luci.bandix clearData >/dev/null 2>&1 || true
+    /etc/init.d/bandix restart >/dev/null 2>&1 || true
+fi
+
+rm -f "$MAP_FILE"
+exit 0
