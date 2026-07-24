@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# 物理注入 /etc/init.d/dnsmasq 钩子
+# 1. 物理挂载 /etc/init.d/dnsmasq 重载与启动钩子
 if [ -f /etc/init.d/dnsmasq ]; then
     if ! grep -q "sync_dhcp_user_info" /etc/init.d/dnsmasq; then
         sed -i '/start_service() {/a \t/usr/bin/sync_dhcp_user_info >/dev/null 2>&1' /etc/init.d/dnsmasq
@@ -8,10 +8,36 @@ if [ -f /etc/init.d/dnsmasq ]; then
     fi
 fi
 
-# 确保脚本增加可执行权限
+# 2. 确保同步脚本权限正确
 chmod +x /usr/bin/sync_dhcp_user_info >/dev/null 2>&1 || true
 
-# 执行一次物理重估同步
+# 3. 给 network/dhcp.js 开机热注入“中文备注”列（含独立写入 handlers 与放行 UTF-8 校验）
+DHCP_JS="/www/luci-static/resources/view/network/dhcp.js"
+if [ -f "$DHCP_JS" ]; then
+    if ! grep -q "form.Value,'comment'" "$DHCP_JS"; then
+        lua -e '
+            local f = io.open("'"$DHCP_JS"'", "r")
+            if not f then return end
+            local content = f:read("*a")
+            f:close()
+
+            local target_name = "so=ss.option(form.Value,'name',_('Hostname'),_('The hostname for this host (optional).'));so.validate=validateHostname;so.rmempty=true;so.write=function(section,value){uci.set('dhcp',section,'name',value);uci.set('dhcp',section,'dns','1');};so.remove=function(section){uci.unset('dhcp',section,'name');uci.unset('dhcp',section,'dns');};"
+            local comment_patch = "so=ss.option(form.Value,'comment',_('Comment'),_('Custom comment for this host (optional).'));so.placeholder=_('中文备注');so.optional=true;so.datatype='string';so.validate=function(){return true;};so.write=function(section,value){uci.set('dhcp',section,'comment',value);};so.remove=function(section){uci.unset('dhcp',section,'comment');};"
+
+            if content:find(target_name, 1, true) then
+                local s, e = content:find(target_name, 1, true)
+                content = content:sub(1, e) .. comment_patch .. content:sub(e + 1)
+                local fw = io.open("'"$DHCP_JS"'", "w")
+                if fw then
+                    fw:write(content)
+                    fw:close()
+                end
+            end
+        '
+    fi
+fi
+
+# 4. 执行一次物理部署同步
 /usr/bin/sync_dhcp_user_info >/dev/null 2>&1 || true
 
 exit 0
