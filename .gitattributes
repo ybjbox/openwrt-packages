@@ -1,0 +1,6 @@
+# CI 脚本/配置强制以 LF 存储。
+# 仓库全局 core.autocrlf=true 会把脚本存成 CRLF，而 alpine(Linux) 容器里
+# /bin/sh 遇到 "#!/bin/sh\r" 会报 bad interpreter 直接失败。
+# 这两个目录只在 CI(Linux) 下执行，必须 LF。
+tests/** text eol=lf
+.github/workflows/** text eol=lf
