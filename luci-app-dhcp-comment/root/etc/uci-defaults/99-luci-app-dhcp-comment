@@ -1,5 +1,6 @@
 #!/bin/sh
 
+# 物理注入 /etc/init.d/dnsmasq 钩子
 if [ -f /etc/init.d/dnsmasq ]; then
     if ! grep -q "sync_dhcp_user_info" /etc/init.d/dnsmasq; then
         sed -i '/start_service() {/a \t/usr/bin/sync_dhcp_user_info >/dev/null 2>&1' /etc/init.d/dnsmasq
@@ -7,6 +8,10 @@ if [ -f /etc/init.d/dnsmasq ]; then
     fi
 fi
 
+# 确保脚本增加可执行权限
+chmod +x /usr/bin/sync_dhcp_user_info >/dev/null 2>&1 || true
+
+# 执行一次物理重估同步
 /usr/bin/sync_dhcp_user_info >/dev/null 2>&1 || true
 
 exit 0
