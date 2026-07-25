@@ -56,10 +56,11 @@ echo "[setup] production script exited with code $?"
 # --- assertions on the patched DHCP_JS ---------------------------------------
 check_marker() {
     m="$1"
+    label="${2:-$m}"
     if grep -q "$m" "$DHCP_JS"; then
-        echo "[PASS] injected: $m"
+        echo "[PASS] injected: $label"
     else
-        echo "[FAIL] missing: $m"
+        echo "[FAIL] missing: $label"
         fail=1
     fi
 }
@@ -76,6 +77,14 @@ check_marker "'%s'.format((function()"
 # matching width (LuCI sets column-header th style.width from co.width / so.width).
 check_marker "co.width='20%'"
 check_marker "so.width='20%'"
+
+# --- wrapping CSS: long comment/name must wrap inside the 20% column --------
+# Verifies the injected style snippet that overrides the default td nowrap so the
+# long comment (data-name=comment) and host-name (data-name=name) cells wrap and
+# the two columns stay visually equal-width. Checked AFTER the production script
+# runs (above), not in the negative sanity section (fixture is unpatched there).
+check_marker "data-name=comment" "备注列换行 CSS(data-name=comment)"
+check_marker "overflow-wrap:anywhere" "备注列换行 CSS(overflow-wrap)"
 
 # --- column order: comment must appear BEFORE the mac option ----------------
 # Anchor both patterns at line start so a stray mention inside a comment can
