@@ -9,3 +9,6 @@ tests/** text eol=lf
 # shebang "#!/bin/sh\r" 报 bad interpreter；同时这些脚本经 OpenWrt 构建
 # 直接打进固件，CRLF 会导致静默失效。
 *.sh text eol=lf
+# uci-defaults 脚本无 .sh 后缀(如 99-luci-app-dhcp-comment、99-athena-custom-settings)，
+# 但首次开机时由 /bin/sh 执行，同样必须 LF，否则 shebang 带 \r 报 bad interpreter。
+**/etc/uci-defaults/** text eol=lf
