@@ -9,8 +9,8 @@ set -u
 
 fail=0
 
-# Relative to repo root (CI checks out the repo and runs from there).
-PROD="openwrt-packages/luci-app-dhcp-comment/root/etc/uci-defaults/99-luci-app-dhcp-comment"
+# Relative to repo root (CI checks out the repo at its root, no openwrt-packages/ prefix).
+PROD="luci-app-dhcp-comment/root/etc/uci-defaults/99-luci-app-dhcp-comment"
 FIXTURE="tests/fixtures/dhcp_host_section.js"
 
 # Absolute path the production script operates on (line 11 of the script).
