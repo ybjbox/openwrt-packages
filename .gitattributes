@@ -5,3 +5,7 @@
 tests/** text eol=lf
 .github/workflows/** text eol=lf
 .github/workflows/*.yml text eol=lf
+# 包内 shell 脚本会在路由器(Linux)上以 /bin/sh 执行，必须 LF，否则
+# shebang "#!/bin/sh\r" 报 bad interpreter；同时这些脚本经 OpenWrt 构建
+# 直接打进固件，CRLF 会导致静默失效。
+*.sh text eol=lf
