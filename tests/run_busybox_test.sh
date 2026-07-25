@@ -4,7 +4,8 @@
 #
 # It prepares a minimal dhcp.js fixture at the exact path the production script
 # patches, runs the real production script, then asserts the injected markers
-# are present and the column order (name -> comment -> mac) is correct.
+# are present (incl. equal-width co.width='20%' / so.width='20%' markers) and
+# the column order (name -> comment -> mac) is correct.
 set -u
 
 fail=0
@@ -67,6 +68,14 @@ check_marker "co=ss.option(form.Value,'comment'"
 check_marker "max_cols=9"
 check_marker "var mac_comments={};try{uci.sections"
 check_marker "'%s'.format((function()"
+
+# --- equal-width behaviour: name & comment columns both pinned to 20% -------
+# Must be checked AFTER the production script runs (above). Putting these in the
+# negative sanity section would false-fail, because the fixture is intentionally
+# unpatched at that point. These verify the host-name/comment columns render with
+# matching width (LuCI sets column-header th style.width from co.width / so.width).
+check_marker "co.width='20%'"
+check_marker "so.width='20%'"
 
 # --- column order: comment must appear BEFORE the mac option ----------------
 # Anchor both patterns at line start so a stray mention inside a comment can

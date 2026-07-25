@@ -26,9 +26,15 @@ if [ -f "$DHCP_JS" ]; then
         # 单行锚点: 静态租约 mac 表单选项(ss.option(form.DynamicList,'mac') 全文件唯一)
         # 用 # 作分隔符, 替代串以 \n(换行)+ & (整段匹配前缀) 把 comment 选项插入到 mac 之前
         # => 列顺序 name(主机名) -> comment(中文备注,第2列) -> mac -> ...
-        sed -i "s#so=ss.option(form.DynamicList,'mac',#var co=ss.option(form.Value,'comment',_('Comment'),_('中文备注'));co.rmempty=true;co.validate=function(){return true;};co.write=function(section,value){uci.set('dhcp',section,'comment',value);}\n&#" "$DHCP_JS" \
+        sed -i "s#so=ss.option(form.DynamicList,'mac',#var co=ss.option(form.Value,'comment',_('Comment'),_('中文备注'));co.rmempty=true;co.validate=function(){return true;};co.write=function(section,value){uci.set('dhcp',section,'comment',value);};co.width='20%'\n&#" "$DHCP_JS" \
             && log "DHCP_JS: comment 列(第2列,主机名后)已注入" \
             || log "DHCP_JS: comment 列注入 FAILED"
+    fi
+    # 主机名列与中文备注列同宽(均 20%), 防止长备注名被挤压
+    if ! grep -q "so.width='20%'" "$DHCP_JS"; then
+        sed -i "s#so.validate=validateHostname;#so.width='20%';so.validate=validateHostname;#" "$DHCP_JS" \
+            && log "DHCP_JS: name 列宽设为 20%(与 comment 同宽)" \
+            || log "DHCP_JS: name 列宽 FAILED"
     fi
     if ! grep -q "max_cols=9" "$DHCP_JS"; then
         sed -i 's/max_cols=8/max_cols=9/g' "$DHCP_JS" \
