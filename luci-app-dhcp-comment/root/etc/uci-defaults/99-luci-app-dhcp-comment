@@ -102,13 +102,13 @@ fi
 if [ -f "$DNSMASQ_INIT" ]; then
     if ! grep -q "sync_dhcp_user_info" "$DNSMASQ_INIT"; then
         # 注意: a 后直接跟命令路径, 不要写 \t (BusyBox/GNU sed 会把 \t 当字面 t 导致命令名损坏, 钩子静默失败)
-        sed -i '/start_service() {/a /usr/bin/sync_dhcp_user_info >/dev/null 2>&1' "$DNSMASQ_INIT"
-        sed -i '/reload_service() {/a /usr/bin/sync_dhcp_user_info >/dev/null 2>&1' "$DNSMASQ_INIT"
+        sed -i '/start_service() {/a sh /usr/bin/sync_dhcp_user_info >/dev/null 2>&1' "$DNSMASQ_INIT"
+        sed -i '/reload_service() {/a sh /usr/bin/sync_dhcp_user_info >/dev/null 2>&1' "$DNSMASQ_INIT"
     fi
 fi
 
 # ---------- 7. 首次全量同步 ----------
-[ -x /usr/bin/sync_dhcp_user_info ] && /usr/bin/sync_dhcp_user_info >/dev/null 2>&1 || true
+[ -f /usr/bin/sync_dhcp_user_info ] && sh /usr/bin/sync_dhcp_user_info >/dev/null 2>&1 || true
 
 rm -rf /tmp/luci-modulecache/* /tmp/luci-indexcache 2>/dev/null || true
 log "热修补完成"
