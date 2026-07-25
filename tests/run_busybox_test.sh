@@ -93,14 +93,25 @@ check_marker "overflow-wrap:anywhere" "备注列换行 CSS(overflow-wrap)"
 check_marker "table-layout:fixed" "表格布局:table-layout:fixed"
 check_marker "table.cbi-section-table" "表格布局:table.cbi-section-table"
 
+# --- equal-width fix (mobile): force table layout back under mobile.css flex ---
+# Under device-width<=600px LuCI mobile.css turns the whole table into a flex
+# container and th width stops working; the injected @media query forces it back
+# to a real table with table-layout:fixed and caps name/comment cells at 50%.
+check_marker "@media screen and (max-device-width: 600px)" "移动 media query"
+check_marker "display:table!important" "移动端 table 改回 display:table"
+check_marker "max-width:50%!important" "td max-width:50% 强制等宽"
+
 # --- idempotency: re-run the production script and ensure no duplicate IIFE -----
-# The upgrade sed strips any old/new IIFE line (matched by the td data-name prefix)
-# then re-injects exactly one. After a second run the markers must remain =1.
+# The pre-inject sed strips the old IIFE line (matched by the
+# "table-layout:fixed;width:100%}td.cbi-value-field" prefix, which the new IIFE
+# does NOT contain), then re-injects exactly one gated by the @media guard.
+# After a second run the markers must remain =1.
 echo "--- idempotency: re-run production script, must stay =1 ---"
 sh "$PROD"
 echo "[setup] second production run exited with code $?"
 tl_count=$(grep -c "table-layout:fixed" "$DHCP_JS")
 dc_count=$(grep -c "td.cbi-value-field\[data-name=comment\]" "$DHCP_JS")
+am_count=$(grep -c "@media screen and (max-device-width: 600px)" "$DHCP_JS")
 if [ "$tl_count" = 1 ]; then
     echo "[PASS] table-layout:fixed 仍为 1 (幂等, 无重复 IIFE)"
 else
@@ -111,6 +122,12 @@ if [ "$dc_count" = 1 ]; then
     echo "[PASS] td.cbi-value-field[data-name=comment] 仍为 1 (旧 CSS 残行已清, 未叠加)"
 else
     echo "[FAIL] td.cbi-value-field[data-name=comment] 出现 $dc_count 次 (应为 1)"
+    fail=1
+fi
+if [ "$am_count" = 1 ]; then
+    echo "[PASS] @media screen and (max-device-width: 600px) 仍为 1 (幂等, 无重复 IIFE)"
+else
+    echo "[FAIL] @media screen and (max-device-width: 600px) 出现 $am_count 次 (应为 1)"
     fail=1
 fi
 

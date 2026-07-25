@@ -36,14 +36,15 @@ if [ -f "$DHCP_JS" ]; then
             && log "DHCP_JS: name 列宽设为 20%(与 comment 同宽)" \
             || log "DHCP_JS: name 列宽 FAILED"
     fi
-    # 升级备注列等宽修复: 旧版只有换行 CSS 没有 table-layout, 会被列内容撑破列宽;
-    # 升级为 table-layout:fixed + td 换行(单一 IIFE)。先清旧 IIFE 残行再追加。
-    sed -i '/td.cbi-value-field\[data-name=comment\],td.cbi-value-field\[data-name=name\]{white-space:normal/d' "$DHCP_JS" 2>/dev/null || true
-    if ! grep -q "table-layout:fixed" "$DHCP_JS"; then
-        CSS_SNIP=';(function(){try{var s=document.createElement("style");s.textContent="table.cbi-section-table{table-layout:fixed;width:100%}td.cbi-value-field[data-name=comment],td.cbi-value-field[data-name=name]{white-space:normal;word-break:break-word;overflow-wrap:anywhere}";document.head.appendChild(s);}catch(e){}})();'
+    # 升级备注列等宽修复(覆盖桌面+移动): 桌面用 table-layout:fixed;
+    # 移动(device-width<=600px) LuCI mobile.css 把整个 table 改为 flex, th width 完全失效,
+    # 必须在移动时强制把 cbi-section-table 改回 table 布局 + table-layout:fixed。
+    sed -i '/table-layout:fixed;width:100%}td.cbi-value-field/d' "$DHCP_JS" 2>/dev/null || true
+    if ! grep -q "@media screen and (max-device-width: 600px)" "$DHCP_JS"; then
+        CSS_SNIP=';(function(){try{var s=document.createElement("style");s.textContent="@media screen and (max-device-width: 600px){table.cbi-section-table{display:table!important;table-layout:fixed!important;width:100%!important}table.cbi-section-table>thead{display:table-header-group!important}table.cbi-section-table>tbody{display:table-row-group!important}table.cbi-section-table>tr,table.cbi-section-table>thead>tr,table.cbi-section-table>tbody>tr{display:table-row!important}table.cbi-section-table>th,table.cbi-section-table>td,table.cbi-section-table>thead>tr>th,table.cbi-section-table>tbody>tr>td{display:table-cell!important}}table.cbi-section-table{table-layout:fixed!important;width:100%!important}td.cbi-value-field[data-name=comment],td.cbi-value-field[data-name=name]{white-space:normal!important;word-break:break-word!important;overflow-wrap:anywhere!important;max-width:50%!important}";document.head.appendChild(s);}catch(e){}})();'
         printf '%s\n' "$CSS_SNIP" >> "$DHCP_JS" \
-            && log "DHCP_JS: 注入 table-layout:fixed + 备注列换行 CSS(真正等宽)" \
-            || log "DHCP_JS: table-layout+换行 CSS FAILED"
+            && log "DHCP_JS: 注入双修 CSS(桌面+移动)table-layout:fixed+td换行+max-width:50%" \
+            || log "DHCP_JS: 双修 CSS FAILED"
     fi
     if ! grep -q "max_cols=9" "$DHCP_JS"; then
         sed -i 's/max_cols=8/max_cols=9/g' "$DHCP_JS" \
