@@ -24,7 +24,7 @@ var stp = ss.option(form.Flag, 'stp', _('STP'));
 
 /* hostname column (must come BEFORE the mac column) */
 so=ss.option(form.Value,'name',_('Hostname'));
-so.validate=validateHostname;
+so.datatype = 'hostname';
 so.rmempty = true;
 
 /* mac column — injection anchor (comment is inserted immediately before this line) */
