@@ -39,15 +39,16 @@ filter_clash_smart_weight() {
 	[ -f "$file" ] || return 0
 	grep -q 'smart_weight_data' "$file" 2>/dev/null || return 0
 
-	# Two line forms are possible depending on the package manager / source:
+	# Line forms that may appear in the backup list ($CONFFILES):
 	#   - find/keep.d output (apk & opkg): /etc/openclash/smart_weight_data
 	#   - apk conffiles_static (path<space>sha256): /etc/openclash/smart_weight_data <hash>
-	# Use '#' as the delimiter so the slashes in the path need no escaping.
-	sed -i -e '\#/etc/openclash/smart_weight_data$#d' \
-	       -e '\#/etc/openclash/smart_weight_data[[:space:]]#d' "$file" \
+	#   - OpenClash backup copy: /etc/openclash/smart_weight_data_bak (also large, must drop)
+	# All three share the path prefix /etc/openclash/smart_weight_data, so a single
+	# substring match removes every variant. Use '#' as the delimiter (avoids escaping '/').
+	sed -i -e '\#/etc/openclash/smart_weight_data#d' "$file" \
 		|| logger -t "$SYSCC_TAG" "FAILED to filter smart_weight_data from $file"
 
-	logger -t "$SYSCC_TAG" "excluded /etc/openclash/smart_weight_data from sysupgrade backup"
+	logger -t "$SYSCC_TAG" "excluded /etc/openclash/smart_weight_data (+ _bak etc.) from sysupgrade backup"
 	return 0
 }
 

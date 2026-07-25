@@ -19,7 +19,7 @@ OpenWrt / LibWrt 刷机升级（Sysupgrade）“保留配置”防卡死清理�
 
 该文件被登记为 OpenClash 的 conffile，同时也会被 `/lib/upgrade/keep.d/luci-app-openclash`（内容为 `/etc/openclash/`）整体纳入备份，因此在“保留配置刷机升级”时会被打进 `sysupgrade.tgz`。升级后还原这份超大缓存会让路由器 CPU 100% 满载、Web（LuCI）界面超时卡死。
 
-本插件在固件升级**备份阶段**就把 `smart_weight_data` 从备份列表中剔除，使备份包恢复极小体积，刷机升级**秒级完成**。
+本插件在固件升级**备份阶段**就把 `smart_weight_data` 以及它的备份副本 `smart_weight_data_bak`（同样是几百兆的大文件）从备份列表中剔除，使备份包恢复极小体积，刷机升级**秒级完成**。
 
 ---
 
@@ -37,7 +37,7 @@ OpenWrt / LibWrt 刷机升级（Sysupgrade）“保留配置”防卡死清理�
 
 它在被 source 时：
 1. 定义 `filter_clash_smart_weight()`，用 BusyBox 安全的 `#` 分隔符执行
-   `sed -i '\#/etc/openclash/smart_weight_data$#d' ...` 把目标行从备份列表中删除；
+   `sed -i '\#/etc/openclash/smart_weight_data#d' ...` 把目标行（含 `smart_weight_data`、`smart_weight_data_bak`、apk 的 `path<空格>sha256` 形态）从备份列表中删除；
 2. 把自身函数名追加进 `$sysupgrade_init_conffiles`（幂等），从而在每个升级备份流程末尾被调用。
 
 因为该文件是**包自带、随包安装到 overlay** 的，所以在“保留配置升级”后依然存活、持续生效；失败会经 `logger` 记日志，不会用 `|| true` 掩盖。
