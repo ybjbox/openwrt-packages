@@ -7,7 +7,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=sysupgrade-clash-cleaner
-PKG_VERSION:=1.0.0
+PKG_VERSION:=1.1.0
 PKG_RELEASE:=1
 
 include $(INCLUDE_DIR)/package.mk
@@ -20,15 +20,22 @@ define Package/sysupgrade-clash-cleaner
 endef
 
 define Package/sysupgrade-clash-cleaner/description
-  Automatically filters smart_weight_data files during OpenWrt sysupgrade backup to prevent web UI timeout.
+  Excludes OpenClash's large smart_weight_data cache from the sysupgrade backup list
+  ($CONFFILES) via a package-owned /lib/upgrade drop-in hook, so it is never packed
+  into sysupgrade.tgz during a keep-settings upgrade (prevents CPU 100% / LuCI hang).
 endef
 
 define Build/Compile
 endef
 
 define Package/sysupgrade-clash-cleaner/install
-	$(INSTALL_DIR) $(1)/etc/uci-defaults
-	$(INSTALL_BIN) ./files/etc/uci-defaults/90-sysupgrade-clash-cleaner $(1)/etc/uci-defaults/90-sysupgrade-clash-cleaner
+	# Drop-in hook sourced by /sbin/sysupgrade via `include /lib/upgrade` on every run.
+	# It registers filter_clash_smart_weight() into $sysupgrade_init_conffiles and strips
+	# /etc/openclash/smart_weight_data from the backup list. The file lives in the overlay,
+	# so it survives keep-settings upgrades (unlike /sbin/sysupgrade, which the new image
+	# overwrites). No system binaries are modified.
+	$(INSTALL_DIR) $(1)/lib/upgrade
+	$(INSTALL_DATA) ./files/lib/upgrade/zzz-sysupgrade-clash-cleaner.sh $(1)/lib/upgrade/zzz-sysupgrade-clash-cleaner.sh
 endef
 
 $(eval $(call BuildPackage,sysupgrade-clash-cleaner))
