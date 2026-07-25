@@ -30,6 +30,11 @@ if [ ! -s /etc/config/wireless ]; then
     wifi detect > /etc/config/wireless 2>/dev/null || true
 fi
 
+# LibWrt 25.12 在 wifi up 时才惰性创建 wifi-iface section；
+# 此处先提交并拉起无线，确保后续循环能找到 @wifi-iface 设置 SSID/密码
+uci commit wireless
+wifi up >/dev/null 2>&1 || true
+
 wireless_idx=0
 while uci get wireless.@wifi-iface[$wireless_idx] >/dev/null 2>&1; do
     dev_name=$(uci get wireless.@wifi-iface[$wireless_idx].device)
@@ -97,6 +102,7 @@ sed -i 's/limit-as = 1000/; limit-as = 1000/g' /etc/uwsgi/vassals/*.ini 2>/dev/n
 uci commit network
 uci commit dhcp
 uci commit wireless
+wifi reload >/dev/null 2>&1 || true
 uci commit luci
 
 # 6. 修改默认后台密码
