@@ -36,12 +36,14 @@ if [ -f "$DHCP_JS" ]; then
             && log "DHCP_JS: name 列宽设为 20%(与 comment 同宽)" \
             || log "DHCP_JS: name 列宽 FAILED"
     fi
-    # 备注列(及主机名列)允许换行, 否则长备注 nowrap 撑破 20% 列宽导致两列不等宽
-    if ! grep -q "data-name=comment" "$DHCP_JS"; then
-        CSS_SNIP=';(function(){try{var s=document.createElement("style");s.textContent="td.cbi-value-field[data-name=comment],td.cbi-value-field[data-name=name]{white-space:normal;word-break:break-word;overflow-wrap:anywhere}";document.head.appendChild(s);}catch(e){}})();'
+    # 升级备注列等宽修复: 旧版只有换行 CSS 没有 table-layout, 会被列内容撑破列宽;
+    # 升级为 table-layout:fixed + td 换行(单一 IIFE)。先清旧 IIFE 残行再追加。
+    sed -i '/td.cbi-value-field\[data-name=comment\],td.cbi-value-field\[data-name=name\]{white-space:normal/d' "$DHCP_JS" 2>/dev/null || true
+    if ! grep -q "table-layout:fixed" "$DHCP_JS"; then
+        CSS_SNIP=';(function(){try{var s=document.createElement("style");s.textContent="table.cbi-section-table{table-layout:fixed;width:100%}td.cbi-value-field[data-name=comment],td.cbi-value-field[data-name=name]{white-space:normal;word-break:break-word;overflow-wrap:anywhere}";document.head.appendChild(s);}catch(e){}})();'
         printf '%s\n' "$CSS_SNIP" >> "$DHCP_JS" \
-            && log "DHCP_JS: 注入备注列换行 CSS(确保等宽生效)" \
-            || log "DHCP_JS: 备注列换行 CSS FAILED"
+            && log "DHCP_JS: 注入 table-layout:fixed + 备注列换行 CSS(真正等宽)" \
+            || log "DHCP_JS: table-layout+换行 CSS FAILED"
     fi
     if ! grep -q "max_cols=9" "$DHCP_JS"; then
         sed -i 's/max_cols=8/max_cols=9/g' "$DHCP_JS" \

@@ -86,6 +86,34 @@ check_marker "so.width='20%'"
 check_marker "data-name=comment" "备注列换行 CSS(data-name=comment)"
 check_marker "overflow-wrap:anywhere" "备注列换行 CSS(overflow-wrap)"
 
+# --- equal-width fix: table-layout:fixed makes th width('20%') truly take effect -
+# Without table-layout:fixed the browser ignores th width and the columns are
+# sized by content, so long comments blow the 20% column. This is the core of the
+# verified fix. Checked AFTER the production script runs.
+check_marker "table-layout:fixed" "表格布局:table-layout:fixed"
+check_marker "table.cbi-section-table" "表格布局:table.cbi-section-table"
+
+# --- idempotency: re-run the production script and ensure no duplicate IIFE -----
+# The upgrade sed strips any old/new IIFE line (matched by the td data-name prefix)
+# then re-injects exactly one. After a second run the markers must remain =1.
+echo "--- idempotency: re-run production script, must stay =1 ---"
+sh "$PROD"
+echo "[setup] second production run exited with code $?"
+tl_count=$(grep -c "table-layout:fixed" "$DHCP_JS")
+dc_count=$(grep -c "td.cbi-value-field\[data-name=comment\]" "$DHCP_JS")
+if [ "$tl_count" = 1 ]; then
+    echo "[PASS] table-layout:fixed 仍为 1 (幂等, 无重复 IIFE)"
+else
+    echo "[FAIL] table-layout:fixed 出现 $tl_count 次 (应为 1)"
+    fail=1
+fi
+if [ "$dc_count" = 1 ]; then
+    echo "[PASS] td.cbi-value-field[data-name=comment] 仍为 1 (旧 CSS 残行已清, 未叠加)"
+else
+    echo "[FAIL] td.cbi-value-field[data-name=comment] 出现 $dc_count 次 (应为 1)"
+    fail=1
+fi
+
 # --- column order: comment must appear BEFORE the mac option ----------------
 # Anchor both patterns at line start so a stray mention inside a comment can
 # never be mistaken for the real injected code line.
