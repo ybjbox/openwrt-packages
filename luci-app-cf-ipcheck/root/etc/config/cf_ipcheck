@@ -1,0 +1,41 @@
+config global 'global'
+	# 总开关：关掉时 daemon 空转不测速
+	option enabled '0'
+
+	# 定时周期（小时）
+	option interval_hours '6'
+
+	# 探测目标域名，逗号分隔。必须是真正解析到 Cloudflare 后面的域名，
+	# 否则 --resolve 指到 CF IP 上拿不到正常响应。
+	option probe_domains 'www.cloudflare.com'
+
+	# 探测端口
+	option probe_port '443'
+
+	# 候选池来源
+	option use_official_ranges '1'   # api.cloudflare.com/client/v4/ips 的网段（按 /24 采样）
+	option reuse_last '1'            # 把上一轮入围 IP 带回候选池
+	list community_sources 'https://raw.githubusercontent.com/XIU2/CloudflareSpeedTest/master/ip.txt'
+
+	# 池子与并发
+	option candidate_budget '256'    # 单轮最多探测多少个 IP
+	option concurrency '8'
+	option probe_timeout '5'
+
+	# 判定与排序阈值（毫秒）：total 与 ttfb 双门槛，都过才算达标
+	option ttfb_limit '3000'
+	option total_limit '5000'
+	option keep_count '10'
+
+	# 只给入围 IP 查落地机房（cdn-cgi/trace 的 colo=），多一轮请求
+	option colo_probe '1'
+
+	# ip.txt 注释模板，可用占位符 {colo} {total}
+	option annotate 'cf-ipcheck | {colo} | {total}ms'
+
+	# Gist 上传。token 不放这里的任何字段，只填文件路径，
+	# 由 `cf-ipcheck` 之外的方式写入该文件并 chmod 600。
+	option upload_gist '0'
+	option gist_id ''
+	option gist_file 'cf-ip.txt'
+	option token_file '/etc/cf-ipcheck.token'

@@ -1,0 +1,14 @@
+{
+    "admin/services/cf_ipcheck": {
+        "title": "Cloudflare 优选 IP 实测",
+        "action": {
+            "type": "view",
+            "path": "cf_ipcheck/settings"
+        },
+        "depends": {
+            "acl": [
+                "luci-app-cf-ipcheck"
+            ]
+        }
+    }
+}

@@ -1,0 +1,32 @@
+{
+    "luci-app-cf-ipcheck": {
+        "description": "Grant access to cf-ipcheck configuration and result files",
+        "read": {
+            "file": {
+                "/usr/bin/cf-ipcheck": [
+                    "exec"
+                ],
+                "/tmp/cf-ipcheck/status.json": [
+                    "read"
+                ],
+                "/tmp/cf-ipcheck/result.json": [
+                    "read"
+                ],
+                "/etc/cf-ipcheck/best-ip.txt": [
+                    "read"
+                ],
+                "/etc/cf-ipcheck/result.json": [
+                    "read"
+                ]
+            },
+            "uci": [
+                "cf_ipcheck"
+            ]
+        },
+        "write": {
+            "uci": [
+                "cf_ipcheck"
+            ]
+        }
+    }
+}
