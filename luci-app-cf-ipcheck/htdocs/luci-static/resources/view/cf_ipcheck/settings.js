@@ -70,11 +70,18 @@ function fmtMs(v) {
 	return Number(v).toFixed(1) + ' ms';
 }
 
+/* 吞吐列：没测/测失败时引擎给 null 或 "-"，显示成 — */
+function fmtMbps(v) {
+	if (v == null || v === '' || v === '-' || isNaN(v))
+		return '—';
+	return Number(v).toFixed(2);
+}
+
 /* 结果表：单独抽出来，按钮触发后只重画这一块，不整页闪 */
 function renderTable(st) {
 	var head = [
 		'#', _('IP 地址'), _('状态码'),
-		_('TCP 握手'), _('TLS 握手'), _('TTFB'), _('总计'), _('落地机房')
+		_('TCP 握手'), _('TLS 握手'), _('TTFB'), _('总计'), _('落地机房'), _('下载 MB/s')
 	];
 
 	var tbody = E('tbody', {});
@@ -99,7 +106,8 @@ function renderTable(st) {
 				E('td', { class: 'left' }, fmtMs(it.tls_ms)),
 				E('td', { class: 'left' }, fmtMs(it.ttfb_ms)),
 				E('td', { class: 'left' }, fmtMs(it.total_ms)),
-				E('td', { class: 'left' }, it.colo || '—')
+				E('td', { class: 'left' }, it.colo || '—'),
+				E('td', { class: 'left' }, fmtMbps(it.speed_mbps))
 			]));
 		}
 	}
@@ -129,8 +137,10 @@ function renderTable(st) {
 				_(' 与其他三段的含义：TCP 握手 = 与对端完成三次连接；TLS 握手 = 从连上到 TLS 协商完成（含证书校验）；' +
 				  'TTFB = 发出请求到收到第一个字节的耗时，代表「对端处理 + 回程」，是四个指标里最贴近「打开页面快不快」的一个；' +
 				  '总计 = 整个请求收尾。Cloudflare 是 anycast，同一个 IP 从不同线路会打到不同机房，' +
-				  '所以 ICMP ping 再低也不说明代理能用 —— 只看这四段，且只看带真实 SNI 的 HTTPS 能否走通。' +
-				  '排序按总计升序、同值再看 TTFB；total_limit 与 ttfb_limit 两道门槛都过才算达标。')
+				  '所以 ICMP ping 再低也不说明代理能用 —— 只看这四段、且只看带真实 SNI 的 HTTPS 能否走通。' +
+				  '排序按总计升序、同值再看 TTFB；total_limit 与 ttfb_limit 两道门槛都过才算达标。' +
+				  '最后一列「下载 MB/s」是榜单出来后只对前若干个 IP 串行拉一次大文件测出来的吞吐 —— ' +
+				  '延迟接近的 IP 吞吐可以差几十倍，但单次测量抖动大，所以只拿来参考、不参与排序；没测的显示 —。')
 			])
 		])
 	]);
@@ -420,6 +430,35 @@ return view.extend({
 		o.datatype = 'and(uinteger,min(1),max(100))';
 		o.default = '10';
 
+		o = thr.option(form.Flag, 'speed_probe', _('入围后再测下载速度'),
+			_('延迟榜出来后，只对榜单前 speed_count 个 IP 串行拉一次大文件测 MB/s。' +
+			  '值得测：真机里三个 total 接近的 IP 吞吐差到 50 倍（10.6 / 3.57 / 0.19 MB/s）。' +
+			  '代价是流量，默认 10 × 10MB ≈ 每轮 100MB；不测就关掉，那一列显示 —。'));
+		o.rmempty = false;
+
+		o = thr.option(form.Value, 'speed_count', _('测吞吐的 IP 个数'),
+			_('只对榜单前 N 个测。这一项决定流量，N × speed_bytes 就是每轮的下载量。'));
+		o.datatype = 'and(uinteger,min(0),max(100))';
+		o.default = '10';
+
+		o = thr.option(form.Value, 'speed_bytes', _('单次下载字节数'),
+			_('默认 10MB。别调太小：1MB 样本主要落在 TCP 慢启动上，' +
+			  '真机同一个 IP 两次测出 0.56 与 0.20 MB/s，差 2.8 倍，排名会乱跳。'));
+		o.datatype = 'and(uinteger,min(131072))';
+		o.default = '10485760';
+
+		o = thr.option(form.Value, 'speed_timeout', _('单次吞吐测试超时（秒）'),
+			_('要单独给一个大一点的超时：跨境拉 10MB 常在几秒到几十秒，' +
+			  '复用「单 IP 超时」会把所有测量都截断成 0。'));
+		o.datatype = 'and(uinteger,min(5),max(120))';
+		o.default = '25';
+
+		o = thr.option(form.Value, 'speed_domain', _('吞吐测试地址'),
+			_('默认用 Cloudflare 自己的 speed.cloudflare.com/__down?bytes=N。' +
+			  '它同样是用 --resolve 钉到候选 IP 上访问的，所以测的是那个 IP 的吞吐；' +
+			  '换成你自己域名下的大文件也行（前提是该文件真在 CF 后面）。'));
+		o.default = 'speed.cloudflare.com';
+
 		o = thr.option(form.Flag, 'colo_probe', _('识别落地机房'),
 			_('只对入围 IP 请求 cdn-cgi/trace 取 colo= 字段，多一次请求，用来确认 IP 实际打到哪个机房。'));
 		o.rmempty = false;
@@ -455,6 +494,7 @@ return view.extend({
 			  '两处都取不到才是 n/a。' +
 			  '{total} = 这个 IP 的总耗时毫秒，就是排序用的那个数（保留一位小数）；' +
 			  '把它记在文件里，是为了过几天换线路再测时能对比出差异 —— 此刻达标不代表下次还达标。' +
+			  '{speed} = 实测下载速度 MB/s（只对榜单前若干个 IP 测，没测到是 -）。' +
 			  '其余字符（含 & 和中文）原样输出，同一占位符可以写多次。' +
 			  '默认模板渲染出来是：104.16.202.102:443 cf-ipcheck | LAX | 887.4ms')
 			.format('/etc/cf-ipcheck/best-ip.txt'));

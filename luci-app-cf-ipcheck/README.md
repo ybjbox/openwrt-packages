@@ -280,6 +280,11 @@ ssh root@10.0.0.1 'apk add --allow-untrusted /tmp/luci-app-cf-ipcheck-*.apk'
 | `total_limit` | `5000` | 总耗时上限（毫秒）——两道门槛都过才算达标 |
 | `keep_count` | `10` | 榜单保留条数 |
 | `colo_probe` | `1` | 是否为入围 IP 查落地机房 |
+| `speed_probe` | `1` | 榜单出来后是否再测下载吞吐（关掉即零流量） |
+| `speed_count` | `10` | 只对榜单前 N 个 IP 测吞吐，决定每轮流量 = N × `speed_bytes` |
+| `speed_bytes` | `10485760` | 单次拉多少字节；小于 4MB 时样本主要在看 TCP 慢启动，抖得厉害 |
+| `speed_timeout` | `25` | 单次吞吐测试超时（秒），与 `probe_timeout` 分开 |
+| `speed_domain` | `speed.cloudflare.com` | 吞吐测试地址（同样 `--resolve` 钉到候选 IP 上访问） |
 | `colo_domain` | `www.cloudflare.com` | 探测域名自己取不到 `colo=` 时的兜底域名（EDT/Worker 常把 `/cdn-cgi/trace` 拦成 403） |
 | `canary_check` | `1` | 每轮先用保留地址自检出口有没有被透明代理接管，接管则打标 |
 | `probe_user` | `nobody` | 探测发起身份；nobody 的 gid 65534 正好被 OpenClash 的 mark 链豁免，留空则退回 root（会被接管） |
@@ -342,7 +347,31 @@ cf-ipcheck selftest   # 离线自检，不联网
 | `/tmp/cf-ipcheck/{probed,qualified,ranked,colored}.tsv` | 本轮原始/达标/排序结果，排查“为什么某条没上榜”时看这里 |
 | `/tmp/cf-ipcheck/cf-ipcheck.log` | 运行日志（`logread -e cf-ipcheck` 亦可） |
 
-### `annotate` 注释模板的两个占位符
+### 下载速度实测（只对入围 IP）
+
+延迟/耗时四段解决的是「通不通、快不快到能开始传数据」，解决不了「能跑多少」。
+真机实测：三个 `total` 只差十几毫秒的 IP，拉 10MB 的吞吐是
+**10.6 / 3.57 / 0.19 MB/s**（差的这三个 total 都在同一量级里），差 50 倍；
+另一个 IP 连接就要 1.2 秒、10MB 直接拉不完。所以吞吐是独立的信号，值得测。
+
+但姿势有讲究：
+
+- **只对榜单前 `speed_count`（默认 10）个测**，不对整池测。默认 10 × 10MB ≈ **每轮 100MB 流量**，
+  按 6 小时一轮是 400MB/天；不想要就把 `speed_probe` 关掉，那一列显示 `—`，零开销。
+- **串行测**，绝不并发。并发一起拉会互抢带宽，几个数全被压平，排名反而失真。
+- **样本别太小**：1MB 主要落在 TCP 慢启动上，同一 IP 两次实测 0.56 与 0.20 MB/s（差 2.8 倍）。
+  默认 10MB 就是为了让单次数字稳定到能比较。
+- **单独超时** `speed_timeout`（默认 25 秒）。复用 5 秒的 `probe_timeout` 会把所有吞吐测量都截断成 0。
+- **只展示、不参与排序**（`{speed}` 可以写进注释模板，但排序仍按 `total`→`ttfb`）：
+  吞吐的抖动比延迟大，让它主导榜单会来回跳。
+
+测的是 `speed.cloudflare.com/__down?bytes=N`，同样用 `--resolve` 钉在候选 IP 上访问，
+所以量到的是那个 IP 的吞吐；换成你自己域名下的大文件也可以（`speed_domain`）。
+结果落在 `colored.tsv` 第 8 列、`result.json` 的 `speed_mbps`（没测到是 `null`），
+以及 `best-ip.txt` 的 `{speed}` 占位符（没测到是 `-`）。
+
+### `annotate` 注释模板的三个占位符
+
 
 整行格式固定为 `IP:端口 注释`，模板只决定“注释”那一段；注释会先去掉首尾空格，
 所以**只填一个空格 = 只要 `IP:端口`、不要注释**。注意别把这一项整个清空：
@@ -353,6 +382,7 @@ uci 分不清“显式留空”和“没这一项”（实测 `uci -q get` 对�
 | :--- | :--- | :--- |
 | `{colo}` | 入围 IP 请求 `https://<探测域名>/cdn-cgi/trace` 返回的 `colo=`；取不到就用 `colo_domain`（默认 `www.cloudflare.com`）再试一次 | 落地机房代码（LAX / NRT / FRA…）。同一批入围里哪些其实落到不同机房，一眼看得出来。EDT / Worker 类节点域名通常把 `/cdn-cgi/trace` 拦成 403，所以这层兜底是必须的，否则整列都是 `n/a`；关掉 `colo_probe` 也会是 `n/a` |
 | `{total}` | curl 的 `%{time_total}`（毫秒，保留一位小数，也就是排序用的那个数） | 把“当初测到多少”记在文件里，换线路或过几天再测时能对比出差异；此刻达标不代表下次还达标 |
+| `{speed}` | `speed_of()` 拉 `speed_domain` 的 `__down?bytes=speed_bytes` 得到的 `%{speed_download}`，换算成 MB/s（两位小数） | 吞吐。**只对榜单前 `speed_count` 个 IP 有值**，其余（以及关掉吞吐测试时）是 `-` |
 
 默认模板 `cf-ipcheck | {colo} | {total}ms` 渲染出来：
 

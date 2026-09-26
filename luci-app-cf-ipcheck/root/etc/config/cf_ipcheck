@@ -69,6 +69,16 @@ config global 'global'
 	# 拦成 403），改用这个域名 + 同一个候选 IP 再取一次。保持默认即可。
 	option colo_domain 'www.cloudflare.com'
 
+	# 下载速度实测：延迟榜出来后，只对榜单前 speed_count 个 IP **串行**拉
+	# speed_domain 的 __down?bytes=speed_bytes，量 MB/s（并发一起拉会互抢带宽，
+	# 数字全废）。要单独一个超时：跨境拉 10MB 常在几秒到几十秒，复用 probe_timeout
+	# 会把所有测量都截断成 0。代价是流量：默认 10 × 10MB = 每轮约 100MB。
+	option speed_probe '1'
+	option speed_count '10'
+	option speed_bytes '10485760'
+	option speed_timeout '25'
+	option speed_domain 'speed.cloudflare.com'
+
 	# 出口接管自检：每轮先用 RFC 5737 保留地址探一次。保留地址本该连不上，
 	# 一旦它返回任何 HTTP 状态码，说明本机 443 被 OpenClash 之类透明代理接管，
 	# --resolve 钉的 IP 没参与选路，本轮榜单数字不可信（页面会红条提示）。
@@ -80,9 +90,10 @@ config global 'global'
 	# 留空则退回 root 直发。
 	option probe_user 'nobody'
 
-	# ip.txt 注释模板，两个占位符：{colo}=落地机房代码（cdn-cgi/trace 的 colo=），
-	# {total}=总耗时毫秒（排序用的那个数）。渲染结果会去掉首尾空格，
-	# 所以只想输出「IP:端口」就把这里填成一个空格；整个留空会回到默认模板。
+	# ip.txt 注释模板，三个占位符：{colo}=落地机房代码（cdn-cgi/trace 的 colo=），
+	# {total}=总耗时毫秒（排序用的那个数），{speed}=实测下载 MB/s（没测到是 -）。
+	# 渲染结果会去掉首尾空格，所以只想输出「IP:端口」就把这里填成一个空格；
+	# 整个留空会回到默认模板（uci 分不清“显式留空”和“没这一项”）。
 	option annotate 'cf-ipcheck | {colo} | {total}ms'
 
 	# Gist 上传。令牌可以直接写进下面的 gist_token（内容只是优选 IP，泄露代价低，

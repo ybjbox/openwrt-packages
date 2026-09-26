@@ -89,6 +89,11 @@ load_config() {
 	C_COLOR=$(cfg colo_probe 1)
 	C_COLODOMAIN=$(cfg colo_domain 'www.cloudflare.com')
 	C_CANARY=$(cfg canary_check 1)
+	C_SPEED=$(cfg speed_probe 1)
+	C_SPEEDN=$(cfg speed_count 10)
+	C_SPEEDKB=$(cfg speed_bytes 10485760)
+	C_SPEEDTO=$(cfg speed_timeout 25)
+	C_SPEEDDOM=$(cfg speed_domain 'speed.cloudflare.com')
 	C_PUSER=$(cfg probe_user nobody)
 	C_ANNOT=$(cfg annotate 'cf-ipcheck | {colo} | {total}ms')
 	C_GIST=$(cfg gist_id '')
@@ -465,12 +470,12 @@ check_sources() {
 	printf ']\n'
 }
 
-# 注释模板渲染：把 {colo} / {total} 换成这一行的值。
+# 注释模板渲染：把 {colo} / {total} / {speed} 换成这一行的值。
 # 不用 sed：`s/{colo}/$colo/g` 在 colo=n/a 时会被斜杠截断（sed 直接报
-# unknown command，结果 IP.txt 里留下没展开的 {colo}），值里带 & 也会被 sed
+# unknown command，结果 best-ip.txt 里留下没展开的 {colo}），值里带 & 也会被 sed
 # 当成“整段匹配”插回去。这里用纯字符串替换，什么字符都能安全落地。
-render_annotate() { # $1=模板 $2=colo $3=total
-	printf '%s\n' "$1" | awk -v colo="$2" -v tot="$3" '
+render_annotate() { # $1=模板 $2=colo $3=total $4=speed
+	printf '%s\n' "$1" | awk -v colo="$2" -v tot="$3" -v spd="${4:--}" '
 	function rep(s, key, val,   out, i) {
 		out = ""
 		while ((i = index(s, key)) > 0) {
@@ -479,7 +484,19 @@ render_annotate() { # $1=模板 $2=colo $3=total
 		}
 		return out s
 	}
-	{ print rep(rep($0, "{colo}", colo), "{total}", tot) }'
+	{ print rep(rep(rep($0, "{colo}", colo), "{total}", tot), "{speed}", spd) }'
+}
+
+# ---------------- 下载速度（只对入围 IP）-----------------------------------
+# 为什么要单独测：延迟不够用。真机实测三个都上了榜的 IP，拉 10MB 的吞吐
+# 分别是 10.6 / 3.57 / 0.19 MB/s —— 差 50 倍，而它们的 total 挤在同一量级里。
+# 反过来 1MB 样本抖得没法用（同一 IP 两次差 2.8 倍，那基本是在测 TCP 慢启动），
+# 所以默认拉 10MB；并且只串行测 —— 并发一起拉会互抢带宽，测出来全是被压平的假数。
+speed_of() { # $1=IP -> MB/s（两位小数）；测不出来返回 0.00
+	[ -n "$1" ] || return 0
+	out=$(run_probe "curl -4 -o $NULL_DEV -sS --connect-timeout $C_TIMEOUT --max-time $C_SPEEDTO --resolve $C_SPEEDDOM:$C_PORT:$1 https://$C_SPEEDDOM/__down?bytes=$C_SPEEDKB -w '%{speed_download}'" 2>/dev/null)
+	[ -n "$out" ] || out=0
+	printf '%s' "$out" | awk '{ printf "%.2f", ($1 + 0) / 1048576 }'
 }
 
 write_outputs() {
@@ -499,15 +516,35 @@ write_outputs() {
 		colo=''
 		[ "$C_COLOR" = 1 ] && colo=$(colo_of "$ip")
 		[ -n "$colo" ] || colo='n/a'
-		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$ip" "$code" "$c" "$tls" "$ttfb" "$tot" "$colo" >>"$colored"
+		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\n' "$ip" "$code" "$c" "$tls" "$ttfb" "$tot" "$colo" >>"$colored"
 	done <"$RUN_DIR/ranked.tsv"
 
+	# 第 8 列是下载速度（MB/s）。只对榜单前 speed_count 个串行实测，
+	# 其余留 `-`；关了 speed_probe 就整列都是 `-`（零流量开销）。
+	if [ "$C_SPEED" = 1 ]; then
+		sp_tmp=$RUN_DIR/colored_sp.tsv
+		: >"$sp_tmp"
+		k=0
+		sum=''
+		while IFS="$(printf '\t')" read -r ip code c tls ttfb tot colo spd; do
+			[ -n "$ip" ] || continue
+			if [ "$k" -lt "$C_SPEEDN" ] && [ ! -f "$STOP" ]; then
+				spd=$(speed_of "$ip")
+				k=$((k + 1))
+				sum="$sum $ip=${spd}MB/s"
+			fi
+			printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$ip" "$code" "$c" "$tls" "$ttfb" "$tot" "$colo" "$spd" >>"$sp_tmp"
+		done <"$colored"
+		mv "$sp_tmp" "$colored"
+		[ "$k" = 0 ] || log "吞吐实测$k 个（每个 $C_SPEEDKB 字节）:$sum"
+	fi
+
 	: >"$tmp"
-	while IFS="$(printf '\t')" read -r ip code c tls ttfb tot colo; do
+	while IFS="$(printf '\t')" read -r ip code c tls ttfb tot colo spd; do
 		[ -n "$ip" ] || continue
 		# 渲染后去掉首尾空白：模板填成一个空格 = 只要 IP:端口（uci 分不清
 		# “显式留空”和“没这一项”，真空值取回来是 rc=1，会落回默认模板）。
-		ann=$(render_annotate "$C_ANNOT" "$colo" "$tot" | sed -e 's/^[ \t]*//' -e 's/[ \t]*$//')
+		ann=$(render_annotate "$C_ANNOT" "$colo" "$tot" "$spd" | sed -e 's/^[ \t]*//' -e 's/[ \t]*$//')
 		if [ -n "$ann" ]; then
 			printf '%s:%s %s\n' "$ip" "$C_PORT" "$ann" >>"$tmp"
 		else
@@ -523,8 +560,9 @@ write_outputs() {
 		awk 'BEGIN{FS="\t"}
 			NF >= 7 {
 				if (n++) printf ","
-				printf "{\"ip\":\"%s\",\"code\":%s,\"connect_ms\":%s,\"tls_ms\":%s,\"ttfb_ms\":%s,\"total_ms\":%s,\"colo\":\"%s\"}",
-					$1, $2, $3, $4, $5, $6, $7
+				sp = ($8 == "" || $8 == "-") ? "null" : $8
+				printf "{\"ip\":\"%s\",\"code\":%s,\"connect_ms\":%s,\"tls_ms\":%s,\"ttfb_ms\":%s,\"total_ms\":%s,\"colo\":\"%s\",\"speed_mbps\":%s}",
+					$1, $2, $3, $4, $5, $6, $7, sp
 			}' "$colored"
 		printf ']}'
 	} >"$RUN_DIR/result.tmp" && mv "$RUN_DIR/result.tmp" "$RESULT"
@@ -745,8 +783,17 @@ selftest() {
 	check '模板里的 & 原样保留、不被当成整段匹配' "$got" 'a&b SIN'
 	got=$(sh "$0" _annot '{total}/{total}' 'X' '9' 2>/dev/null)
 	check '同一占位符出现多次都替换' "$got" '9/9'
-	got=$(sh "$0" _annot 'plain' 'X' '9' 2>/dev/null)
-	check '没有占位符时原样输出' "$got" 'plain'
+	got=$(sh "$0" _annot 'plain text' 'X' '9' 2>/dev/null)
+	check '没有占位符时原样输出' "$got" 'plain text'
+	got=$(sh "$0" _annot 'a {speed} b' 'LAX' '1' '10.60' 2>/dev/null)
+	check '模板支持 {speed} 占位符' "$got" 'a 10.60 b'
+	got=$(sh "$0" _annot 'a {speed} b' 'LAX' '1' 2>/dev/null)
+	check '没测速度时 {speed} 渲染成 -' "$got" 'a - b'
+	# bytes/s -> MB/s；10485760B/s 应是 10.00
+	got=$(sh "$0" _speedfmt 10485760 2>/dev/null)
+	check '吞吐单位换算成 MB/s（两位小数）' "$got" '10.00'
+	got=$(sh "$0" _speedfmt '' 2>/dev/null)
+	check '没测到吞吐时是 0.00 而不是空' "$got" '0.00'
 
 	if [ "$fails" = 0 ]; then
 		echo '[OK] selftest 全部通过'
@@ -812,6 +859,7 @@ case "${1:-}" in
 		load_config
 		probe_cmd "${2:-1.2.3.4}" "${3:-example.com}" "${4:-/}"
 		printf '\n' ;;
-	_annot)  render_annotate "${2:-}" "${3:-}" "${4:-}" ;;
+	_annot)  render_annotate "${2:-}" "${3:-}" "${4:-}" "${5:--}" ;;
+	_speedfmt) printf '%s' "${2:-0}" | awk '{ printf "%.2f", ($1 + 0) / 1048576 }' ;;
 	*)       usage; exit 2 ;;
 esac
