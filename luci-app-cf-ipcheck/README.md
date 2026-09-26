@@ -75,18 +75,28 @@ ssh root@10.0.0.1 'apk add --allow-untrusted /tmp/luci-app-cf-ipcheck-*.apk'
   status JSON 生成 10 行 × 8 列，三个按钮的 click 处理函数均已挂上。
 - SDK 构建：`x86_64-25.12.5` 与 `aarch64_cortex-a53-25.12.5` 两个镜像下
   `make package/luci-app-cf-ipcheck/compile` + `make package/index` 全绿，
-  产物为 `bin/packages/<arch>/action/luci-app-cf-ipcheck-1.0.0-r1.apk`（13707 B，
-  以 `ADBd` 开头，apk 记账里 `A:noarch`）。
+  产物为 `bin/packages/<arch>/action/luci-app-cf-ipcheck-<version>-r<release>.apk`
+  （首验那次是 `…-1.0.0-r1.apk`，13707 B，头 4 字节 `ADBd`，apk 记账里 `A:noarch`；
+  执行位修好后 PKG_RELEASE 抬到 2，改过内容就要抬 release）。
 - 该产物已在这台设备上 `apk add --allow-untrusted` 装成功（`OK: 177.2 MiB in 505 packages`）。
   第一次装的时候暴露出真缺陷：`root/etc/init.d/cf-ipcheck` 与 `root/usr/bin/cf-ipcheck`
   在仓库里是 100644，装到设备上成了 `-rw-r--r--`，procd 的 enable/start 与
   rpcd 的 `file.exec` 全都 Permission denied —— 手工 chmod 会把这个问题一直藏着。
   现已 `git update-index --chmod=+x` 修正，并由 `tests/lint.sh` 的 [6/6] 钉死。
+- 修好之后重新 `apk del` + `apk add` 干净走过一遍：post-install 不再报错，
+  两个可执行文件直接以 `-rwxr-xr-x` 落盘，`/etc/rc.d/S99cf-ipcheck` 由 enable 建出来，
+  `/etc/init.d/cf-ipcheck status` = running，`selftest` 全通过；
+  装好的 `/usr/bin/cf-ipcheck` 与 `/etc/config/cf_ipcheck` 的 md5 与仓库 blob 一致
+  （init.d 与 config 在打包中不改写；`settings.js` 会被 luci.mk 压成一行，
+  实测压缩版仍能正常构建页面 DOM）。
 
 未覆盖：肉眼在普通浏览器里看整页排版（验证用的内嵌页签
 `document.hidden=true` 且 `requestAnimationFrame` 不触发，LuCI 的视图引导和
 CBI `Map.render()` 在这种页签里根本不会完成 —— 同环境下已装的
-luci-app-dhcp-comment 一样停在「正在载入视图」，故与本包无关）。
+luci-app-dhcp-comment 一样停在「正在载入视图」，一个空的 `new form.Map()` 也不 resolve，
+故与本包无关）。视图代码是拿设备自带的 `form/rpc/ui/view` 直接编译执行
+`load()`/`render()` 验的（含 luci.mk 压缩后的那一份），
+表头 8 列、榜单 10 行、meta 行与三个按钮的处理函数都已逐项核对。
 
 ## 配置项
 
