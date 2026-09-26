@@ -79,6 +79,7 @@ load_config() {
 	C_GIST=$(cfg gist_id '')
 	C_GISTFILE=$(cfg gist_file 'cf-ip.txt')
 	C_TOKEN=$(cfg token_file '/etc/cf-ipcheck.token')
+	C_GISTTOK=$(cfg gist_token '')
 	C_INTERVAL=$(cfg interval_hours 6)
 	C_UPLOAD=$(cfg upload_gist 0)
 	SOURCES=$(cfg_list community_sources)
@@ -155,7 +156,7 @@ pool_official() {
 pool_community() {
 	per=${1:-0}
 	for s in $SOURCES; do
-		out=$(curl -4 -fsSL --max-time 30 -A 'cf-ipcheck/1.0' "$s" 2>/dev/null | \
+		out=$(curl -4 -fsSL --max-time 12 -A 'cf-ipcheck/1.0' "$s" 2>/dev/null | \
 			grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?' | expand_prefixes)
 		if [ -z "$out" ]; then
 			# 记日志而不是静默：社区源改路径/换分支是很常见的事
@@ -357,6 +358,83 @@ probe_cmd() { # $1=IP $2=域名 $3=额外 path -> 拼出 curl 命令串
 		"$C_TIMEOUT" "$C_TIMEOUT" "$2" "$C_PORT" "$1" "$2" "${3:-/}"
 }
 
+# ---------------- 源可用性检测 ---------------------------------------------
+# $1 = 空格分隔的 CIDR 列表；stdin = 每行一个 IPv4 -> stdout = 落在这些段内的条数。
+# BusyBox awk 没有按位与，所以用「整除到块号」来判成员：blk = 2^(32-mask)，
+# int(v/blk) == int(base/blk) 即同段。
+cf_count_in() {
+	awk -v nets="$1" '
+	BEGIN {
+		n = split(nets, na, " ")
+		for (i = 1; i <= n; i++) {
+			split(na[i], p, "/")
+			m = (p[2] == "" ? 32 : p[2] + 0)
+			blk[i] = 2 ^ (32 - m)
+			split(p[1], o, ".")
+			base[i] = int((o[1] * 16777216 + o[2] * 65536 + o[3] * 256 + o[4]) / blk[i])
+		}
+	}
+	/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {
+		split($1, q, ".")
+		v = q[1] * 16777216 + q[2] * 65536 + q[3] * 256 + q[4]
+		for (i = 1; i <= n; i++) if (int(v / blk[i]) == base[i]) { c++; next }
+	}
+	END { print c + 0 }'
+}
+
+# 逐源体检的两个部件：check_one_source 检一条，check_sources 并发调度并按序拼 JSON。
+# 每条输出 HTTP 状态 / 提取到多少个 IPv4 / 其中多少个落在 CF 官方段内。
+# 段内占比是收录标准 —— 哪条源改路径了、哪条开始吐非 Cloudflare 的中转 IP，
+# 在这里一眼就能看到（页面「源可用性检测」读的就是这个输出）。
+check_one_source() { # $1=url $2=序号 —— 结果写进 $RUN_DIR/cs.out.<序号>
+	body=$RUN_DIR/cs.body.$2
+	code=$(curl -4 -fsSL --max-time 12 -A 'cf-ipcheck/1.0' -o "$body" \
+		-w '%{http_code}' "$1" 2>/dev/null)
+	rc=$?
+	ips=$(grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' "$body" 2>/dev/null | sort -u)
+	rm -f "$body"
+	n=0
+	[ -n "$ips" ] && n=$(printf '%s\n' "$ips" | grep -c .)
+	incf=-1
+	if [ "$n" != 0 ] && [ -n "$CF_NETS" ]; then
+		incf=$(printf '%s\n' "$ips" | cf_count_in "$CF_NETS")
+	fi
+	printf '{"url":"%s","http":"%s","rc":%s,"ips":%s,"cf_in":%s}' \
+		"$(printf '%s' "$1" | sed 's/"/\\"/g')" "${code:-000}" "${rc:-0}" "$n" "$incf" \
+		>"$RUN_DIR/cs.out.$2"
+}
+
+# 并发是必须的：串行 13 个源最坏要 13×12 秒，页面上转圈转得人怀疑人生。
+check_sources() {
+	load_config
+	i=0
+	n=0
+	CF_NETS=$(curl -4 -fsS --max-time 20 https://api.cloudflare.com/client/v4/ips 2>/dev/null | \
+		official_cidrs | tr '\n' ' ')
+	export CF_NETS
+	[ -n "$CF_NETS" ] || log '拿不到官方网段，段内占比一律记 -1'
+	for s in $SOURCES; do
+		[ -n "$s" ] || continue
+		n=$((n + 1))
+		check_one_source "$s" "$n" &
+		i=$((i + 1))
+		[ "$i" -ge 4 ] && { wait; i=0; }
+	done
+	wait
+
+	printf '['
+	first=1
+	k=1
+	while [ -f "$RUN_DIR/cs.out.$k" ]; do
+		[ "$first" = 1 ] || printf ','
+		first=0
+		printf '%s' "$(cat "$RUN_DIR/cs.out.$k")"
+		rm -f "$RUN_DIR/cs.out.$k"
+		k=$((k + 1))
+	done
+	printf ']\n'
+}
+
 # ---------------- 落地输出 -------------------------------------------------
 write_outputs() {
 	ranked=$1
@@ -412,8 +490,17 @@ json_escape_file() { # $1=path -> 输出带引号的 JSON 字符串
 upload_gist() {
 	[ -s "$BEST" ] || { log '无结果可上传'; return 1; }
 	[ -n "$C_GIST" ] || { log '未配置 gist_id，跳过上传'; return 1; }
-	[ -f "$C_TOKEN" ] || { log "缺 token 文件 $C_TOKEN"; return 1; }
-	tok=$(cat "$C_TOKEN")
+	# token 优先读 UCI 里的 gist_token（Ryan 定的：内容只是优选 IP，泄露代价低），
+	# 没填再退回 token_file，老部署方式照常可用。两条路都不把令牌写进日志。
+	tok=$C_GISTTOK
+	if [ -z "$tok" ]; then
+		if [ ! -f "$C_TOKEN" ]; then
+			log '既没填 gist_token，也没有 token 文件，跳过上传'
+			return 1
+		fi
+		tok=$(cat "$C_TOKEN")
+	fi
+	[ -n "$tok" ] || { log 'token 是空串，跳过上传'; return 1; }
 	content=$(json_escape_file "$BEST")
 	payload=$(printf '{"files":{"%s":{"content":%s}}}' "$C_GISTFILE" "$content")
 	if curl -4 -fsS -X PATCH "https://api.github.com/gists/$C_GIST" \
@@ -567,6 +654,18 @@ selftest() {
 	got=$(sh "$0" _canaryv '' 2>/dev/null)
 	check '空状态码判为正常' "$got" 'clean'
 
+	# 源体检要算「这个 IP 落不落在 CF 官方段内」。BusyBox awk 没有按位与，
+	# 这里用整除到块号来判成员，边界必须单独钉住：/13 覆盖 104.16~104.23，
+	# /17 覆盖 198.41.128.0~198.41.255.255。
+	got=$(printf '104.16.202.102\n104.23.255.255\n104.24.0.1\n172.64.100.5\n108.61.242.146\n' | \
+		sh "$0" _cfin "104.16.0.0/13 172.64.0.0/13 198.41.128.0/17" 2>/dev/null)
+	check '段内成员判定（/13 上边界含 104.23，段外不计）' "$got" '3'
+	got=$(printf '198.41.128.0\n198.41.255.255\n198.42.0.1\n' | \
+		sh "$0" _cfin "198.41.128.0/17" 2>/dev/null)
+	check '/17 两端都算段内' "$got" '2'
+	got=$(printf '1.1.1.1\n' | sh "$0" _cfin "" 2>/dev/null)
+	check '没有网段时算出 0 而不是报错' "$got" '0'
+
 	if [ "$fails" = 0 ]; then
 		echo '[OK] selftest 全部通过'
 		return 0
@@ -584,6 +683,7 @@ usage() {
   show      以人类可读形式输出榜单
   pool      只打印本轮会用的候选 IP 列表（联网取源，不测速）——核对源配置用
   canary    只跑一次出口接管自检，输出 {"intercepted":0|1}
+  check-sources  逐个源体检：HTTP 状态 / 提取到的 IPv4 数 / 落在 CF 官方段内的数量
   colo IP   查询单个 IP 的落地机房代码（如 SIN/NRT/HKG）
   stop      请求当前这一轮尽快收尾
   daemon    常驻，按 interval_hours 循环
@@ -603,6 +703,7 @@ case "${1:-}" in
 	show)    if [ -s "$BEST" ]; then cat "$BEST"; else echo '尚无结果，先执行 cf-ipcheck run'; fi ;;
 	pool)    load_config; build_pool ;;
 	canary)  load_config; printf '{"intercepted":%s}\n' "$(canary_check)" ;;
+	check-sources) check_sources ;;
 	colo)    load_config; colo_of "${2:-}"
 			 printf '\n' ;;
 	stop)    : >"$STOP"; echo '已请求停止（当前这一轮结束后不再继续探测）' ;;
@@ -624,5 +725,6 @@ case "${1:-}" in
 	_cidrs)  official_cidrs ;;
 	_sample) sample_lines "${2:-256}" ;;
 	_canaryv) canary_verdict "${2:-}" ;;
+	_cfin)   cf_count_in "${2:-}" ;;
 	*)       usage; exit 2 ;;
 esac

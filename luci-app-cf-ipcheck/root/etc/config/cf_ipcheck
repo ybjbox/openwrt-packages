@@ -17,17 +17,38 @@ config global 'global'
 	# 想要更大覆盖面就把 use_official_ranges 打开，官方段会抽稀填满剩余名额。
 	option use_official_ranges '0'   # api.cloudflare.com/client/v4/ips 的网段（按 /24 采样）
 	option reuse_last '1'            # 把上一轮入围 IP 带回候选池
-	# 社区源只是"别人替你挑出来的种子"，好坏仍以本机实测为准；
-	# 每条都要求提取到的 IPv4 绝大多落在 Cloudflare 官方段内（2026-09-27 逐个
-	# 用 api.cloudflare.com/client/v4/ips 核过比例，见 README）。
+	# 社区源只是"别人替你挑出来的种子"，好坏仍以本机实测为准。
+	# 每条下面的注释格式：段内/提取数 · 原始出处（2026-09-27 用
+	# api.cloudflare.com/client/v4/ips 逐条算过占比）。bestcf.pages.dev 是别人的
+	# 聚合镜像（缓存各家清单，直连原始 API 会超时才用），其余都是作者自己的仓库。
+	# 页面上有「源可用性检测」按钮，能直接看每条源现在的 HTTP 状态与段内占比。
+	# 别把清单里的 IP 当成可用性的结论：mix.txt / mix2.txt 那种几百条的"优选清单"
+	# 实测一条都不在 CF 段内（Vultr、腾讯云的中转机），不要往这儿加。
+	# CF 各段入口代表清单，47/50 段内
 	list community_sources 'https://bestcf.pages.dev/entryip/50.txt'
+	# CFYes，12/12；原始 https://addressesapi.090227.xyz/CloudFlareYes（实测会超时）
 	list community_sources 'https://bestcf.pages.dev/cfyes/ipv4.txt'
+	# WeTest，17/17；原始 https://www.wetest.vip/page/cloudfront/address_v4.html
 	list community_sources 'https://bestcf.pages.dev/wetest/ipv4.txt'
+	# IRCF，10/10；站内未标原始出处
 	list community_sources 'https://bestcf.pages.dev/ircf/ipv4.txt'
+	# NiREvil，35/37；站内未标原始出处
 	list community_sources 'https://bestcf.pages.dev/nirevil/ipv4.txt'
+	# ymyuuu/IPDB（每小时更新的实测优选），10/10
 	list community_sources 'https://raw.githubusercontent.com/ymyuuu/IPDB/main/BestCF/bestcfv4.txt'
+	# hubbylei/bestcf，10/10
 	list community_sources 'https://raw.githubusercontent.com/hubbylei/bestcf/main/bestcf.txt'
+	# gslege/CloudflareIP 多地区合并，100/100
 	list community_sources 'https://raw.githubusercontent.com/gslege/CloudflareIP/main/All.txt'
+	# LancelotRar/best-cf-ips（各家采集聚合），75/77
+	list community_sources 'https://raw.githubusercontent.com/LancelotRar/best-cf-ips/refs/heads/main/best-cf-ip-collected.txt'
+	# joname1/BestCFip，90/91
+	list community_sources 'https://raw.githubusercontent.com/joname1/BestCFip/refs/heads/main/ipv4.txt'
+	# Senflare/Senflare-IP，27/27
+	list community_sources 'https://raw.githubusercontent.com/Senflare/Senflare-IP/refs/heads/main/IPlist-Pro.txt'
+	# einsitang/my-fast-cf-ip，20/20
+	list community_sources 'https://raw.githubusercontent.com/einsitang/my-fast-cf-ip/refs/heads/master/fastips.txt'
+	# XIU2/CloudflareSpeedTest 官方段 CIDR 清单，25/25 段
 	list community_sources 'https://raw.githubusercontent.com/XIU2/CloudflareSpeedTest/master/ip.txt'
 
 	# 池子与并发
@@ -57,9 +78,12 @@ config global 'global'
 	# ip.txt 注释模板，可用占位符 {colo} {total}
 	option annotate 'cf-ipcheck | {colo} | {total}ms'
 
-	# Gist 上传。token 不放这里的任何字段，只填文件路径，
-	# 由 `cf-ipcheck` 之外的方式写入该文件并 chmod 600。
+	# Gist 上传。令牌可以直接写进下面的 gist_token（内容只是优选 IP，泄露代价低，
+	# 按 Ryan 的要求走这条路）；也可以留空、改用 token_file 指向的文件。
+	# 两处都填时以 gist_token 为准。注意：写在配置里会随 sysupgrade 备份走，
+	# 也对该页面上网可见，所以只放“仅需 gist 权限”的经典令牌。
 	option upload_gist '0'
 	option gist_id ''
 	option gist_file 'cf-ip.txt'
+	option gist_token ''
 	option token_file '/etc/cf-ipcheck.token'

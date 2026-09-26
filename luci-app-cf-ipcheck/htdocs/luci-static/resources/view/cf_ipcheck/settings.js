@@ -123,6 +123,14 @@ function renderTable(st) {
 						}))
 				]),
 				tbody
+			]),
+			E('p', { class: 'small' }, [
+				E('abbr', { title: _('Time To First Byte，首字节时间') }, _('TTFB')),
+				_(' 与其他三段的含义：TCP 握手 = 与对端完成三次连接；TLS 握手 = 从连上到 TLS 协商完成（含证书校验）；' +
+				  'TTFB = 发出请求到收到第一个字节的耗时，代表「对端处理 + 回程」，是四个指标里最贴近「打开页面快不快」的一个；' +
+				  '总计 = 整个请求收尾。Cloudflare 是 anycast，同一个 IP 从不同线路会打到不同机房，' +
+				  '所以 ICMP ping 再低也不说明代理能用 —— 只看这四段，且只看带真实 SNI 的 HTTPS 能否走通。' +
+				  '排序按总计升序、同值再看 TTFB；total_limit 与 ttfb_limit 两道门槛都过才算达标。')
 			])
 		])
 	]);
@@ -165,11 +173,75 @@ function autoRefresh(node) {
 		node.__cf_timer = timer;
 }
 
+/* 源可用性检测：逐条 URL 看 HTTP 状态、提取到多少 IPv4、其中多少落在 CF 官方段内。
+ * 后两列是收录标准 —— 段内占比掉下来就说明源换内容了（比如开始吐中转 IP）。 */
+function renderSources(rows) {
+	var head = [_('源 URL'), _('HTTP'), _('提取到 IPv4'), _('落在 CF 段内'), _('段内占比')];
+	var tbody = E('tbody', {});
+
+	if (!rows.length) {
+		tbody.appendChild(E('tr', {}, [
+			E('td', { colspan: String(head.length), class: 'center' }, _('没有配置社区源，或检测没返回内容'))
+		]));
+	}
+
+	for (var i = 0; i < rows.length; i++) {
+		var r = rows[i];
+		var pct = (r.ips > 0 && r.cf_in >= 0) ? Math.round(100 * r.cf_in / r.ips) : null;
+		var cls = 'left';
+		if (r.http === '000' || !r.http || r.rc !== 0)
+			cls = 'left warning';
+		else if (pct != null && pct < 90)
+			cls = 'left notice';
+		tbody.appendChild(E('tr', { class: cls }, [
+			E('td', { class: 'left mono' }, String(r.url || '')),
+			E('td', { class: 'left' }, r.http ? String(r.http) : _('拉不到')),
+			E('td', { class: 'left' }, String(r.ips != null ? r.ips : '—')),
+			E('td', { class: 'left' }, r.cf_in < 0 ? '—' : String(r.cf_in)),
+			E('td', { class: 'left' }, pct == null ? '—' : pct + ' %')
+		]));
+	}
+
+	return E('div', { class: 'table cbi-section-table' }, [
+		E('thead', {}, [E('tr', { class: 'tr table-titles' },
+			head.map(function (t) { return E('th', { class: 'th' }, t); }))]),
+		tbody
+	]);
+}
+
+function checkSources(btn) {
+	var host = document.getElementById('cf-ipcheck-sources-host');
+	if (btn) {
+		btn.disabled = true;
+		btn.textContent = _('检测中…');
+	}
+	if (host)
+		host.innerHTML = '<em>' + _('正在逐个拉取源并比对 Cloudflare 官方网段…') + '</em>';
+
+	return execCfIpcheck(['check-sources']).then(function (out) {
+		var rows = [];
+		try {
+			rows = JSON.parse(out || '[]');
+		} catch (e) {
+			rows = [];
+		}
+		if (host) {
+			host.innerHTML = '';
+			host.appendChild(renderSources(Array.isArray(rows) ? rows : []));
+		}
+		if (btn) {
+			btn.disabled = false;
+			btn.textContent = _('重新检测');
+		}
+	});
+}
+
 /* 按钮事件：Map 节点 resolve 出来后才能拿到 id，所以带重试地绑 */
 function bindButtons(tableNode, st, tries) {
 	var run = document.getElementById('cf-ipcheck-run');
 	var stop = document.getElementById('cf-ipcheck-stop');
 	var rel = document.getElementById('cf-ipcheck-refresh');
+	var chk = document.getElementById('cf-ipcheck-check-sources');
 
 	if (!run || !stop || !rel) {
 		if ((tries || 0) < 40)
@@ -200,6 +272,12 @@ function bindButtons(tableNode, st, tries) {
 		refreshResult();
 		return false;
 	};
+
+	if (chk)
+		chk.onclick = function () {
+			checkSources(this);
+			return false;
+		};
 
 	if (st && st.state === 'running')
 		autoRefresh(tableNode);
@@ -296,7 +374,7 @@ return view.extend({
 		o = src.option(form.DynamicList, 'community_sources', _('社区优选源 URL'),
 			_('每行一个 HTTPS 文本地址，IP / CIDR / IP:端口 都能提取（CIDR 按 /24 取样），' +
 			  '注释、CSV 表头、IPv6 自动忽略；某个源拉不到只记日志，不影响本轮。' +
-			  '默认九条是 2026-09-27 逐个核过的：提取到的 IPv4 绝大多落在 Cloudflare 官方段内 —— ' +
+			  '默认十三条是 2026-09-27 逐个核过的：提取到的 IPv4 绝大多落在 Cloudflare 官方段内 —— ' +
 			  '像 bestcf.pages.dev/random-region/mix.txt 那种 306 条全在段外的清单其实是别人的中转/VPS，' +
 			  '不是 CF anycast，就没有收进来。这些列表只代表"别人线路上测出来不错"，' +
 			  '在你这儿算不算好仍由本页实测说了算。名额分配：上一轮入围全保 → 社区源占剩下一半且逐源均分 → ' +
@@ -321,7 +399,10 @@ return view.extend({
 		o.default = '5';
 
 		o = thr.option(form.Value, 'ttfb_limit', _('TTFB 上限（毫秒）'),
-			_('超过这个值直接判为不达标 —— 首字节慢通常意味着被调度到了远机房或拥塞。'));
+			_('TTFB = Time To First Byte，请求发出后收到第一个字节的耗时，代表「对端处理 + 回程」。' +
+			  '它比 ping 的 RTT 更贴近实际体感：ping 只测到 ICMP 应答，而 anycast 下那个点未必是你会话真正落地的机房，' +
+			  '也可能干脆不响应 ICMP；TTFB 则是这个 IP 上完整 TCP+TLS 走通之后，应用层第一次给出数据的时间。' +
+			  '首字节慢通常意味着被调度到了远机房或链路拥塞，超过这个值直接判为不达标。'));
 		o.datatype = 'and(uinteger,min(100))';
 		o.default = '3000';
 
@@ -372,18 +453,45 @@ return view.extend({
 			_('例如 cf-ip.txt —— PATCH 更新的是同名文件，名字不一致会在 Gist 里新增一份。'));
 		o.default = 'cf-ip.txt';
 
-		o = gs.option(form.Value, 'token_file', _('Token 文件路径'),
-			_('令牌只从这个文件读，不写进 UCI 配置，避免备份或截图时泄露。' +
-			  '在路由器上执行 printf "%s" "你的令牌" > /etc/cf-ipcheck.token 再 chmod 600 该文件即可' +
-			  '（用只需要 gist 权限的经典令牌）。'));
+		o = gs.option(form.Value, 'gist_token', _('GitHub Token'),
+			_('直接写进 UCI（本机默认这条路）。清单内容只是优选 IP，泄露代价低，所以按 Ryan 的要求允许写在配置里；' +
+			  '代价是它会随 sysupgrade 备份走、也在本页面回显，因此请只填**只勾选了 gist 权限**的经典令牌，' +
+			  '不要用有 repo/workflow 权限的。填了这里就优先用它；留空则退回下面的 token_file。'));
+		o.password = true;
+
+		o = gs.option(form.Value, 'token_file', _('Token 文件路径（备选）'),
+			_('不想把令牌写进配置就留空上面的字段，改从该文件读：' +
+			  '在路由器上执行 printf "%s" "你的令牌" > /etc/cf-ipcheck.token 再 chmod 600 该文件即可。' +
+			  '两处都填时以上面的 gist_token 为准。'));
 		o.default = '/etc/cf-ipcheck.token';
 
-		/* ---- 拼页面：操作条 + 结果表 + 表单 ---- *
+		/* ---- 拼页面：操作条 + 结果表 + 源体检 + 表单 ---- *
 		 * m.render() 给的是 Promise，不是节点：不能直接塞进返回数组里。
 		 * 先把 Map 节点 resolve 出来，再拼成纯节点数组返回。
 		 */
 		var table = renderTable(st);
-		var nodes = [bar, table];
+
+		/* 源可用性检测：不自动跑（十来个源逐个拉太慢），点按钮才检测 */
+		var srccard = E('div', { class: 'cbi-section', id: 'cf-ipcheck-sources-card' }, [
+			E('div', { class: 'cbi-section-node' }, [
+				E('div', { class: 'cbi-value' }, [
+					E('label', { class: 'cbi-value-title' }, _('源可用性检测')),
+					E('div', { class: 'cbi-value-field' },
+						E('button', {
+							id: 'cf-ipcheck-check-sources',
+							class: 'cbi-button',
+							type: 'button'
+						}, _('检测源可用性')))
+				]),
+				E('div', { id: 'cf-ipcheck-sources-host' },
+					E('p', { class: 'small' },
+						_('逐条 URL 实拉一次，列出 HTTP 状态、提取到的 IPv4 数量，以及其中落在 Cloudflare 官方网段内的比例。' +
+						  '段内占比掉到 90% 以下通常说明源改内容了（例如开始提供别人自己的中转 IP），' +
+						  '拉不到的那条会标黄，引擎本轮会跳过它并记日志。')))
+			])
+		]);
+
+		var nodes = [bar, table, srccard];
 
 		return m.render().then(function (mapnode) {
 			nodes.push(mapnode);

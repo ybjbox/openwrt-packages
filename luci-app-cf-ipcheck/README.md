@@ -32,22 +32,44 @@ SNI 与 Host 都是你填的节点域名，因此这一步同时验证了 TLS �
 1. **Cloudflare 官方网段**：实时拉 `api.cloudflare.com/client/v4/ips`，把每个前缀
    按 **/24 粒度**展开取样（`/20` = 16 个候选）。现网 15 条 IPv4 前缀展开后是
    **5956 个**候选，远超预算。
-2. **社区优选源**（`community_sources`，默认九条，2026-09-27 逐个核过）：
+2. **社区优选源**（`community_sources`，默认十三条，2026-09-27 逐个核过）：
 
-   「落在 CF 官方段内」这一列是拿 `api.cloudflare.com/client/v4/ips` 现算出来的，
-   不满 100% 的要么是混了 IPv6/杂项，要么根本不是 CF anycast。
+   「段内」列是拿 `api.cloudflare.com/client/v4/ips` 现算的（路由器上 13 条并发 4 秒跑完）。
+   `bestcf.pages.dev/*` 是别人的**聚合镜像**（缓存各家清单），右边写明了对应的**原始出处**；
+   其余八条本身就是作者自己的 GitHub 仓库地址。
 
-   | 源 | 提取到 IPv4 | 落在 CF 官方段内 | 形态 |
+   | 源（默认就用这些 URL） | 提取到 IPv4 | 段内 | 原始出处 |
    | :--- | ---: | ---: | :--- |
-   | `bestcf.pages.dev/entryip/50.txt` | 50 | 47（94%） | `IP:443#CF Anycast Entry IP` |
-   | `bestcf.pages.dev/cfyes/ipv4.txt` | 12 | 12（100%） | `IP:443#CFYes 优选` |
-   | `bestcf.pages.dev/wetest/ipv4.txt` | 17 | 17（100%） | `IP:443#WeTest 优选` |
-   | `bestcf.pages.dev/ircf/ipv4.txt` | 10 | 10（100%） | `IP:443#IRCF 优选` |
-   | `bestcf.pages.dev/nirevil/ipv4.txt` | 37 | 35（95%） | `IP:443#NiREvil 优选` |
-   | `ymyuuu/IPDB` `BestCF/bestcfv4.txt` | 10 | 10（100%） | 纯 IPv4 |
-   | `hubbylei/bestcf` `bestcf.txt` | 10 | 10（100%） | 纯 IPv4 |
-   | `gslege/CloudflareIP` `All.txt` | 100 | 100（100%） | `IP#地区` |
-   | `XIU2/CloudflareSpeedTest/ip.txt` | 25 个前缀 | 25（100%） | CIDR（按 /24 取样） |
+   | `bestcf.pages.dev/entryip/50.txt` | 50 | 47（94%） | CF 各段入口代表清单，原始即 bestcf 站 |
+   | `bestcf.pages.dev/cfyes/ipv4.txt` | 12 | 12 | 原始 `https://addressesapi.090227.xyz/CloudFlareYes`（实测会超时，故用镜像） |
+   | `bestcf.pages.dev/wetest/ipv4.txt` | 17 | 17 | 原始 `https://www.wetest.vip/page/cloudfront/address_v4.html`（HTML，同样能提取） |
+   | `bestcf.pages.dev/ircf/ipv4.txt` | 10 | 10 | 站内未标原始出处 |
+   | `bestcf.pages.dev/nirevil/ipv4.txt` | 37 | 35（95%） | 站内未标原始出处 |
+   | `raw.githubusercontent.com/ymyuuu/IPDB/main/BestCF/bestcfv4.txt` | 10 | 10 | 原始仓库 ymyuuu/IPDB |
+   | `raw.githubusercontent.com/hubbylei/bestcf/main/bestcf.txt` | 10 | 10 | 原始仓库 hubbylei/bestcf |
+   | `raw.githubusercontent.com/gslege/CloudflareIP/main/All.txt` | 100 | 100 | 原始仓库 gslege/CloudflareIP |
+   | `raw.githubusercontent.com/LancelotRar/best-cf-ips/refs/heads/main/best-cf-ip-collected.txt` | 77 | 75（97%） | 原始仓库（各家采集聚合） |
+   | `raw.githubusercontent.com/joname1/BestCFip/refs/heads/main/ipv4.txt` | 91 | 90（99%） | 原始仓库 joname1/BestCFip |
+   | `raw.githubusercontent.com/Senflare/Senflare-IP/refs/heads/main/IPlist-Pro.txt` | 27 | 27 | 原始仓库 Senflare/Senflare-IP |
+   | `raw.githubusercontent.com/einsitang/my-fast-cf-ip/refs/heads/master/fastips.txt` | 20 | 20 | 原始仓库 einsitang/my-fast-cf-ip |
+   | `raw.githubusercontent.com/XIU2/CloudflareSpeedTest/master/ip.txt` | 25 段 | 25 | 原始仓库 XIU2/CloudflareSpeedTest |
+
+   默认 13 条合并去重后池子约 114~190 个候选（`use_official_ranges=0` 时）。
+   配置文件里每条 URL 上方都有一行注释写明它的段内占比与原始出处。
+
+   **源可用性检测**：页面上「候选池来源」下方有「检测源可用性」按钮，点对了才跑
+   （不在页面加载时自动跑，避免白拉十几遍网）。它逐条列出 HTTP 状态、提取到的 IPv4
+   数、落在 CF 段内的数量与占比；拉不到的行用表格警示色（`warning`）、段内占比低于
+   90% 的用提示色（`notice`）标出来。
+   命令行等价物：
+
+   ```sh
+   cf-ipcheck check-sources
+   # [{"url":"https://bestcf.pages.dev/entryip/50.txt","http":"200","rc":0,"ips":50,"cf_in":47}, …]
+   ```
+
+   13 条源按 4 个一批并发，真机实测 4 秒跑完（串行要一分多钟，页面上会转圈到怀疑人生）。
+   某条源改路径或者开始吐非 CF 的中转 IP，这里第一时间看得出来。
 
    **别往这里加"现成的大份优选清单"**：`bestcf.pages.dev/random-region/mix.txt`（306 条）、
    `mix2.txt`（515 条）、`cf.junzhen.qzz.io/best_ips*.txt`、`svip-s/cloudflare_ip` 的
@@ -172,13 +194,18 @@ ssh root@10.0.0.1 'apk add --allow-untrusted /tmp/luci-app-cf-ipcheck-*.apk'
   （init.d 与 config 在打包中不改写；`settings.js` 会被 luci.mk 压成一行，
   实测压缩版仍能正常构建页面 DOM）。
 
-未覆盖：肉眼在普通浏览器里看整页排版（验证用的内嵌页签
-`document.hidden=true` 且 `requestAnimationFrame` 不触发，LuCI 的视图引导和
-CBI `Map.render()` 在这种页签里根本不会完成 —— 同环境下已装的
-luci-app-dhcp-comment 一样停在「正在载入视图」，一个空的 `new form.Map()` 也不 resolve，
-故与本包无关）。视图代码是拿设备自带的 `form/rpc/ui/view` 直接编译执行
-`load()`/`render()` 验的（含 luci.mk 压缩后的那一份），
-表头 8 列、榜单 10 行、meta 行与三个按钮的处理函数都已逐项核对。
+- 视图代码是拿设备自带的 `form/rpc/ui/view` 直接编译执行 `load()`/`render()` 验的
+  （含 luci.mk 压缩后的那一份），表头 8 列、榜单行数、meta 行与按钮处理函数逐项核对。
+- 2026-09-27 增量验：`check-sources` 在真机上 13 条源并发 4 秒出结果，BusyBox awk 算出的
+  段内数与 GNU awk 在 Windows 上算的逐条一致；视图在 `intercepted=0/1` 两种状态下分别
+  渲染出 4 个具体节点、红条有无、状态栏文案都对得上，且没有出现 `[object …]` 之类的
+  字符串拼接残留。
+
+未覆盖：肉眼在普通浏览器里看整页排版。验证用的内嵌页签 `document.hidden=true` 且
+`requestAnimationFrame` 不触发，LuCI 的视图引导和 CBI `Map.render()` 在这种页签里根本不会
+完成 —— 同环境下已装的 luci-app-dhcp-comment 一样停在「正在载入视图」，一个空的
+`new form.Map()` 也不 resolve，故与本包无关。视图代码是拿设备自带的
+`form/rpc/ui/view` 直接编译执行 `load()`/`render()` 验的（含 luci.mk 压缩后的那一份）。
 
 ## 配置项
 
@@ -190,7 +217,7 @@ luci-app-dhcp-comment 一样停在「正在载入视图」，一个空的 `new f
 | `probe_port` | `443` | 探测端口 |
 | `use_official_ranges` | `0` | 是否把官方网段也铺进池子（默认关，避免近六千个 /24 采样挤掉社区优选） |
 | `reuse_last` | `1` | 是否回灌上一轮入围 IP |
-| `community_sources` | 九条（见上） | 社区源 URL（list），逐个 HTTPS 抓取；池子一半名额按源均分 |
+| `community_sources` | 十三条（见上） | 社区源 URL（list），逐个 HTTPS 抓取；池子一半名额按源均分 |
 | `candidate_budget` | `256` | 单轮候选上限 |
 | `concurrency` | `8` | 并发探测数 |
 | `probe_timeout` | `5` | 单 IP 超时（同时作为连接与整请求超时） |
@@ -203,7 +230,8 @@ luci-app-dhcp-comment 一样停在「正在载入视图」，一个空的 `new f
 | `annotate` | `cf-ipcheck \| {colo} \| {total}ms` | `ip.txt` 注释模板 |
 | `upload_gist` | `0` | 每轮后是否上传 Gist |
 | `gist_id` / `gist_file` | 空 / `cf-ip.txt` | Gist ID 与文件名 |
-| `token_file` | `/etc/cf-ipcheck.token` | 令牌**只**从该文件读，不进 UCI 配置 |
+| `gist_token` | 空 | 令牌直接写进 UCI（**本机默认走这条**）；填了它就优先用它 |
+| `token_file` | `/etc/cf-ipcheck.token` | 备选：`gist_token` 留空时从该文件读 |
 
 手工设置一次探测目标：
 
@@ -213,14 +241,23 @@ uci commit cf_ipcheck
 /etc/init.d/cf-ipcheck restart
 ```
 
-写入 Gist 令牌（只需要 `gist` 权限的经典令牌）：
+配置 Gist 上传（令牌直接写进 UCI，页面上也有对应字段，输入框是掩码显示）：
+
+```sh
+uci set cf_ipcheck.@global[0].upload_gist='1'
+uci set cf_ipcheck.@global[0].gist_id='<GistID>'
+uci set cf_ipcheck.@global[0].gist_token='<只勾选 gist 权限的经典令牌>'
+uci commit cf_ipcheck
+```
+
+写在配置里的代价说清楚：令牌会随 sysupgrade 备份一起走、`uci show cf_ipcheck` 和
+这个页面都能直接看到，所以**只放 gist 权限的令牌**，别塞有 repo/workflow 权限的。
+不想承担这个代价就留空 `gist_token`，改用文件（`token_file` 指向的路径，两条路并存，
+`gist_token` 优先）：
 
 ```sh
 printf '%s' '你的令牌' > /etc/cf-ipcheck.token
 chmod 600 /etc/cf-ipcheck.token
-uci set cf_ipcheck.@global[0].upload_gist='1'
-uci set cf_ipcheck.@global[0].gist_id='<GistID>'
-uci commit cf_ipcheck
 ```
 
 ## 命令行
@@ -232,6 +269,7 @@ cf-ipcheck status     # 最近一轮状态 JSON
 cf-ipcheck show       # 人类可读榜单
 cf-ipcheck pool       # 只打印本轮会用的候选 IP（联网取源、不测速）
 cf-ipcheck canary     # 只跑一次出口接管自检：{"intercepted":0|1}
+cf-ipcheck check-sources  # 逐个源体检：HTTP / 提取到的 IPv4 数 / 落在 CF 段内的数量
 cf-ipcheck colo <IP>  # 单 IP 落地机房
 cf-ipcheck stop       # 让当前这轮尽快收尾
 cf-ipcheck daemon     # 常驻定时（由 /etc/init.d/cf-ipcheck 启动）
