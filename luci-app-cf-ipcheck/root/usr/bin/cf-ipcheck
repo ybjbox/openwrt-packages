@@ -253,9 +253,10 @@ write_outputs() {
 
 # ---------------- Gist 上传（可选；失败只记日志，不影响本地结果）----------
 json_escape_file() { # $1=path -> 输出带引号的 JSON 字符串
-	awk 'BEGIN { printf "\"" }
-	     { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); printf "%s\\n", $0 }
-	     END  { printf "\"" }' "$1"
+	# 这里不能用 awk gsub：BusyBox awk 会把替换串里的 "\\" 折叠成单个 "\"，
+	# 反斜杠就少转义一层（CI 注解实测 got <b\c> 而 want <b\\c>，GNU awk 则是后者）。
+	# sed 的 "\\&"（反斜杠+命中文本）与 "\\n" 在 GNU/BusyBox 两家语义一致。
+	printf '"%s"' "$(sed -e 's/[\\"]/\\&/g' -e 's/$/\\n/' "$1" | tr -d '\n')"
 }
 
 upload_gist() {
