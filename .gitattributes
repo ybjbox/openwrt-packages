@@ -12,3 +12,10 @@ tests/** text eol=lf
 # uci-defaults 脚本无 .sh 后缀(如 99-luci-app-dhcp-comment、99-athena-custom-settings)，
 # 但首次开机时由 /bin/sh 执行，同样必须 LF，否则 shebang 带 \r 报 bad interpreter。
 **/etc/uci-defaults/** text eol=lf
+
+# 无后缀但要在路由器上执行的脚本：*.sh 覆盖不到它们。
+# 例如 luci-app-cf-ipcheck 的 root/usr/bin/cf-ipcheck 与 root/etc/init.d/cf-ipcheck，
+# 以及 luci-app-dhcp-comment 的 root/usr/bin/sync_dhcp_user_info。
+**/root/usr/bin/** text eol=lf
+**/etc/init.d/** text eol=lf
+**/etc/config/** text eol=lf

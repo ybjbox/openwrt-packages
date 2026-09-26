@@ -11,6 +11,7 @@
 | [**luci-app-dhcp-comment**](./luci-app-dhcp-comment) | LuCI DHCP 静态地址分配中文备注与活动租约列表显示增强 | OpenWrt 21.02 ~ 25.12 / ImmortalWrt (LuCI JS) | 🟢 已稳定 |
 | [**athena-custom**](./athena-custom) | 雅典娜（IPQ6018）路由器专属默认初始化配置与性能优化包 | OpenWrt 23.05 ~ 25.12 / ImmortalWrt (qualcommax) | 🟢 已稳定 |
 | [**sysupgrade-clash-cleaner**](./sysupgrade-clash-cleaner) | 固件保留配置升级时自动清理 OpenClash Smart 内核大文件缓存 | 所有 OpenWrt / ImmortalWrt 全系版本 | 🟢 已稳定 |
+| [**luci-app-cf-ipcheck**](./luci-app-cf-ipcheck) | 在本机实测 Cloudflare 优选 IP 的可用性与四段耗时，产出 ip.txt 并可上传 Gist | OpenWrt / ImmortalWrt 23.05 ~ 25.12 (LuCI JS) | 🟡 引擎与离线测试已验证，LuCI 页面与 procd 待真机确认 |
 
 ---
 

@@ -23,6 +23,10 @@ jobs:
       - name: BusyBox hot-patch integration test
         run: sh tests/run_busybox_test.sh
 
+      - name: cf-ipcheck engine regression test
+        # 纯离线：CIDR 展开 / 达标过滤 / 排序 / JSON 转义 / 空池不误报成功
+        run: sh tests/test_cf_ipcheck.sh
+
   build:
     name: Build package (OpenWrt SDK)
     # Only build on manual dispatch to avoid burning SDK minutes on every push/PR.
