@@ -354,7 +354,7 @@ selftest() {
 		check 'JSON 字符串转义' "$esc" '"ok a\"b\\c\n"'
 	fi
 	rm -f "$RUN_DIR/st.txt"
-	# CIDR 展开：绞不吐出网络地址（.0），否则整片超时
+	# CIDR 展开：绝不能吐出网络地址（.0），否则整片超时
 	got=$(printf '173.245.48.0/20\n' | sh "$0" _expand 2>/dev/null | head -1)
 	check '/20 展开为首个 /24 的 .102' "$got" '173.245.48.102'
 	got=$(printf '103.160.24.0/24\n' | sh "$0" _expand 2>/dev/null | head -1)
