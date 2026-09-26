@@ -203,9 +203,9 @@ colo_of() {
 # ---------------- 过滤 + 排序（纯文本处理，可离线自测）--------------------
 # stdin: probe_one 的 TSV；stdout: 达标并按 total->ttfb 排序的前 N 行
 rank() {
-	awk -F'\t' -v ttfb="$C_TTFB" -v tot="$C_TOTAL" '
+	awk -v ttfb="$C_TTFB" -v tot="$C_TOTAL" 'BEGIN{FS="\t"}
 		NF >= 7 && $7 == "none" && $6+0 > 0 && $6+0 <= tot && $5+0 <= ttfb { print }' |
-		sort -t "$(printf '\t')" -k6,6n -k5,5n |
+		sort -k6,6n -k5,5n |
 		head -n "$C_KEEP"
 }
 
@@ -240,7 +240,7 @@ write_outputs() {
 		printf '{"state":"done","finished":"%s","pool":%s,"usable":%s,"domains":"%s","items":[' \
 			"$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$pool_n" \
 			"$(grep -c . "$colored" || true)" "$C_DOMAINS"
-		awk -F'\t' '
+		awk 'BEGIN{FS="\t"}
 			NF >= 7 {
 				if (n++) printf ","
 				printf "{\"ip\":\"%s\",\"code\":%s,\"connect_ms\":%s,\"tls_ms\":%s,\"ttfb_ms\":%s,\"total_ms\":%s,\"colo\":\"%s\"}",
