@@ -37,6 +37,17 @@ config global 'global'
 	# 只给入围 IP 查落地机房（cdn-cgi/trace 的 colo=），多一轮请求
 	option colo_probe '1'
 
+	# 出口接管自检：每轮先用 RFC 5737 保留地址探一次。保留地址本该连不上，
+	# 一旦它返回任何 HTTP 状态码，说明本机 443 被 OpenClash 之类透明代理接管，
+	# --resolve 钉的 IP 没参与选路，本轮榜单数字不可信（页面会红条提示）。
+	option canary_check '1'
+
+	# 探测用哪个身份发起。默认 nobody：OpenClash 的 mangle 链第一条就是
+	# `meta skgid 65534 ... return`，用 nobody 跑探测正好绕过接管，量到的才是
+	# 候选 IP 本身（root 直发会被代理接管，connect 恒为 0.000x 秒）。
+	# 留空则退回 root 直发。
+	option probe_user 'nobody'
+
 	# ip.txt 注释模板，可用占位符 {colo} {total}
 	option annotate 'cf-ipcheck | {colo} | {total}ms'
 

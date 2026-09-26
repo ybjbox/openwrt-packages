@@ -58,13 +58,43 @@ SNI 与 Host 都是你填的节点域名，因此这一步同时验证了 TLS �
 专门用来抓退回 `head` 的改动）。
 
 > ⚠️ **在跑 OpenClash 透明代理的路由器上，逐 IP 探测量不出 IP 的差异。**
-> 本机发起的 tcp/443 会被 clash 接管后由它自己重新拨号，`--resolve` 钉住的地址
+> 本机发起的 tcp 会被 clash 接管后由它自己重新拨号，`--resolve` 钉住的地址
 > 根本不参与选路。实测证据：把 `www.cloudflare.com` 钉到保留地址
 > `203.0.113.77`（RFC 5737，全球不可路由）仍然返回 `HTTP 200`、
-> `time_connect` 只有 0.0008s，而 `/tmp/openclash.log` 里能看到这条连接。
+> `time_connect` 只有 0.0008s，而 `/tmp/openclash.log` 里能看到这条连接
+> （`[TCP] dial 直接连接 (match RuleSet/Private)`）。
+> 而且 **换端口没用**：同一台机器上 443 / 8443 / 2053 / 8080 / 53 / 9 六个端口
+> 探测同一个保留地址，全部返回 200 —— 接管规则覆盖的是所有 tcp。
 > 也就是说榜单里那些 800~900ms 是「本机 → clash → CF」的耗时，不是候选 IP 的耗时。
-> 想让数字变真实，要么给探测进程开一条绕过 clash 的出口（例如自定义防火墙规则里
-> 按 uid/gid 不加 mark），要么把探测挪到一台不被接管的机器上。
+>
+> **本包自带的处置**（两条，都默认开着）：
+>
+> 1. `canary_check`：每轮先拿两个保留地址按同一条路径试一次。保留地址上没有服务，
+>    正常只会超时（curl 给出 `000`）；一旦它返回任何三位状态码，就证明钉 IP 没生效，
+>    本轮 `result.json`/`status.json` 带 `"intercepted":1`，页面顶部红条 + 状态栏标注。
+>    命令行可单独跑：`cf-ipcheck canary` → `{"intercepted":1}`。
+>    判定只会单向出错：不可能有真实服务器住在保留地址上，所以不会误报"被接管"。
+> 2. `probe_user`（默认 `nobody`）—— 这才是让数字变真实的那一步。OpenClash 打 mark
+>    的链（`table inet fw4` 里的 `openclash_mangle_output` / `openclash_mangle`）
+>    **第一条规则就是 `meta skgid 65534 … return`**，而 nobody 的 gid 正是 65534，
+>    所以把探测降到 nobody 身份（`su -s /bin/sh nobody -c 'curl …'`）就天然绕过接管，
+>    **不需要改 OpenClash 任何配置**。实测同一个 `104.16.202.102`：
+>
+>    | 发起身份 | TCP 握手 | 含义 |
+>    | :--- | ---: | :--- |
+>    | root（被接管） | 0.0007 s | 假：那是本机到 clash 的时间 |
+>    | nobody（绕过） | 0.193 s | 真：跨境 RTT 量级 |
+>
+>    绕过之后拿 5 个社区"优选 IP"实测：3 个直接超时，存活的两个 total 分别
+>    4154.8 ms / 6670.3 ms，`达标 1/5`（另一个被 `total_limit` 砍掉）——
+>    而被接管时是 `达标 256/256`、connect 清一色 0.000x。**"全部达标"本身就是故障证据**，
+>    所以 `candidate_budget`、`total_limit` 这些门槛在绕过之后才有意义。
+>
+>    留空 `probe_user` 就退回 root 直发（会被接管，但 canary 会把那轮标成不可信）。
+>    没有透明代理的机器上，`su` 到 nobody 也一样能正常出网，不必改。
+>
+> 另一种完全不碰路由器的做法：把 `root/usr/bin/cf-ipcheck` 拷到没被接管的机器上跑，
+> 再把 `best-ip.txt` 拿回来。
 
 
 ## 安装
@@ -95,9 +125,15 @@ ssh root@10.0.0.1 'apk add --allow-untrusted /tmp/luci-app-cf-ipcheck-*.apk'
 2026-09-26 在 LibWrt 25.12.2 / qualcommax-ipq60xx（`aarch64_cortex-a53`）真机上验证：
 
 - `selftest` 全通过；`sh -n` 通过；procd `daemon` 常驻并 `enabled=0` 时空转。
-- 从浏览器登录态走 rpcd `file.exec`（受本包 ACL 约束）执行 `run-now`，
-  56 秒跑完一轮：候选 256 → 达标 192 → 榜单 10，`total_ms` 873.3~945.8 升序，
-  `code` 全 200，`colo` 全部落到 LAX。
+- 从浏览器登录态走 rpcd `file.exec`（受本包 ACL 约束）执行 `run-now`，一轮 56 秒跑完，
+  管道（触发→探测→排序→落盘→回读→渲染）全程通。
+  **但那一轮的数字本身是无效的**：候选 256 → 达标 256/192、`connect` 清一色 0.000x 秒，
+  后来查明是本机 443 被 OpenClash 接管（见上面的 ⚠️）。这条记在这里是为了提醒：
+  "全部达标 + 握手亚毫秒"就是被接管的特征，不是线路好。
+- 出口自检与绕过在真机上双向验过：`probe_user` 设 root → `{"intercepted":1}`，
+  设 nobody → `{"intercepted":0}`；同一个 `104.16.202.102` root 下 connect 0.0007s、
+  nobody 下 0.193s。nobody 下跑 5 个社区优选 IP：3 个超时、存活两个
+  total 4154.8 / 6670.3 ms、`达标 1/5` —— 门槛开始真正起作用。
 - 视图 JS 在设备自带的 LuCI（form/rpc/ui/view）里编译执行，结果表按真实
   status JSON 生成 10 行 × 8 列，三个按钮的 click 处理函数均已挂上。
 - SDK 构建：`x86_64-25.12.5` 与 `aarch64_cortex-a53-25.12.5` 两个镜像下
@@ -143,6 +179,8 @@ luci-app-dhcp-comment 一样停在「正在载入视图」，一个空的 `new f
 | `total_limit` | `5000` | 总耗时上限（毫秒）——两道门槛都过才算达标 |
 | `keep_count` | `10` | 榜单保留条数 |
 | `colo_probe` | `1` | 是否为入围 IP 查落地机房 |
+| `canary_check` | `1` | 每轮先用保留地址自检出口有没有被透明代理接管，接管则打标 |
+| `probe_user` | `nobody` | 探测发起身份；nobody 的 gid 65534 正好被 OpenClash 的 mark 链豁免，留空则退回 root（会被接管） |
 | `annotate` | `cf-ipcheck \| {colo} \| {total}ms` | `ip.txt` 注释模板 |
 | `upload_gist` | `0` | 每轮后是否上传 Gist |
 | `gist_id` / `gist_file` | 空 / `cf-ip.txt` | Gist ID 与文件名 |
@@ -174,6 +212,7 @@ cf-ipcheck run-now    # 后台起一轮，立即返回
 cf-ipcheck status     # 最近一轮状态 JSON
 cf-ipcheck show       # 人类可读榜单
 cf-ipcheck pool       # 只打印本轮会用的候选 IP（联网取源、不测速）
+cf-ipcheck canary     # 只跑一次出口接管自检：{"intercepted":0|1}
 cf-ipcheck colo <IP>  # 单 IP 落地机房
 cf-ipcheck stop       # 让当前这轮尽快收尾
 cf-ipcheck daemon     # 常驻定时（由 /etc/init.d/cf-ipcheck 启动）

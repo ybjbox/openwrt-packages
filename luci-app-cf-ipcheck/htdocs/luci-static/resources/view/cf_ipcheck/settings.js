@@ -41,10 +41,27 @@ function parseStatus(text) {
 		var o = JSON.parse(text);
 		if (!Array.isArray(o.items))
 			o.items = [];
+		// 出口被透明代理接管时，逐 IP 的数字没有意义（引擎每轮用保留地址自检）
+		o.intercepted = (o.intercepted === 1 || o.intercepted === '1') ? 1 : 0;
 		return o;
 	} catch (e) {
 		return { state: 'parse_error', items: [], raw: text };
 	}
+}
+
+/* 接管警告条：这台机器上本机 443 会被 OpenClash 之类接管重拨，
+ * 引擎用 RFC 5737 保留地址做 canary —— 保留地址本该连不上，
+ * 一旦它回了状态码就说明 --resolve 钉的 IP 没参与选路。 */
+function renderInterceptNotice() {
+	return E('div', { class: 'alert danger' }, [
+		E('strong', {}, _('出口被透明代理接管，本轮数字不可信：')),
+		E('p', {}, _('引擎用保留地址 %s 做自检，它也拿到了 HTTP 响应 —— 说明本机发起的 443 被接管后由代理自己重新拨号，' +
+			'%s 钉住的候选 IP 根本没参与选路。下面这张表量的是「本机 → 代理 → Cloudflare」，不是各候选 IP 的差异。')
+			.format('203.0.113.77 / 198.51.100.77', 'curl --resolve')),
+		E('p', {}, _('要拿到真实结果：给探测进程开一条绕过代理的出口（按 uid/gid 不加防火墙 mark），' +
+			'或者把 cf-ipcheck 拷到没被接管的机器上跑，再用 %s 上传结果。')
+			.format('--upload-gist'))
+	]);
 }
 
 function fmtMs(v) {
@@ -96,6 +113,7 @@ function renderTable(st) {
 
 	return E('div', { class: 'cbi-section', id: 'cf-ipcheck-result' }, [
 		E('div', { class: 'cbi-section-node' }, [
+			st.intercepted == 1 ? renderInterceptNotice() : '',
 			E('p', { class: 'small' }, meta),
 			E('div', { class: 'table cbi-section-table' }, [
 				E('thead', {}, [
@@ -112,24 +130,34 @@ function renderTable(st) {
 
 function refreshResult() {
 	return execCfIpcheck(['status']).then(function (out) {
+		var st = parseStatus(out);
 		var old = document.getElementById('cf-ipcheck-result');
-		var next = renderTable(parseStatus(out));
+		var next = renderTable(st);
 		if (old && old.parentNode)
 			old.parentNode.replaceChild(next, old);
-		return next;
+		/* 定时器挂在结果块外面一层，重画后要把计时器句柄搬过去，
+		 * 否则 clearInterval 找的是已经被替换掉的旧节点。 */
+		if (old && old.__cf_timer)
+			next.__cf_timer = old.__cf_timer;
+		return { node: next, state: st.state, intercepted: st.intercepted };
 	});
 }
 
 function autoRefresh(node) {
-		/* 测速进行中每 5 秒拉一次；结束后停掉，避免白烧 CPU 和请求 */
+	/* 测速进行中每 5 秒拉一次；结束后停掉，避免白烧 CPU 和请求。
+	 * 停止条件看 status 里的 state，不看 DOM 文案 —— 早先拿
+	 * 「表格里有没有『正在测速』」判断，而那段文字在 <td> 里、
+	 * 查的又是 <p>，第一次刷新就会把定时器关掉。 */
 	if (node && node.__cf_timer)
 		clearInterval(node.__cf_timer);
 
 	var timer = setInterval(function () {
-		refreshResult().then(function (n) {
-			var p = n && n.querySelector('p');
-			if (p && !/正在测速/.test(p.textContent))
+		refreshResult().then(function (r) {
+			if (r.state !== 'running') {
 				clearInterval(timer);
+				if (r.node)
+					r.node.__cf_timer = null;
+			}
 		});
 	}, 5000);
 
@@ -155,7 +183,7 @@ function bindButtons(tableNode, st, tries) {
 		execCfIpcheck(['run-now']).then(function (out) {
 			self.disabled = false;
 			ui.toast('info', _('已启动一轮测速'), out || _('已后台运行'));
-			refreshResult().then(autoRefresh);
+			refreshResult().then(function (r) { autoRefresh(r.node); });
 		});
 		return false;
 	};
@@ -193,8 +221,9 @@ return view.extend({
 				E('div', { class: 'cbi-value' }, [
 					E('label', { class: 'cbi-value-title' }, _('状态')),
 					E('div', { class: 'cbi-value-field' },
-						E('em', {}, st.state === 'running' ? _('正在测速') :
-							(st.state === 'never_run' ? _('从未运行') : _('空闲'))))
+						E('em', {}, (st.state === 'running' ? _('正在测速') :
+							(st.state === 'never_run' ? _('从未运行') : _('空闲'))) +
+							(st.intercepted == 1 ? ' · ' + _('出口被接管，数字不可信') : '')))
 				]),
 				E('div', { class: 'cbi-value' }, [
 					E('label', { class: 'cbi-value-title' }, _('操作')),
@@ -305,6 +334,21 @@ return view.extend({
 		o = thr.option(form.Flag, 'colo_probe', _('识别落地机房'),
 			_('只对入围 IP 请求 cdn-cgi/trace 取 colo= 字段，多一次请求，用来确认 IP 实际打到哪个机房。'));
 		o.rmempty = false;
+
+		o = thr.option(form.Flag, 'canary_check', _('每轮先自检出口是否被代理接管'),
+			_('拿 RFC 5737 保留地址（203.0.113.77 / 198.51.100.77）按同一条探测路径试一次：' +
+			  '保留地址全球不可路由，正常只会超时；一旦它返回任何 HTTP 状态码，就说明本机 443 被 ' +
+			  'OpenClash 这类透明代理接管、由代理自己重新拨号，此时 --resolve 钉的候选 IP 没参与选路，' +
+			  '榜单只是「本机 → 代理 → CF」的耗时。开启后本轮结果会被打标并在页面红条提示。' +
+			  '每轮最多额外占用 2 次探测超时（默认 4 秒）。'));
+		o.rmempty = false;
+
+		o = thr.option(form.Value, 'probe_user', _('探测发起身份'),
+			_('默认 nobody —— OpenClash 的 mangle 链第一条规则就是 meta skgid 65534 return，' +
+			  '用 nobody 跑探测正好不被打 mark，量到的才是候选 IP 自己的握手；' +
+			  'root 直发会被代理接管（实测同一个 IP：nobody 下 TCP 193ms，root 下 0.7ms，后者是假的）。' +
+			  '家里没有透明代理、或就是想按 root 测，可以留空。需要 su 支持，改动后下一轮生效。'));
+		o.default = 'nobody';
 
 		o = thr.option(form.Value, 'annotate', _('ip.txt 注释模板'),
 			_('写在每个 IP 后面的说明，可用占位符 {colo} 与 {total}；留空则只输出 IP 与端口。'));

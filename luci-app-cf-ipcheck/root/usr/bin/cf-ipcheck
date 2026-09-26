@@ -73,6 +73,8 @@ load_config() {
 	C_OFFICIAL=$(cfg use_official_ranges 1)
 	C_REUSE=$(cfg reuse_last 1)
 	C_COLOR=$(cfg colo_probe 1)
+	C_CANARY=$(cfg canary_check 1)
+	C_PUSER=$(cfg probe_user nobody)
 	C_ANNOT=$(cfg annotate 'cf-ipcheck | {colo} | {total}ms')
 	C_GIST=$(cfg gist_id '')
 	C_GISTFILE=$(cfg gist_file 'cf-ip.txt')
@@ -239,11 +241,7 @@ build_pool() {
 probe_one() {
 	ip=$1
 	dom=$2
-	raw=$(curl -4 -o /dev/null -sS \
-		--connect-timeout "$C_TIMEOUT" --max-time "$C_TIMEOUT" \
-		--resolve "$dom:$C_PORT:$ip" "https://$dom/" \
-		-w '%{http_code},%{time_connect},%{time_appconnect},%{time_starttransfer},%{time_total}' \
-		2>/dev/null)
+	raw=$(run_probe "$(probe_cmd "$ip" "$dom" /)" 2>/dev/null)
 	rc=$?
 	if [ -f "$STOP" ]; then
 		printf '%s\t0\t0\t0\t0\t0\tstopped\n' "$ip"
@@ -274,8 +272,7 @@ colo_of() {
 	[ -n "$ip" ] || return 0
 	d=$(printf '%s' "$C_DOMAINS" | cut -d, -f1)
 	[ -n "$d" ] || return 0
-	curl -4 -sS --connect-timeout "$C_TIMEOUT" --max-time "$C_TIMEOUT" \
-		--resolve "$d:$C_PORT:$ip" "https://$d/cdn-cgi/trace" 2>/dev/null | \
+	run_probe "curl -4 -sS --connect-timeout $C_TIMEOUT --max-time $C_TIMEOUT --resolve $d:$C_PORT:$ip https://$d/cdn-cgi/trace" 2>/dev/null | \
 		sed -n 's/^colo=//p' | head -n 1 || true
 }
 
@@ -308,11 +305,64 @@ rank_all() {
 		cut -f3-
 }
 
+# ---------------- 出口接管自检（canary）--------------------------------------
+# 判定只看一件事：**有没有拿到 HTTP 状态码**。
+# canary 用的是 RFC 5737/5735 保留地址，全球不可路由、没有任何服务在听，
+# 正常路径下 curl 只会超时或拒连（code=000）。一旦它回了任何 3 位状态码
+# （哪怕是 404），就说明本机发起的 443 被透明代理接管、由它自己重新拨号 ——
+# 这时 --resolve 钉住的候选 IP 根本没参与选路，整轮榜单都是噪声。
+# 2026-09-26 在这台跑 OpenClash 的机器上实测：钉到 203.0.113.77 仍返回 200，
+# time_connect 0.0008s，/tmp/openclash.log 里能看到那条连接。
+canary_verdict() { # $1=http_code -> intercepted / clean
+	case "${1:-}" in
+		''|000)            printf 'clean' ;;      # curl 没拿到任何响应 = 连不上 = 正常
+		[1-5][0-9][0-9])   printf 'intercepted' ;;
+		*)                 printf 'clean' ;;
+	esac
+}
+
+# stdout: 1 = 出口被接管，0 = 正常
+canary_check() {
+	[ "$C_CANARY" = 1 ] || return 0
+	dom=$(printf '%s' "$C_DOMAINS" | cut -d, -f1 | tr -d ' ')
+	[ -n "$dom" ] || return 0
+	for ip in 203.0.113.77 198.51.100.77; do
+		code=$(run_probe "curl -4 -o /dev/null -sS --connect-timeout 3 --max-time 4 --resolve $dom:$C_PORT:$ip https://$dom/ -w '%{http_code}'" 2>/dev/null)
+		if [ "$(canary_verdict "$code")" = intercepted ]; then
+			log "canary $ip 竟然返回 HTTP $code：本机 443 出口被透明代理接管，本轮逐 IP 结果不可信"
+			printf '1\n'
+			return 0
+		fi
+	done
+	printf '0\n'
+}
+
+# ---------------- 探测身份 -----------------------------------------------
+# root 直接发起的 tcp 会被 OpenClash 的 mangle 链打 mark 接管，`--resolve`
+# 钉的 IP 就此失效（实测：钉到保留地址 203.0.113.77 也照样返回 200，
+# time_connect 0.0007s）。而那条链的第一条规则是 `meta skgid 65534 ... return`，
+# nobody 的组恰好被豁免 —— 所以默认把探测降到 nobody 身份跑，量到的才是
+# 候选 IP 自己的握手与响应（实测同一个 IP：nobody 下 connect 0.19s，root 下 0.0007s）。
+# 留空 probe_user 就退回 root 直发（会被接管，canary_check 会把那轮标成不可信）。
+run_probe() { # $1 = 交给 shell 执行的命令串
+	if [ -n "$C_PUSER" ] && command -v su >/dev/null 2>&1; then
+		su -s /bin/sh "$C_PUSER" -c "$1"
+	else
+		sh -c "$1"
+	fi
+}
+
+probe_cmd() { # $1=IP $2=域名 $3=额外 path -> 拼出 curl 命令串
+	printf "curl -4 -o /dev/null -sS --connect-timeout %s --max-time %s --resolve %s:%s:%s https://%s%s -w '%%{http_code},%%{time_connect},%%{time_appconnect},%%{time_starttransfer},%%{time_total}'" \
+		"$C_TIMEOUT" "$C_TIMEOUT" "$2" "$C_PORT" "$1" "$2" "${3:-/}"
+}
+
 # ---------------- 落地输出 -------------------------------------------------
 write_outputs() {
 	ranked=$1
 	pool_n=$2
 	qualified=${3:-0}
+	intercepted=${4:-0}
 	tmp=$RUN_DIR/best.tmp
 	printf '%s\n' "$ranked" >"$RUN_DIR/ranked.tsv"
 	# 落地机房只对入围 IP 查一次，结果并进同一张表：
@@ -337,9 +387,9 @@ write_outputs() {
 	mv "$tmp" "$BEST"
 
 	{
-		printf '{"state":"done","finished":"%s","pool":%s,"qualified":%s,"usable":%s,"domains":"%s","items":[' \
+		printf '{"state":"done","finished":"%s","pool":%s,"qualified":%s,"usable":%s,"intercepted":%s,"domains":"%s","items":[' \
 			"$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$pool_n" "$qualified" \
-			"$(grep -c . "$colored" || true)" "$C_DOMAINS"
+			"$(grep -c . "$colored" || true)" "$intercepted" "$C_DOMAINS"
 		awk 'BEGIN{FS="\t"}
 			NF >= 7 {
 				if (n++) printf ","
@@ -402,6 +452,10 @@ do_run() {
 
 	probed=$RUN_DIR/probed.tsv
 	: >"$probed"
+	# 先问一次出口有没有被接管：接管了的话后面的数字全都没意义，
+	# 但仍要跑（他可能想知道 clash 自己走哪条路），所以只是打标，不中断。
+	intercepted=$(canary_check)
+	[ "$intercepted" = 1 ] && log '本轮结果标记为不可信：逐 IP 差异被出口代理抹平'
 	i=0
 	for ip in $pool; do
 		for dom in $(printf '%s' "$C_DOMAINS" | tr ',' ' '); do
@@ -418,7 +472,7 @@ do_run() {
 	ranked=$(head -n "$C_KEEP" "$qual")
 	kept=$(printf '%s\n' "$ranked" | grep -c . || true)
 	log "达标 $qualified / $pool_n（榜单保留 $kept）"
-	write_outputs "$ranked" "$pool_n" "$qualified"
+	write_outputs "$ranked" "$pool_n" "$qualified" "$intercepted"
 	rm -f "$LOCK"
 	[ "$C_UPLOAD" = 1 ] && upload_gist
 	log '本轮完成'
@@ -502,6 +556,17 @@ selftest() {
 	got=$(printf '' | sh "$0" _sample 10 | grep -c . || true)
 	check '空输入产出空' "$got" '0'
 
+	# 出口接管自检的判定：只看有没有拿到 HTTP 状态码。
+	# 保留地址回任何状态码（含 404）都说明 443 被本地接管。
+	got=$(sh "$0" _canaryv 200 2>/dev/null)
+	check 'canary 返回 200 判为接管' "$got" 'intercepted'
+	got=$(sh "$0" _canaryv 404 2>/dev/null)
+	check 'canary 返回 404 也算接管' "$got" 'intercepted'
+	got=$(sh "$0" _canaryv 000 2>/dev/null)
+	check '连不上(000)判为正常' "$got" 'clean'
+	got=$(sh "$0" _canaryv '' 2>/dev/null)
+	check '空状态码判为正常' "$got" 'clean'
+
 	if [ "$fails" = 0 ]; then
 		echo '[OK] selftest 全部通过'
 		return 0
@@ -518,6 +583,7 @@ usage() {
   status    输出最近一轮状态 JSON
   show      以人类可读形式输出榜单
   pool      只打印本轮会用的候选 IP 列表（联网取源，不测速）——核对源配置用
+  canary    只跑一次出口接管自检，输出 {"intercepted":0|1}
   colo IP   查询单个 IP 的落地机房代码（如 SIN/NRT/HKG）
   stop      请求当前这一轮尽快收尾
   daemon    常驻，按 interval_hours 循环
@@ -536,6 +602,7 @@ case "${1:-}" in
 	status)  if [ -s "$STATUS" ]; then cat "$STATUS"; else printf '{"state":"never_run","items":[]}\n'; fi ;;
 	show)    if [ -s "$BEST" ]; then cat "$BEST"; else echo '尚无结果，先执行 cf-ipcheck run'; fi ;;
 	pool)    load_config; build_pool ;;
+	canary)  load_config; printf '{"intercepted":%s}\n' "$(canary_check)" ;;
 	colo)    load_config; colo_of "${2:-}"
 			 printf '\n' ;;
 	stop)    : >"$STOP"; echo '已请求停止（当前这一轮结束后不再继续探测）' ;;
@@ -556,5 +623,6 @@ case "${1:-}" in
 	_expand) expand_prefixes ;;
 	_cidrs)  official_cidrs ;;
 	_sample) sample_lines "${2:-256}" ;;
+	_canaryv) canary_verdict "${2:-}" ;;
 	*)       usage; exit 2 ;;
 esac
