@@ -1,0 +1,420 @@
+#!/bin/sh
+# cf-ipcheck — 在路由器本机实测 Cloudflare 优选 IP 的可用性与质量
+# POSIX sh / BusyBox ash 兼容：不使用 [[ ]]、<<<、数组、local、echo -e。
+#
+#   run       跑一轮完整优选（前台）
+#   run-now   后台起一轮并立即返回（LuCI 按钮用）
+#   status    输出最近一轮状态 JSON
+#   show      人类可读榜单
+#   colo IP   查单个 IP 的落地机房代码
+#   daemon    按 interval_hours 循环
+#   selftest  离线自检（CI 用，不联网）
+#
+# 判"可用"的口径（照抄我从 luci-app-cloudflare-ip 的 observe.sh 里核实过的语义）：
+#   curl 退出码 0 且 200 <= http_code < 500；失败按 dns/connect/timeout/tls/http 分类。
+#   指标：connect(TCP 握手) / tls(appconnect-connect) / ttfb / total，排序 total->ttfb。
+#   为什么不用 ping：Cloudflare 是 anycast，ICMP 低延迟不代表你的线路能用。
+#
+# 配置来源：优先 uci（cf-ipcheck），若 uci 不可用（例如 CI 容器）则读 CFIP_* 环境变量，
+# 这样同一份脚本既能被 procd 用，也能被 tests/ 下的 busybox 测试直接驱动。
+
+set -u
+
+CONF=cf_ipcheck
+RUN_DIR=${CFIP_RUN_DIR:-/tmp/cf-ipcheck}
+ETC_DIR=${CFIP_ETC_DIR:-/etc/cf-ipcheck}
+STATUS=$RUN_DIR/status.json
+RESULT=$RUN_DIR/result.json
+BEST=$ETC_DIR/best-ip.txt
+LOG=$RUN_DIR/cf-ipcheck.log
+LOCK=$RUN_DIR/lock
+STOP=$RUN_DIR/STOP
+HAS_UCI=0
+command -v uci >/dev/null 2>&1 && HAS_UCI=1
+
+mkdir -p "$RUN_DIR" "$ETC_DIR" 2>/dev/null || true
+
+log() {
+	printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >>"$LOG" 2>/dev/null || true
+}
+
+# cfg <option> <default>
+cfg() {
+	v=''
+	if [ "$HAS_UCI" = 1 ]; then
+		v=$(uci -q get "$CONF.@global[0].$1" 2>/dev/null || true)
+	fi
+	[ -n "$v" ] || eval "v=\${CFIP_$(printf '%s' "$1" | tr 'a-z' 'A-Z' | tr '.' '_'):-}"
+	[ -n "$v" ] || v=$2
+	printf '%s' "$v"
+}
+
+# cfg_list <option> -> 每行一个元素
+cfg_list() {
+	if [ "$HAS_UCI" = 1 ]; then
+		uci -q show "$CONF" 2>/dev/null | \
+			sed -n "s/^$CONF\.[^.]*\.$1='\(.*\)'$/\1/p"
+		return 0
+	fi
+	eval "v=\${CFIP_$(printf '%s' "$1" | tr 'a-z' 'A-Z' | tr '.' '_'):-}"
+	[ -n "${v:-}" ] && printf '%s\n' "$v" | tr ',' '\n'
+}
+
+load_config() {
+	C_DOMAINS=$(cfg probe_domains 'www.cloudflare.com')
+	C_PORT=$(cfg probe_port 443)
+	C_BUDGET=$(cfg candidate_budget 256)
+	C_CONC=$(cfg concurrency 8)
+	C_TIMEOUT=$(cfg probe_timeout 5)
+	C_KEEP=$(cfg keep_count 10)
+	C_TTFB=$(cfg ttfb_limit 3000)
+	C_TOTAL=$(cfg total_limit 5000)
+	C_OFFICIAL=$(cfg use_official_ranges 1)
+	C_REUSE=$(cfg reuse_last 1)
+	C_COLOR=$(cfg colo_probe 1)
+	C_ANNOT=$(cfg annotate 'cf-ipcheck | {colo} | {total}ms')
+	C_GIST=$(cfg gist_id '')
+	C_GISTFILE=$(cfg gist_file 'cf-ip.txt')
+	C_TOKEN=$(cfg token_file '/etc/cf-ipcheck.token')
+	C_INTERVAL=$(cfg interval_hours 6)
+	C_UPLOAD=$(cfg upload_gist 0)
+	SOURCES=$(cfg_list community_sources)
+}
+
+# ---------------- 候选池（照 cf-auto 的三路合并思路）-----------------------
+# stdin: 每行 IPv4 或 CIDR（可带 :port） -> stdout: 可探测的单 IP
+# CIDR 按 /24 粒度展开（mask>=24 时按原样取 .102/.1），纯 IP 直接透传。
+# 这一步必须做：社区源（含 XIU2 那份 ip.txt）大多整段写 CIDR，
+# 不展开就会拿网络地址去连，结果是成片超时。
+expand_prefixes() {
+	awk '
+	{
+		s = $0
+		sub(/:.*/, "", s)                       # 去掉端口
+		if (s !~ /^([0-9]{1,3}\.){3}[0-9]{1,3}(\/[0-9]{1,2})?$/) next
+		split(s, p, "/")
+		ip = p[1]; mask = (p[2] == "" ? 32 : p[2] + 0)
+		n = split(ip, o, ".")
+		bad = 0
+		for (i = 1; i <= 4; i++) if (o[i] + 0 > 255) bad = 1
+		if (bad || mask < 8 || mask > 32) next
+
+		# 关键：不能拿网络地址去连。.x.y.z.0 是不可分配的，直接探测必然超时。
+		if (mask == 32) { print ip; next }
+		if (mask == 24) {
+			printf "%d.%d.%d.102\n", o[1] + 0, o[2] + 0, o[3] + 0
+			next
+		}
+		base = o[1] * 16777216 + o[2] * 65536 + o[3] * 256 + o[4]
+		if (mask > 24) {
+			a = base + 1                         # /25../31 取块内第一个可用地址
+			printf "%d.%d.%d.%d\n", int(a/16777216) % 256, int(a/65536) % 256, int(a/256) % 256, a % 256
+			next
+		}
+		blocks = (2 ^ (32 - mask)) / 256
+		for (k = 0; k < blocks; k++) {
+			a = int(base + k * 256)
+			printf "%d.%d.%d.102\n", int(a / 16777216) % 256, int(a / 65536) % 256, int(a / 256) % 256
+		}
+	}'
+}
+
+# 官方网段：把每个前缀展开成它覆盖的 /24，每个 /24 取一个代表地址
+pool_official() {
+	[ "$C_OFFICIAL" = 1 ] || return 0
+	j=$(curl -4 -fsS --max-time 20 https://api.cloudflare.com/client/v4/ips 2>/dev/null) || {
+		log '官方网段拉取失败，跳过'
+		return 0
+	}
+	if command -v jq >/dev/null 2>&1; then
+		printf '%s' "$j" | jq -r '.result.ipv4_prefixes[]?' 2>/dev/null
+	else
+		printf '%s' "$j" | tr ',' '\n' | sed -n 's/.*"ipv4_prefix":"\([0-9.\/]*\)".*/\1/p'
+	fi | expand_prefixes
+}
+
+pool_community() {
+	for s in $SOURCES; do
+		curl -4 -fsSL --max-time 30 -A 'cf-ipcheck/1.0' "$s" 2>/dev/null | \
+			grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?' | expand_prefixes || \
+			log "社区源无结果: $s"
+	done
+}
+
+pool_reuse() {
+	[ "$C_REUSE" = 1 ] || return 0
+	[ -f "$BEST" ] || return 0
+	grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' "$BEST" 2>/dev/null
+}
+
+build_pool() {
+	{
+		pool_official
+		pool_community
+		pool_reuse
+	} | grep -vE '^(127\.|0\.0\.0\.0$)' | sort -u | head -n "$C_BUDGET"
+}
+
+# ---------------- 单 IP 探测 ----------------------------------------------
+# 输出（TAB 分隔）： ip  code  connect_ms  tls_ms  ttfb_ms  total_ms  err
+probe_one() {
+	ip=$1
+	dom=$2
+	raw=$(curl -4 -o /dev/null -sS \
+		--connect-timeout "$C_TIMEOUT" --max-time "$C_TIMEOUT" \
+		--resolve "$dom:$C_PORT:$ip" "https://$dom/" \
+		-w '%{http_code},%{time_connect},%{time_appconnect},%{time_starttransfer},%{time_total}' \
+		2>/dev/null)
+	rc=$?
+	if [ -f "$STOP" ]; then
+		printf '%s\t0\t0\t0\t0\t0\tstopped\n' "$ip"
+		return 0
+	fi
+	if [ "$rc" = 0 ] && [ -n "$raw" ]; then
+		printf '%s' "$raw" | awk -F, -v ip="$ip" '
+			NF >= 5 {
+				c = $2 * 1000; a = $3 * 1000; s = $4 * 1000; t = $5 * 1000
+				tls = a - c; if (tls < 0) tls = 0
+				err = ($1 >= 200 && $1 < 500) ? "none" : "http"
+				printf "%s\t%s\t%.1f\t%.1f\t%.1f\t%.1f\t%s\n", ip, $1, c, tls, s, t, err
+			}'
+		return 0
+	fi
+	case "$rc" in
+		6)  err=dns ;;
+		7)  err=connect ;;
+		28) err=timeout ;;
+		35|51|60|66|77|83|90|92) err=tls ;;
+		*)  err="transport_$rc" ;;
+	esac
+	printf '%s\t0\t0\t0\t0\t0\t%s\n' "$ip" "$err"
+}
+
+colo_of() {
+	ip=${1:-}
+	[ -n "$ip" ] || return 0
+	d=$(printf '%s' "$C_DOMAINS" | cut -d, -f1)
+	[ -n "$d" ] || return 0
+	curl -4 -sS --connect-timeout "$C_TIMEOUT" --max-time "$C_TIMEOUT" \
+		--resolve "$d:$C_PORT:$ip" "https://$d/cdn-cgi/trace" 2>/dev/null | \
+		sed -n 's/^colo=//p' | head -n 1 || true
+}
+
+# ---------------- 过滤 + 排序（纯文本处理，可离线自测）--------------------
+# stdin: probe_one 的 TSV；stdout: 达标并按 total->ttfb 排序的前 N 行
+rank() {
+	awk -F'\t' -v ttfb="$C_TTFB" -v tot="$C_TOTAL" '
+		NF >= 7 && $7 == "none" && $6+0 > 0 && $6+0 <= tot && $5+0 <= ttfb { print }' |
+		sort -t "$(printf '\t')" -k6,6n -k5,5n |
+		head -n "$C_KEEP"
+}
+
+# ---------------- 落地输出 -------------------------------------------------
+write_outputs() {
+	ranked=$1
+	pool_n=$2
+	tmp=$RUN_DIR/best.tmp
+	printf '%s\n' "$ranked" >"$RUN_DIR/ranked.tsv"
+	# 落地机房只对入围 IP 查一次，结果并进同一张表：
+	# best-ip.txt 与 result.json 都从 colored.tsv 生成，避免两个输出内容不一致
+	# （页面上的「落地机房」列读的就是 result.json 的 colo 字段）。
+	colored=$RUN_DIR/colored.tsv
+	: >"$colored"
+	while IFS="$(printf '\t')" read -r ip code c tls ttfb tot err; do
+		[ -n "$ip" ] || continue
+		colo=''
+		[ "$C_COLOR" = 1 ] && colo=$(colo_of "$ip")
+		[ -n "$colo" ] || colo='n/a'
+		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$ip" "$code" "$c" "$tls" "$ttfb" "$tot" "$colo" >>"$colored"
+	done <"$RUN_DIR/ranked.tsv"
+
+	: >"$tmp"
+	while IFS="$(printf '\t')" read -r ip code c tls ttfb tot colo; do
+		[ -n "$ip" ] || continue
+		ann=$(printf '%s' "$C_ANNOT" | sed "s/{colo}/$colo/g; s/{total}/$tot/g")
+		printf '%s:%s %s\n' "$ip" "$C_PORT" "$ann" >>"$tmp"
+	done <"$colored"
+	mv "$tmp" "$BEST"
+
+	{
+		printf '{"state":"done","finished":"%s","pool":%s,"usable":%s,"domains":"%s","items":[' \
+			"$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$pool_n" \
+			"$(grep -c . "$colored" || true)" "$C_DOMAINS"
+		awk -F'\t' '
+			NF >= 7 {
+				if (n++) printf ","
+				printf "{\"ip\":\"%s\",\"code\":%s,\"connect_ms\":%s,\"tls_ms\":%s,\"ttfb_ms\":%s,\"total_ms\":%s,\"colo\":\"%s\"}",
+					$1, $2, $3, $4, $5, $6, $7
+			}' "$colored"
+		printf ']}'
+	} >"$RUN_DIR/result.tmp" && mv "$RUN_DIR/result.tmp" "$RESULT"
+	cp "$RESULT" "$STATUS" 2>/dev/null || true
+}
+
+# ---------------- Gist 上传（可选；失败只记日志，不影响本地结果）----------
+json_escape_file() { # $1=path -> 输出带引号的 JSON 字符串
+	awk 'BEGIN { printf "\"" }
+	     { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); printf "%s\\n", $0 }
+	     END  { printf "\"" }' "$1"
+}
+
+upload_gist() {
+	[ -s "$BEST" ] || { log '无结果可上传'; return 1; }
+	[ -n "$C_GIST" ] || { log '未配置 gist_id，跳过上传'; return 1; }
+	[ -f "$C_TOKEN" ] || { log "缺 token 文件 $C_TOKEN"; return 1; }
+	tok=$(cat "$C_TOKEN")
+	content=$(json_escape_file "$BEST")
+	payload=$(printf '{"files":{"%s":{"content":%s}}}' "$C_GISTFILE" "$content")
+	if curl -4 -fsS -X PATCH "https://api.github.com/gists/$C_GIST" \
+		-H "Authorization: Bearer $tok" \
+		-H 'Accept: application/vnd.github+json' \
+		-H 'Content-Type: application/json' \
+		--data-binary "$payload" >/dev/null 2>&1; then
+		log 'Gist 已更新'
+	else
+		log 'Gist 上传失败'
+		return 1
+	fi
+}
+
+# ---------------- 一轮完整流程 --------------------------------------------
+do_run() {
+	load_config
+	if [ -f "$LOCK" ]; then
+		log '已有实例在运行，跳过本轮'
+		return 0
+	fi
+	printf '%s' "$$" >"$LOCK"
+	rm -f "$STOP"
+	started=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+	printf '{"state":"running","started":"%s","items":[]}' "$started" >"$STATUS"
+
+	pool=$(build_pool)
+	pool_n=$(printf '%s\n' "$pool" | grep -c . || true)
+	log "候选池 $pool_n 个；探测域名 $C_DOMAINS"
+	if [ "$pool_n" = 0 ]; then
+		log '候选池为空，终止本轮'
+		rm -f "$LOCK"
+		printf '{"state":"error","reason":"empty_pool","items":[]}' >"$STATUS"
+		return 1
+	fi
+
+	probed=$RUN_DIR/probed.tsv
+	: >"$probed"
+	i=0
+	for ip in $pool; do
+		for dom in $(printf '%s' "$C_DOMAINS" | tr ',' ' '); do
+			probe_one "$ip" "$dom" >>"$probed" &
+			i=$((i + 1))
+			[ "$i" -ge "$C_CONC" ] && { wait; i=0; }
+		done
+	done
+	wait
+
+	ranked=$(rank <"$probed")
+	usable=$(printf '%s\n' "$ranked" | grep -c . || true)
+	log "达标 $usable / $pool_n"
+	write_outputs "$ranked" "$pool_n"
+	rm -f "$LOCK"
+	[ "$C_UPLOAD" = 1 ] && upload_gist
+	log '本轮完成'
+}
+
+# ---------------- 离线自检（CI 用；不联网、不依赖 uci）--------------------
+selftest() {
+	fails=0
+	check() { # $1=desc $2=got $3=want
+		if [ "$2" = "$3" ]; then
+			printf '[PASS] %s\n' "$1"
+		else
+			printf '[FAIL] %s: got <%s> want <%s>\n' "$1" "$2" "$3"
+			fails=$((fails + 1))
+		fi
+	}
+	C_TTFB=3000
+	C_TOTAL=5000
+	C_KEEP=3
+	# 104.16.1.1 total=120 最优；104.16.9.9 total=8000 超 total_limit 应剔除；
+	# 104.16.5.5 total=400 但 ttfb=4500 超 ttfb_limit 应剔除；104.16.2.2 失败(dns)应剔除。
+	sample=$(printf '104.16.2.2\t0\t0\t0\t0\t0\tdns\n104.16.1.1\t200\t100.0\t50.0\t118.0\t120.0\tnone\n104.16.9.9\t200\t6000.0\t500.0\t7000.0\t8000.0\tnone\n104.16.5.5\t200\t300.0\t200.0\t4500.0\t4600.0\tnone\n104.16.3.3\t200\t150.0\t60.0\t260.0\t270.0\tnone')
+	got=$(printf '%s\n' "$sample" | rank | cut -f1 | tr '\n' ' ')
+	check '过滤不可用/超标并按时延升序' "$got" '104.16.1.1 104.16.3.3 '
+	# 全失败时 rank 应产出空而非报错
+	only_bad=$(printf '1.1.1.1\t0\t0\t0\t0\t0\ttimeout\n' | rank | grep -c . || true)
+	check '全部失败时返回空榜单' "$only_bad" '0'
+	# keep_count 截断
+	C_KEEP=1
+	trunc=$(printf '%s\n' "$sample" | rank | cut -f1 | tr '\n' ' ')
+	check 'keep_count 截断' "$trunc" '104.16.1.1 '
+	C_KEEP=10
+	# JSON 转义：内容里的引号与反斜杠不能破坏结构。
+	# 输入行 `ok a"b\c` 期望输出 "ok a\"b\\c\n"
+	if printf 'ok %s\n' 'a"b\c' >"$RUN_DIR/st.txt"; then
+		esc=$(json_escape_file "$RUN_DIR/st.txt")
+		check 'JSON 字符串转义' "$esc" '"ok a\"b\\c\n"'
+	fi
+	rm -f "$RUN_DIR/st.txt"
+	# CIDR 展开：绞不吐出网络地址（.0），否则整片超时
+	got=$(printf '173.245.48.0/20\n' | sh "$0" _expand 2>/dev/null | head -1)
+	check '/20 展开为首个 /24 的 .102' "$got" '173.245.48.102'
+	got=$(printf '103.160.24.0/24\n' | sh "$0" _expand 2>/dev/null | head -1)
+	check '/24 不取网络地址' "$got" '103.160.24.102'
+	got=$(printf '198.41.192.0/24\n192.171.120.0/24\n' | sh "$0" _expand 2>/dev/null | grep -c '\.0$' || true)
+	check '展开结果里不含 .0 结尾' "$got" '0'
+	got=$(printf '104.28.1.5\n' | sh "$0" _expand 2>/dev/null | head -1)
+	check '裸 IP 原样保留' "$got" '104.28.1.5'
+	got=$(printf '104.28.1.5:8443\n' | sh "$0" _expand 2>/dev/null | head -1)
+	check 'IP:port 去掉端口后保留' "$got" '104.28.1.5'
+
+	if [ "$fails" = 0 ]; then
+		echo '[OK] selftest 全部通过'
+		return 0
+	fi
+	echo "[NG] selftest 失败 $fails 项"
+	return 1
+}
+
+usage() {
+	cat <<'EOF'
+用法: cf-ipcheck <command>
+  run       跑一轮完整优选（前台执行，期间不要重复触发）
+  run-now   后台起一轮并立即返回（Web 按钮用）
+  status    输出最近一轮状态 JSON
+  show      以人类可读形式输出榜单
+  colo IP   查询单个 IP 的落地机房代码（如 SIN/NRT/HKG）
+  stop      请求当前这一轮尽快收尾
+  daemon    常驻，按 interval_hours 循环
+  selftest  离线自检，不联网
+EOF
+}
+
+case "${1:-}" in
+	run)     do_run ;;
+	run-now) if [ -f "$LOCK" ]; then
+				 printf '{"state":"running"}\n'
+				 exit 0
+			 fi
+			 ( do_run >/dev/null 2>&1 & )
+			 printf '{"state":"started"}\n' ;;
+	status)  if [ -s "$STATUS" ]; then cat "$STATUS"; else printf '{"state":"never_run","items":[]}\n'; fi ;;
+	show)    if [ -s "$BEST" ]; then cat "$BEST"; else echo '尚无结果，先执行 cf-ipcheck run'; fi ;;
+	colo)    load_config; colo_of "${2:-}"
+			 printf '\n' ;;
+	stop)    : >"$STOP"; echo '已请求停止（当前这一轮结束后不再继续探测）' ;;
+	daemon)  while :; do
+				 load_config
+				 if [ "$(cfg enabled 0)" = 1 ]; then
+					 do_run || log '本轮异常结束'
+					 secs=$((C_INTERVAL))
+					 [ "$secs" -gt 0 ] 2>/dev/null || secs=6
+					 sleep $((secs * 3600))
+				 else
+					 # 关掉时空转短睡，LuCI 里打开开关一分钟内就开始测，
+					 # 不必等上一个 6 小时周期，也不需要重启服务。
+					 sleep 60
+				 fi
+			 done ;;
+	selftest) selftest ;;
+	_expand) expand_prefixes ;;
+	*)       usage; exit 2 ;;
+esac
