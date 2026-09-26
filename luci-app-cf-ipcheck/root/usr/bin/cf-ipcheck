@@ -119,6 +119,19 @@ expand_prefixes() {
 	}'
 }
 
+# stdin: /client/v4/ips 的 JSON；stdout: 每行一个 IPv4 CIDR
+# 键名以接口实际返回为准：现在是 ipv4_cidrs，早年是 ipv4_prefixes，两个都取，
+# 取不到就交给上层记日志——绝不静默当空池处理。
+official_cidrs() {
+	if command -v jq >/dev/null 2>&1; then
+		jq -r '.result.ipv4_cidrs[]?, .result.ipv4_prefixes[]?' 2>/dev/null
+		return 0
+	fi
+	data=$(cat)
+	printf '%s\n' "$data" | sed -n 's|.*"ipv4_cidrs":\[\([^]]*\)\].*|\1|p' | tr ',' '\n' | tr -d '" '
+	printf '%s\n' "$data" | sed -n 's|.*"ipv4_prefixes":\[\([^]]*\)\].*|\1|p' | tr ',' '\n' | tr -d '" '
+}
+
 # 官方网段：把每个前缀展开成它覆盖的 /24，每个 /24 取一个代表地址
 pool_official() {
 	[ "$C_OFFICIAL" = 1 ] || return 0
@@ -126,13 +139,13 @@ pool_official() {
 		log '官方网段拉取失败，跳过'
 		return 0
 	}
-	if command -v jq >/dev/null 2>&1; then
-		printf '%s' "$j" | jq -r '.result.ipv4_prefixes[]?' 2>/dev/null
-	else
-		printf '%s' "$j" | tr ',' '\n' | sed -n 's/.*"ipv4_prefix":"\([0-9.\/]*\)".*/\1/p'
-	fi | expand_prefixes
+	got=$(printf '%s' "$j" | official_cidrs | expand_prefixes)
+	if [ -z "$got" ]; then
+		log '官方网段解析结果为空：接口字段可能已变更（现在认 ipv4_cidrs / ipv4_prefixes）'
+		return 0
+	fi
+	printf '%s\n' "$got"
 }
-
 pool_community() {
 	for s in $SOURCES; do
 		curl -4 -fsSL --max-time 30 -A 'cf-ipcheck/1.0' "$s" 2>/dev/null | \
@@ -367,6 +380,16 @@ selftest() {
 	got=$(printf '104.28.1.5:8443\n' | sh "$0" _expand 2>/dev/null | head -1)
 	check 'IP:port 去掉端口后保留' "$got" '104.28.1.5'
 
+	# 官方网段接口字段：现网返回 ipv4_cidrs，早年是 ipv4_prefixes，两个都得认
+	got=$(printf '%s' '{"result":{"ipv4_cidrs":["173.245.48.0/24","104.28.1.0/24"]}}' | sh "$0" _cidrs 2>/dev/null | tr '
+' ' ')
+	check '接口 ipv4_cidrs 可取段' "$got" '173.245.48.0/24 104.28.1.0/24 '
+	got=$(printf '%s' '{"result":{"ipv4_prefixes":["1.2.3.0/24"]}}' | sh "$0" _cidrs 2>/dev/null | tr '
+' ' ')
+	check '兼容旧字段 ipv4_prefixes' "$got" '1.2.3.0/24 '
+	got=$(printf '%s' '{"result":{"ipv6_cidrs":["2400:3200::/32"]}}' | sh "$0" _cidrs 2>/dev/null | grep -c . || true)
+	check '无 IPv4 字段时不胡编' "$got" '0'
+
 	if [ "$fails" = 0 ]; then
 		echo '[OK] selftest 全部通过'
 		return 0
@@ -417,5 +440,6 @@ case "${1:-}" in
 			 done ;;
 	selftest) selftest ;;
 	_expand) expand_prefixes ;;
+	_cidrs)  official_cidrs ;;
 	*)       usage; exit 2 ;;
 esac

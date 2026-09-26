@@ -6,7 +6,7 @@ PKG_RELEASE:=1
 
 LUCI_TITLE:=Cloudflare preferred-IP local checker
 LUCI_PKGARCH:=all
-LUCI_DEPENDS:=+curl +ca-bundle
+LUCI_DEPENDS:=+curl +jq +ca-bundle
 
 include $(TOPDIR)/feeds/luci/luci.mk
 
