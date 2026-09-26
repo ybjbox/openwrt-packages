@@ -5,6 +5,15 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      sdk_arch:
+        description: >-
+          OpenWrt SDK 镜像 tag：<arch>-<完整小版本>，例如
+          aarch64_cortex-a53-25.12.5（= 雅典娜 IPQ6018 / LibWrt 25.12 的
+          DISTRIB_ARCH）或 x86_64-25.12.5。写 24.10 这种缺小版本的 tag 会
+          直接 "image not found"。
+        required: false
+        default: aarch64_cortex-a53-25.12.5
 
 jobs:
   lint-and-busybox:
@@ -38,7 +47,37 @@ jobs:
 
       - name: Build with OpenWrt SDK
         # gh-action-sdk has no "release" input; the target architecture is
-        # selected via the ARCH environment variable.
+        # selected via the ARCH environment variable (image tag
+        # ghcr.io/openwrt/sdk:<ARCH>, must be a full point release).
+        #
+        # PACKAGES 只限定编译我们这个包：不设它时 entrypoint 会走
+        # "compile all packages in feed"，等于把整个 feed 的依赖全编一遍
+        # （python3 / bluez / icu …），aarch64 镜像还要 QEMU 模拟，实测 48 分钟。
         uses: openwrt/gh-action-sdk@v11
         env:
-          ARCH: x86_64-25.12.5
+          ARCH: ${{ inputs.sdk_arch }}
+          PACKAGES: luci-app-cf-ipcheck
+          IGNORE_ERRORS: '0'
+          BUILD: '1'
+
+      - name: List built packages
+        # gh-action-sdk 的 entrypoint 结尾是 `mv bin/ /artifacts/`，
+        # 所以产物就落在 $GITHUB_WORKSPACE/bin 下。没有产物必须报错，
+        # 否则「绿色 = 构建成功」是个假信号。
+        run: |
+          if [ ! -d bin ]; then
+            echo "::error::SDK 没有产出 bin/ 目录"
+            exit 1
+          fi
+          find bin -type f \( -name '*.ipk' -o -name '*.apk' \) -exec ls -l {} +
+          find bin -type f \( -name '*.ipk' -o -name '*.apk' \) | grep -q cf-ipcheck || {
+            echo "::error::bin/ 里没有 luci-app-cf-ipcheck 的包文件"
+            exit 1
+          }
+
+      - name: Upload built packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: luci-app-cf-ipcheck-${{ inputs.sdk_arch }}
+          path: bin/
+          retention-days: 30

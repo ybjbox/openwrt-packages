@@ -8,6 +8,8 @@
 #   2) RED LINE 1: never ship dhcp.js / bandix*.js under a package root/www/
 #   3) RED LINE 3: no cross-package same-name file (opkg install conflict)
 #   4) RED LINE 2: weak hint that the sync script restarts bandix (info only)
+#   5) RED LINE 4: LuCI view JS traps (CBI render promise in array, .stdout
+#      after rpc.declare's expect: already unwrapped it)
 set -u
 
 fail=0
@@ -24,8 +26,8 @@ find . \
     \( -name .git -o -name node_modules -o -name scratch -o -name 'tmp_*' \) -prune -o \
     -type f -print > "$ALL_FILES"
 
-# === [1/4] shell syntax check (sh -n) ========================================
-echo "=== [1/4] Shell syntax check (sh -n) ==="
+# === [1/5] shell syntax check (sh -n) ========================================
+echo "=== [1/5] Shell syntax check (sh -n) ==="
 : > "$SHELL_LIST"
 
 # .sh files anywhere in the repo.
@@ -62,8 +64,8 @@ while IFS= read -r f; do
     fi
 done < "$SHELL_LIST"
 
-# === [2/4] RED LINE 1: no forbidden js shipped under root/www ================
-echo "=== [2/4] Red line 1: forbidden js under root/www/ ==="
+# === [2/5] RED LINE 1: no forbidden js shipped under root/www ================
+echo "=== [2/5] Red line 1: forbidden js under root/www/ ==="
 rl1=0
 while IFS= read -r f; do
     [ -z "$f" ] && continue
@@ -83,8 +85,8 @@ if [ "$rl1" = 0 ]; then
 fi
 [ "$rl1" = 0 ] || fail=1
 
-# === [3/4] RED LINE 3: no cross-package duplicate installed file =============
-echo "=== [3/4] Red line 3: cross-package duplicate file paths ==="
+# === [3/5] RED LINE 3: no cross-package duplicate installed file =============
+echo "=== [3/5] Red line 3: cross-package duplicate file paths ==="
 # Strip the package prefix up to and including /root/, then detect duplicates.
 while IFS= read -r f; do
     [ -z "$f" ] && continue
@@ -100,8 +102,8 @@ else
     echo "[PASS] red-line-3: no cross-package duplicate file paths"
 fi
 
-# === [4/4] RED LINE 2: bandix restart hint (info only, never fails) ==========
-echo "=== [4/4] Red line 2: bandix restart hint (info only) ==="
+# === [4/5] RED LINE 2: bandix restart hint (info only, never fails) ==========
+echo "=== [4/5] Red line 2: bandix restart hint (info only) ==="
 hint=0
 while IFS= read -r f; do
     [ -z "$f" ] && continue
@@ -118,6 +120,42 @@ done < "$ALL_FILES"
 if [ "$hint" = 0 ]; then
     echo "[INFO] no explicit bandix restart logic detected; ensure the sync"
     echo "      script restarts bandix after rewriting hostname_bindings.txt"
+fi
+
+# === [5/5] RED LINE 4: LuCI view JS traps (found on real device) =============
+# 这两条都是 2026-09-26 在雅典娜真机上验出来的：第一条让页面永远停在
+# 「正在载入视图」，第二条让结果表永远显示「尚未运行过」。
+echo "=== [5/5] Red line 4: LuCI view JS traps ==="
+rl4=0
+while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    case "$f" in
+        */htdocs/luci-static/resources/view/*.js) ;;
+        *) continue ;;
+    esac
+
+    # (a) CBI 的 Map.render() 返回的是 Promise。把它写进节点数组里
+    #     （return [bar, table, m.render()]）等于把 Promise 当 DOM 节点用。
+    if grep -n "\.render()" "$f" 2>/dev/null | grep -v "Promise\.all" | \
+       grep -q "\[[^]]*\.render()"; then
+        echo "[FAIL] view js: $f puts a CBI .render() promise into a node array"
+        rl4=1
+    fi
+
+    # (b) rpc.declare 里写了 expect: 时，resolve 到的已经是拆好层的值
+    #     （字符串），再去取 .stdout 恒为 undefined。
+    if grep -q "expect:" "$f" 2>/dev/null; then
+        if sed -e 's,//.*,,' "$f" | grep -v '^[[:space:]]*[*]' | \
+           grep -q "\.stdout\|\.stderr"; then
+            echo "[FAIL] view js: $f reads .stdout although rpc.declare unwraps it"
+            rl4=1
+        fi
+    fi
+done < "$ALL_FILES"
+if [ "$rl4" = 0 ]; then
+    echo "[PASS] red-line-4: LuCI view js has no CBI-promise / expect-unwrap trap"
+else
+    fail=1
 fi
 
 # --- cleanup ---

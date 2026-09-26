@@ -19,3 +19,11 @@ tests/** text eol=lf
 **/root/usr/bin/** text eol=lf
 **/etc/init.d/** text eol=lf
 **/etc/config/** text eol=lf
+
+# LuCI 视图 JS 与 menu/acl JSON 会原样装进固件的 /www 与 /usr/share。
+# 真机踩过：Windows 上 core.autocrlf=true 时 `git archive` 把它们导出成
+# CRLF（/www/.../settings.js 里出现 \r\n）。JS 能容忍，但没必要引入差异，
+# 而且这类文件是文本载荷，统一强制 LF。
+**/htdocs/** text eol=lf
+**/usr/share/luci/** text eol=lf
+**/usr/share/rpcd/** text eol=lf

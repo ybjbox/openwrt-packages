@@ -20,10 +20,15 @@ var callExec = rpc.declare({
 });
 
 function execCfIpcheck(args) {
-	return callExec(CMD, args).then(function (res) {
-		if (res == null || typeof res.stdout !== 'string')
+	/* 注意：expect:{stdout:''} 已经把 stdout 拆出来了，
+	 * 这里 resolve 到的就是那段字符串本身，不是 {stdout:...} 对象。
+	 * 真机上验过一次：写成 res.stdout 会永远拿到 undefined，
+	 * 页面于是无论测没测过都显示「尚未运行过」。
+	 */
+	return callExec(CMD, args).then(function (out) {
+		if (typeof out !== 'string')
 			return null;
-		return res.stdout;
+		return out;
 	}, function () {
 		return null;
 	});
@@ -130,6 +135,46 @@ function autoRefresh(node) {
 
 	if (node)
 		node.__cf_timer = timer;
+}
+
+/* 按钮事件：Map 节点 resolve 出来后才能拿到 id，所以带重试地绑 */
+function bindButtons(tableNode, st, tries) {
+	var run = document.getElementById('cf-ipcheck-run');
+	var stop = document.getElementById('cf-ipcheck-stop');
+	var rel = document.getElementById('cf-ipcheck-refresh');
+
+	if (!run || !stop || !rel) {
+		if ((tries || 0) < 40)
+			setTimeout(function () { bindButtons(tableNode, st, (tries || 0) + 1); }, 50);
+		return;
+	}
+
+	run.onclick = function () {
+		this.disabled = true;
+		var self = this;
+		execCfIpcheck(['run-now']).then(function (out) {
+			self.disabled = false;
+			ui.toast('info', _('已启动一轮测速'), out || _('已后台运行'));
+			refreshResult().then(autoRefresh);
+		});
+		return false;
+	};
+
+	stop.onclick = function () {
+		execCfIpcheck(['stop']).then(function () {
+			ui.toast('warning', _('已请求停止'), _('当前这轮收尾后不再继续探测'));
+			refreshResult();
+		});
+		return false;
+	};
+
+	rel.onclick = function () {
+		refreshResult();
+		return false;
+	};
+
+	if (st && st.state === 'running')
+		autoRefresh(tableNode);
 }
 
 return view.extend({
@@ -283,47 +328,17 @@ return view.extend({
 			  '（用只需要 gist 权限的经典令牌）。'));
 		o.default = '/etc/cf-ipcheck.token';
 
-		/* ---- 拼页面：操作条 + 结果表 + 表单 ---- */
+		/* ---- 拼页面：操作条 + 结果表 + 表单 ---- *
+		 * m.render() 给的是 Promise，不是节点：不能直接塞进返回数组里。
+		 * 先把 Map 节点 resolve 出来，再拼成纯节点数组返回。
+		 */
 		var table = renderTable(st);
-		var nodes = [bar, table, m.render()];
+		var nodes = [bar, table];
 
-		/* 按钮事件：DOM 就绪后再绑 */
-		setTimeout(function () {
-			var run = document.getElementById('cf-ipcheck-run');
-			var stop = document.getElementById('cf-ipcheck-stop');
-			var rel = document.getElementById('cf-ipcheck-refresh');
-
-		if (run)
-			run.onclick = function () {
-				this.disabled = true;
-				var self = this;
-				execCfIpcheck(['run-now']).then(function (out) {
-					self.disabled = false;
-					ui.toast('info', _('已启动一轮测速'), out || _('已后台运行'));
-					refreshResult().then(autoRefresh);
-				});
-				return false;
-			};
-
-		if (stop)
-			stop.onclick = function () {
-				execCfIpcheck(['stop']).then(function () {
-					ui.toast('warning', _('已请求停止'), _('当前这轮收尾后不再继续探测'));
-					refreshResult();
-				});
-				return false;
-			};
-
-		if (rel)
-			rel.onclick = function () {
-				refreshResult();
-				return false;
-			};
-
-		if (st.state === 'running')
-			autoRefresh(table);
-		}, 50);
-
-		return nodes;
+		return m.render().then(function (mapnode) {
+			nodes.push(mapnode);
+			bindButtons(table, st, 0);
+			return nodes;
+		});
 	}
 });
