@@ -50,6 +50,44 @@ make menuconfig   # LuCI -> Applications -> luci-app-cf-ipcheck
 
 刷机后在 **服务 → Cloudflare 优选 IP 实测** 打开页面。
 
+25.12 起官方包后端是 apk，没有 opkg，也不能手工搓 `.apk`（`ADBd` 归档 + 设备端
+apk 无 `mkpkg`）。不想重编固件的话：Actions → CI → Run workflow（`sdk_arch` 填本机
+`uci -q get openwrt.release.DISTRIB_ARCH` 对应的 `<arch>-<完整小版本>`），
+下载 `luci-app-cf-ipcheck-*` 产物里的包文件，再：
+
+```bash
+scp luci-app-cf-ipcheck_*_all.apk root@10.0.0.1:/tmp/
+ssh root@10.0.0.1 'apk add --allow-untrusted /tmp/luci-app-cf-ipcheck-*.apk'
+```
+
+包是 `PKGARCH := all`，产物在 apk 记账里是 `A:noarch`，所以哪个架构的 SDK 编出来
+的都通用（与本仓库 luci-app-dhcp-comment 一致，已在真机核对）。
+
+## 验证状态
+
+2026-09-26 在 LibWrt 25.12.2 / qualcommax-ipq60xx（`aarch64_cortex-a53`）真机上验证：
+
+- `selftest` 全通过；`sh -n` 通过；procd `daemon` 常驻并 `enabled=0` 时空转。
+- 从浏览器登录态走 rpcd `file.exec`（受本包 ACL 约束）执行 `run-now`，
+  56 秒跑完一轮：候选 256 → 达标 192 → 榜单 10，`total_ms` 873.3~945.8 升序，
+  `code` 全 200，`colo` 全部落到 LAX。
+- 视图 JS 在设备自带的 LuCI（form/rpc/ui/view）里编译执行，结果表按真实
+  status JSON 生成 10 行 × 8 列，三个按钮的 click 处理函数均已挂上。
+- SDK 构建：`x86_64-25.12.5` 与 `aarch64_cortex-a53-25.12.5` 两个镜像下
+  `make package/luci-app-cf-ipcheck/compile` + `make package/index` 全绿，
+  产物为 `bin/packages/<arch>/action/luci-app-cf-ipcheck-1.0.0-r1.apk`（13707 B，
+  以 `ADBd` 开头，apk 记账里 `A:noarch`）。
+- 该产物已在这台设备上 `apk add --allow-untrusted` 装成功（`OK: 177.2 MiB in 505 packages`）。
+  第一次装的时候暴露出真缺陷：`root/etc/init.d/cf-ipcheck` 与 `root/usr/bin/cf-ipcheck`
+  在仓库里是 100644，装到设备上成了 `-rw-r--r--`，procd 的 enable/start 与
+  rpcd 的 `file.exec` 全都 Permission denied —— 手工 chmod 会把这个问题一直藏着。
+  现已 `git update-index --chmod=+x` 修正，并由 `tests/lint.sh` 的 [6/6] 钉死。
+
+未覆盖：肉眼在普通浏览器里看整页排版（验证用的内嵌页签
+`document.hidden=true` 且 `requestAnimationFrame` 不触发，LuCI 的视图引导和
+CBI `Map.render()` 在这种页签里根本不会完成 —— 同环境下已装的
+luci-app-dhcp-comment 一样停在「正在载入视图」，故与本包无关）。
+
 ## 配置项
 
 | UCI 选项 | 默认 | 说明 |
