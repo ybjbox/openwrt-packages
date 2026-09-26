@@ -41,4 +41,4 @@ jobs:
         # selected via the ARCH environment variable.
         uses: openwrt/gh-action-sdk@v11
         env:
-          ARCH: aarch64_cortex-a53-25.12.5
+          ARCH: x86_64-25.12.5
