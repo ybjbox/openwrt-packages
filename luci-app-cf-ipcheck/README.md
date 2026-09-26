@@ -129,4 +129,6 @@ rm -rf /etc/cf-ipcheck /tmp/cf-ipcheck /etc/cf-ipcheck.token
 ## 依赖与许可
 
 只依赖 `curl` 与 `ca-bundle`（`jq` 有则用于解析官方网段 JSON，没有会退化为文本提取）。
-本包不捆绑任何第三方二进制。原始项目许可见上游说明；Apache-2.0，与 `openwrt-packages` 一致。
+本包为独立实现，不捆绑任何第三方二进制：探测口径与候选池三路合并的思路参考了
+[ChEnLeo-7/openwrt-cf-auto](https://github.com/ChEnLeo-7/openwrt-cf-auto)（MIT）的设计，但代码不是它的衍作品，
+许可随 `openwrt-packages` 采用 Apache-2.0。
