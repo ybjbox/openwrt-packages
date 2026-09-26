@@ -87,6 +87,7 @@ load_config() {
 	C_OFFICIAL=$(cfg use_official_ranges 1)
 	C_REUSE=$(cfg reuse_last 1)
 	C_COLOR=$(cfg colo_probe 1)
+	C_COLODOMAIN=$(cfg colo_domain 'www.cloudflare.com')
 	C_CANARY=$(cfg canary_check 1)
 	C_PUSER=$(cfg probe_user nobody)
 	C_ANNOT=$(cfg annotate 'cf-ipcheck | {colo} | {total}ms')
@@ -285,13 +286,22 @@ probe_one() {
 	printf '%s\t0\t0\t0\t0\t0\t%s\n' "$ip" "$err"
 }
 
+trace_colo() { # $1=域名 $2=IP —— 取该 IP 的 colo= 字段
+	d=$1
+	[ -n "$d" ] || return 0
+	run_probe "curl -4 -sS --connect-timeout $C_TIMEOUT --max-time $C_TIMEOUT --resolve $d:$C_PORT:$2 https://$d/cdn-cgi/trace" 2>/dev/null | \
+		sed -n 's/^colo=//p' | head -n 1 || true
+}
+
+# 落地机房。先用探测域名试，拿不到再用 colo_domain 兜底 ——
+# EDT/Worker 这类节点域名会拦掉 /cdn-cgi/trace 返回 403，这时候不兜底的话
+# 整列 colo 全是 n/a，页面上「落地机房」和 best-ip.txt 里的 {colo} 就都废了。
 colo_of() {
 	ip=${1:-}
 	[ -n "$ip" ] || return 0
-	d=$(printf '%s' "$C_DOMAINS" | cut -d, -f1)
-	[ -n "$d" ] || return 0
-	run_probe "curl -4 -sS --connect-timeout $C_TIMEOUT --max-time $C_TIMEOUT --resolve $d:$C_PORT:$ip https://$d/cdn-cgi/trace" 2>/dev/null | \
-		sed -n 's/^colo=//p' | head -n 1 || true
+	c=$(trace_colo "$(printf '%s' "$C_DOMAINS" | cut -d, -f1 | tr -d ' ')" "$ip")
+	[ -n "$c" ] || c=$(trace_colo "$C_COLODOMAIN" "$ip")
+	printf '%s' "$c"
 }
 
 # ---------------- 过滤 + 排序（纯文本处理，可离线自测）--------------------
@@ -363,10 +373,13 @@ canary_check() {
 # 候选 IP 自己的握手与响应（实测同一个 IP：nobody 下 connect 0.19s，root 下 0.0007s）。
 # 留空 probe_user 就退回 root 直发（会被接管，canary_check 会把那轮标成不可信）。
 run_probe() { # $1 = 交给 shell 执行的命令串
+	# stdin 一定要掐掉：busybox 的 su 会吃掉继承来的 stdin。用 `sh -s < 脚本`
+	# 这种方式调用时，第一条探测就把脚本剩下的部分吞了，后面几轮静默不执行；
+	# 从管道/rpcd 调用同样有这颗雷。
 	if [ -n "$C_PUSER" ] && command -v su >/dev/null 2>&1; then
-		su -s /bin/sh "$C_PUSER" -c "$1"
+		su -s /bin/sh "$C_PUSER" -c "$1" </dev/null
 	else
-		sh -c "$1"
+		sh -c "$1" </dev/null
 	fi
 }
 
@@ -452,7 +465,23 @@ check_sources() {
 	printf ']\n'
 }
 
-# ---------------- 落地输出 -------------------------------------------------
+# 注释模板渲染：把 {colo} / {total} 换成这一行的值。
+# 不用 sed：`s/{colo}/$colo/g` 在 colo=n/a 时会被斜杠截断（sed 直接报
+# unknown command，结果 IP.txt 里留下没展开的 {colo}），值里带 & 也会被 sed
+# 当成“整段匹配”插回去。这里用纯字符串替换，什么字符都能安全落地。
+render_annotate() { # $1=模板 $2=colo $3=total
+	printf '%s\n' "$1" | awk -v colo="$2" -v tot="$3" '
+	function rep(s, key, val,   out, i) {
+		out = ""
+		while ((i = index(s, key)) > 0) {
+			out = out substr(s, 1, i - 1) val
+			s = substr(s, i + length(key))
+		}
+		return out s
+	}
+	{ print rep(rep($0, "{colo}", colo), "{total}", tot) }'
+}
+
 write_outputs() {
 	ranked=$1
 	pool_n=$2
@@ -476,8 +505,14 @@ write_outputs() {
 	: >"$tmp"
 	while IFS="$(printf '\t')" read -r ip code c tls ttfb tot colo; do
 		[ -n "$ip" ] || continue
-		ann=$(printf '%s' "$C_ANNOT" | sed "s/{colo}/$colo/g; s/{total}/$tot/g")
-		printf '%s:%s %s\n' "$ip" "$C_PORT" "$ann" >>"$tmp"
+		# 渲染后去掉首尾空白：模板填成一个空格 = 只要 IP:端口（uci 分不清
+		# “显式留空”和“没这一项”，真空值取回来是 rc=1，会落回默认模板）。
+		ann=$(render_annotate "$C_ANNOT" "$colo" "$tot" | sed -e 's/^[ \t]*//' -e 's/[ \t]*$//')
+		if [ -n "$ann" ]; then
+			printf '%s:%s %s\n' "$ip" "$C_PORT" "$ann" >>"$tmp"
+		else
+			printf '%s:%s\n' "$ip" "$C_PORT" >>"$tmp"
+		fi
 	done <"$colored"
 	mv "$tmp" "$BEST"
 
@@ -700,6 +735,19 @@ selftest() {
 	check '命令串带上 -w 的五段计时' \
 		"$(printf '%s' "$pc" | grep -c "time_starttransfer")" '1'
 
+	# 注释模板：{colo} 是落地机房、{total} 是总耗时毫秒。渲染不能用 sed ——
+	# colo 取不到时是 n/a，斜杠会把 s/// 表达式截断；值里带 & 也会被 sed 特殊处理。
+	got=$(sh "$0" _annot 'ip | {colo} | {total}ms' 'LAX' '887.4' 2>/dev/null)
+	check '模板展开 {colo} 与 {total}' "$got" 'ip | LAX | 887.4ms'
+	got=$(sh "$0" _annot 'x {colo} y' 'n/a' '1' 2>/dev/null)
+	check 'colo 是 n/a（带斜杠）也能正常展开' "$got" 'x n/a y'
+	got=$(sh "$0" _annot 'a&b {colo}' 'SIN' '2' 2>/dev/null)
+	check '模板里的 & 原样保留、不被当成整段匹配' "$got" 'a&b SIN'
+	got=$(sh "$0" _annot '{total}/{total}' 'X' '9' 2>/dev/null)
+	check '同一占位符出现多次都替换' "$got" '9/9'
+	got=$(sh "$0" _annot 'plain' 'X' '9' 2>/dev/null)
+	check '没有占位符时原样输出' "$got" 'plain'
+
 	if [ "$fails" = 0 ]; then
 		echo '[OK] selftest 全部通过'
 		return 0
@@ -764,5 +812,6 @@ case "${1:-}" in
 		load_config
 		probe_cmd "${2:-1.2.3.4}" "${3:-example.com}" "${4:-/}"
 		printf '\n' ;;
+	_annot)  render_annotate "${2:-}" "${3:-}" "${4:-}" ;;
 	*)       usage; exit 2 ;;
 esac

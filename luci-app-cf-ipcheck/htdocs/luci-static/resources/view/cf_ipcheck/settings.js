@@ -424,6 +424,12 @@ return view.extend({
 			_('只对入围 IP 请求 cdn-cgi/trace 取 colo= 字段，多一次请求，用来确认 IP 实际打到哪个机房。'));
 		o.rmempty = false;
 
+		o = thr.option(form.Value, 'colo_domain', _('机房查询兜底域名'),
+			_('/cdn-cgi/trace 要先用探测域名试；取不到（EDT / Worker 类节点域名常把这个路径拦成 403）' +
+			  '就改用这里的域名 + 同一个候选 IP 再取一次，否则「落地机房」整列和注释里的 {colo} 都会变成 n/a。' +
+			  '填一个确定架在 Cloudflare 后面、且不会拦截该路径的域名即可，一般不用改。'));
+		o.default = 'www.cloudflare.com';
+
 		o = thr.option(form.Flag, 'canary_check', _('每轮先自检出口是否被代理接管'),
 			_('拿 RFC 5737 保留地址（203.0.113.77 / 198.51.100.77）按同一条探测路径试一次：' +
 			  '保留地址全球不可路由，正常只会超时；一旦它返回任何 HTTP 状态码，就说明本机 443 被 ' +
@@ -440,7 +446,18 @@ return view.extend({
 		o.default = 'nobody';
 
 		o = thr.option(form.Value, 'annotate', _('ip.txt 注释模板'),
-			_('写在每个 IP 后面的说明，可用占位符 {colo} 与 {total}；留空则只输出 IP 与端口。'));
+			_('决定 %s（以及上传到 Gist 的那份）里每个 IP 后面那串字。整行格式固定是「IP:端口 注释」，' +
+			  '注释会被去掉首尾空格；只填一个空格就等于「只要 IP:端口、不要注释」' +
+			  '（这一项整个清空会被当成没设置，从而回到下面的默认模板 —— uci 分不清「显式留空」和「没这项」）。' +
+			  '两个占位符：' +
+			  '{colo} = 这个 IP 的落地机房代码，取自 cdn-cgi/trace 返回的 colo=（如 LAX / NRT / FRA），' +
+			  '用来看同一批入围里哪些其实落到了不同机房；先用探测域名取，取不到再用「机房查询兜底域名」试一次，' +
+			  '两处都取不到才是 n/a。' +
+			  '{total} = 这个 IP 的总耗时毫秒，就是排序用的那个数（保留一位小数）；' +
+			  '把它记在文件里，是为了过几天换线路再测时能对比出差异 —— 此刻达标不代表下次还达标。' +
+			  '其余字符（含 & 和中文）原样输出，同一占位符可以写多次。' +
+			  '默认模板渲染出来是：104.16.202.102:443 cf-ipcheck | LAX | 887.4ms')
+			.format('/etc/cf-ipcheck/best-ip.txt'));
 		o.default = 'cf-ipcheck | {colo} | {total}ms';
 
 		var gs = m.section(form.TypedSection, 'global', _('Gist 上传'));

@@ -65,6 +65,10 @@ config global 'global'
 	# 只给入围 IP 查落地机房（cdn-cgi/trace 的 colo=），多一轮请求
 	option colo_probe '1'
 
+	# 机房兜底域名：探测域名自己取不到 colo 时（EDT/Worker 会把 /cdn-cgi/trace
+	# 拦成 403），改用这个域名 + 同一个候选 IP 再取一次。保持默认即可。
+	option colo_domain 'www.cloudflare.com'
+
 	# 出口接管自检：每轮先用 RFC 5737 保留地址探一次。保留地址本该连不上，
 	# 一旦它返回任何 HTTP 状态码，说明本机 443 被 OpenClash 之类透明代理接管，
 	# --resolve 钉的 IP 没参与选路，本轮榜单数字不可信（页面会红条提示）。
@@ -76,7 +80,9 @@ config global 'global'
 	# 留空则退回 root 直发。
 	option probe_user 'nobody'
 
-	# ip.txt 注释模板，可用占位符 {colo} {total}
+	# ip.txt 注释模板，两个占位符：{colo}=落地机房代码（cdn-cgi/trace 的 colo=），
+	# {total}=总耗时毫秒（排序用的那个数）。渲染结果会去掉首尾空格，
+	# 所以只想输出「IP:端口」就把这里填成一个空格；整个留空会回到默认模板。
 	option annotate 'cf-ipcheck | {colo} | {total}ms'
 
 	# Gist 上传。令牌可以直接写进下面的 gist_token（内容只是优选 IP，泄露代价低，

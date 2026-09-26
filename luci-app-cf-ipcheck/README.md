@@ -280,9 +280,10 @@ ssh root@10.0.0.1 'apk add --allow-untrusted /tmp/luci-app-cf-ipcheck-*.apk'
 | `total_limit` | `5000` | 总耗时上限（毫秒）——两道门槛都过才算达标 |
 | `keep_count` | `10` | 榜单保留条数 |
 | `colo_probe` | `1` | 是否为入围 IP 查落地机房 |
+| `colo_domain` | `www.cloudflare.com` | 探测域名自己取不到 `colo=` 时的兜底域名（EDT/Worker 常把 `/cdn-cgi/trace` 拦成 403） |
 | `canary_check` | `1` | 每轮先用保留地址自检出口有没有被透明代理接管，接管则打标 |
 | `probe_user` | `nobody` | 探测发起身份；nobody 的 gid 65534 正好被 OpenClash 的 mark 链豁免，留空则退回 root（会被接管） |
-| `annotate` | `cf-ipcheck \| {colo} \| {total}ms` | `ip.txt` 注释模板 |
+| `annotate` | `cf-ipcheck \| {colo} \| {total}ms` | `best-ip.txt` 每行注释模板，见「产出文件」里的占位符说明 |
 | `upload_gist` | `0` | 每轮后是否上传 Gist |
 | `gist_id` / `gist_file` | 空 / `cf-ip.txt` | Gist ID 与文件名 |
 | `gist_token` | 空 | 令牌直接写进 UCI（**本机默认走这条**）；填了它就优先用它 |
@@ -335,10 +336,34 @@ cf-ipcheck selftest   # 离线自检，不联网
 
 | 路径 | 内容 |
 | :--- | :--- |
-| `/etc/cf-ipcheck/best-ip.txt` | 榜单，每行 `IP:端口 <注释>`；上传 Gist 用的就是它 |
-| `/etc/cf-ipcheck/result.json` | 结构化结果（含四段耗时与 `colo`），页面渲染它 |
-| `/tmp/cf-ipcheck/status.json` | 运行时状态（`running` / `done` / `error`） |
+| `/etc/cf-ipcheck/best-ip.txt` | 榜单（刷机/重启后仍在），每行 `IP:端口 <注释>`；上传 Gist 用的就是它 |
+| `/tmp/cf-ipcheck/result.json` | 结构化结果（四段耗时 + `colo` + `intercepted`），页面渲染的是它 |
+| `/tmp/cf-ipcheck/status.json` | 运行时状态（`running` / `done` / `error` / `never_run`） |
+| `/tmp/cf-ipcheck/{probed,qualified,ranked,colored}.tsv` | 本轮原始/达标/排序结果，排查“为什么某条没上榜”时看这里 |
 | `/tmp/cf-ipcheck/cf-ipcheck.log` | 运行日志（`logread -e cf-ipcheck` 亦可） |
+
+### `annotate` 注释模板的两个占位符
+
+整行格式固定为 `IP:端口 注释`，模板只决定“注释”那一段；注释会先去掉首尾空格，
+所以**只填一个空格 = 只要 `IP:端口`、不要注释**。注意别把这一项整个清空：
+uci 分不清“显式留空”和“没这一项”（实测 `uci -q get` 对空值返回 rc=1），
+清空等于回到默认模板。
+
+| 占位符 | 取值来源 | 用途 |
+| :--- | :--- | :--- |
+| `{colo}` | 入围 IP 请求 `https://<探测域名>/cdn-cgi/trace` 返回的 `colo=`；取不到就用 `colo_domain`（默认 `www.cloudflare.com`）再试一次 | 落地机房代码（LAX / NRT / FRA…）。同一批入围里哪些其实落到不同机房，一眼看得出来。EDT / Worker 类节点域名通常把 `/cdn-cgi/trace` 拦成 403，所以这层兜底是必须的，否则整列都是 `n/a`；关掉 `colo_probe` 也会是 `n/a` |
+| `{total}` | curl 的 `%{time_total}`（毫秒，保留一位小数，也就是排序用的那个数） | 把“当初测到多少”记在文件里，换线路或过几天再测时能对比出差异；此刻达标不代表下次还达标 |
+
+默认模板 `cf-ipcheck | {colo} | {total}ms` 渲染出来：
+
+```text
+104.16.202.102:443 cf-ipcheck | LAX | 887.4ms
+```
+
+其他字符（含 `&`、`/`、中文、空格）原样输出，占位符可以重复写。模板渲染走的是纯字符串替换，
+不再用 `sed` —— 老写法在 `{colo}` 展开成 `n/a` 时会被斜杠截断（`sed: unknown option to 's'`），
+结果把没展开的 `{colo}` 直接写进文件，这个坑现在有 5 条自检断言钉着（`cf-ipcheck selftest`）。
+`cf-ipcheck _annot '<模板>' <colo> <total>` 可以先手工看一下渲染结果。
 
 ## 定时为什么用常驻进程而不是 crontab
 
