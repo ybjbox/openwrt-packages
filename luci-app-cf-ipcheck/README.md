@@ -27,18 +27,45 @@ SNI 与 Host 都是你填的节点域名，因此这一步同时验证了 TLS �
 排序：**`total` 升序，同值再看 `ttfb`**。入围后再对 `cdn-cgi/trace` 请求一次拿 `colo=`，
 即该 IP 实际的落地机房（如 `LAX`/`NRT`/`HKG`）——只查入围 IP，不浪费请求。
 
-## 候选 IP 从哪来（三路合并去重）
+## 候选 IP 从哪来（三路合并 + 名额分配）
 
 1. **Cloudflare 官方网段**：实时拉 `api.cloudflare.com/client/v4/ips`，把每个前缀
-   按 **/24 粒度**展开取样（`/20` = 16 个候选）。
-2. **社区优选源**：填任意数量的 HTTPS 文本 URL，内容里的 IP 或 CIDR 都会被提取。
+   按 **/24 粒度**展开取样（`/20` = 16 个候选）。现网 15 条 IPv4 前缀展开后是
+   **5956 个**候选，远超预算。
+2. **社区优选源**（`community_sources`，默认五条，2026-09-26 逐个 curl 核过仍在更新）：
+
+   | 源 | 提取到的候选数 | 内容形态 |
+   | :--- | ---: | :--- |
+   | `XIU2/CloudflareSpeedTest/ip.txt` | 5955 | CIDR 段（≈官方网段的重述） |
+   | `ymyuuu/IPDB` `BestCF/bestcfv4.txt` | 10 | 纯 IPv4（每小时实测优选） |
+   | `gslege/CloudflareIP` `All.txt` | 100 | `IP#地区` |
+   | `svip-s/cloudflare_ip` `full_ips.txt` | 433 | `IP:port#地区 [延迟 速度]` |
+   | `hubbylei/bestcf` `bestcf.txt` | 10 | 纯 IPv4 |
+
+   `IP:port` 里的端口会被丢掉（探测端口统一用 `probe_port`），注释、CSV 表头、
+   IPv6 一律忽略；某个源挂了只记日志，不影响本轮。`cf-ipcheck pool` 可以直接看
+   本轮实际会用哪些候选，`logread -e cf-ipcheck` 会打出每个源的贡献数。
 3. **上一轮入围 IP**：回灌进池子，保证榜单连续，不会因为候选抖动而整批换掉。
 
-> CIDR 展开时刻意避开网络地址：`103.160.24.0/24` 取样为 `103.160.24.102`，
-> 而**不是** `.0`。`.0` 不可分配，拿它探测只会得到成片超时（这是本包 selftest 里
-> 一条专门的回归用例）。
+**名额怎么分**（`candidate_budget`，默认 256）：上一轮入围全保 → 社区源最多占剩下的
+一半，并且**逐源均分**（每个源约 `预算/2/源数` 个，小榜单则全取）→ 官方网段用抽稀
+填满其余。逐源均分是必要的：XIU2 那份按 /24 展开就是近六千条，合并后一起抽稀会把
+两份各 10 条的实测精选榜挤成 0 个名额。
 
-合并后去重，按 `candidate_budget` 截断，避免单轮失控。
+早先的实现是 `sort -u | head -n 预算`，按字符串序截断 —— 于是池子永远只在
+`103./104.` 开头那一段里，`141./162./172./188./198.` 与所有社区源一条都进不来。
+现在改为在有序表上等间隔抽稀（`_sample` 有 selftest 断言，含"必须保留最大端"这条，
+专门用来抓退回 `head` 的改动）。
+
+> ⚠️ **在跑 OpenClash 透明代理的路由器上，逐 IP 探测量不出 IP 的差异。**
+> 本机发起的 tcp/443 会被 clash 接管后由它自己重新拨号，`--resolve` 钉住的地址
+> 根本不参与选路。实测证据：把 `www.cloudflare.com` 钉到保留地址
+> `203.0.113.77`（RFC 5737，全球不可路由）仍然返回 `HTTP 200`、
+> `time_connect` 只有 0.0008s，而 `/tmp/openclash.log` 里能看到这条连接。
+> 也就是说榜单里那些 800~900ms 是「本机 → clash → CF」的耗时，不是候选 IP 的耗时。
+> 想让数字变真实，要么给探测进程开一条绕过 clash 的出口（例如自定义防火墙规则里
+> 按 uid/gid 不加 mark），要么把探测挪到一台不被接管的机器上。
+
 
 ## 安装
 
@@ -108,7 +135,7 @@ luci-app-dhcp-comment 一样停在「正在载入视图」，一个空的 `new f
 | `probe_port` | `443` | 探测端口 |
 | `use_official_ranges` | `1` | 是否使用 CF 官方网段 |
 | `reuse_last` | `1` | 是否回灌上一轮入围 IP |
-| `community_sources` | 空（list） | 社区源 URL，逐个 HTTPS 抓取 |
+| `community_sources` | 五条（见上） | 社区源 URL（list），逐个 HTTPS 抓取；池子一半名额按源均分 |
 | `candidate_budget` | `256` | 单轮候选上限 |
 | `concurrency` | `8` | 并发探测数 |
 | `probe_timeout` | `5` | 单 IP 超时（同时作为连接与整请求超时） |
@@ -146,6 +173,7 @@ cf-ipcheck run        # 前台跑一轮（调试用）
 cf-ipcheck run-now    # 后台起一轮，立即返回
 cf-ipcheck status     # 最近一轮状态 JSON
 cf-ipcheck show       # 人类可读榜单
+cf-ipcheck pool       # 只打印本轮会用的候选 IP（联网取源、不测速）
 cf-ipcheck colo <IP>  # 单 IP 落地机房
 cf-ipcheck stop       # 让当前这轮尽快收尾
 cf-ipcheck daemon     # 常驻定时（由 /etc/init.d/cf-ipcheck 启动）

@@ -6,6 +6,7 @@
 #   run-now   后台起一轮并立即返回（LuCI 按钮用）
 #   status    输出最近一轮状态 JSON
 #   show      人类可读榜单
+#   pool      只打印本轮会用的候选 IP（联网取源，不测速）
 #   colo IP   查单个 IP 的落地机房代码
 #   daemon    按 interval_hours 循环
 #   selftest  离线自检（CI 用，不联网）
@@ -146,11 +147,25 @@ pool_official() {
 	fi
 	printf '%s\n' "$got"
 }
+# $1 = 每个源最多贡献多少个候选（缺省不限量）。
+# 逐源定额而不是合并后再抽稀：一份 6000 条的前缀清单不该把一份 10 条的
+# 实测精选榜单淹掉 —— 源的价值不跟条数成正比。
 pool_community() {
+	per=${1:-0}
 	for s in $SOURCES; do
-		curl -4 -fsSL --max-time 30 -A 'cf-ipcheck/1.0' "$s" 2>/dev/null | \
-			grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?' | expand_prefixes || \
+		out=$(curl -4 -fsSL --max-time 30 -A 'cf-ipcheck/1.0' "$s" 2>/dev/null | \
+			grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?' | expand_prefixes)
+		if [ -z "$out" ]; then
+			# 记日志而不是静默：社区源改路径/换分支是很常见的事
 			log "社区源无结果: $s"
+		else
+			nraw=$(printf '%s\n' "$out" | grep -c .)
+			if [ "$per" -gt 0 ] 2>/dev/null && [ "$nraw" -gt "$per" ]; then
+				out=$(printf '%s\n' "$out" | sort -u | sample_lines "$per")
+			fi
+			log "社区源 $nraw 个候选(取用 $(printf '%s\n' "$out" | grep -c .)): $s"
+			printf '%s\n' "$out"
+		fi
 	done
 }
 
@@ -160,12 +175,63 @@ pool_reuse() {
 	grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' "$BEST" 2>/dev/null
 }
 
+# sample_lines <要取的条数>：在**已排序去重**的 stdin 上等间隔抽稀。
+# 名额够时全取；不够时按 stride 跳着取，覆盖整条地址序，
+# 而不是像 head 那样把数字大的那半段整个丢掉。
+sample_lines() {
+	awk -v want="${1:-256}" '
+	{ a[NR] = $0 }
+	END {
+		t = NR + 0
+		if (t == 0) exit
+		if (want + 0 < 1) want = 1
+		if (t <= want + 0) { for (i = 1; i <= t; i++) print a[i]; exit }
+		if (want + 0 == 1) { print a[1]; exit }
+		# 用 (t-1)/(want-1) 而不是 t/want：后者会永远漏掉最后一个条目
+		# （100 取 10 时末位停在 #91），把地址序尾段整段牺牲掉。
+		step = (t - 1) / ((want + 0) - 1)
+		last = 0
+		for (k = 0; k < want + 0; k++) {
+			i = int(k * step) + 1
+			if (i > t) i = t
+			if (i != last) { print a[i]; last = i }
+		}
+	}'
+}
+
+# 预算这样分（三路各有各的位置，否则谁都不占）：
+#   1) reuse_last：上一轮入围 IP 原样保底，保证榜单连续；
+#   2) 社区源：最多占剩下名额的一半 —— 这些是别人实测出来的好 IP，
+#      不该被官方网段的上千个 /24 采样淹没；不足一半时官方多补；
+#   3) 官方网段：用剩余名额在 /24 采样表上等间隔抽稀。
+# 早先是 `sort -u | head -n $C_BUDGET`：官方网段展开后有近六千个 /24 采样，
+# 按字符串序取前 256 个，等于永远只在 103/104 开头那一段里挑，
+# 社区源与 141/162/172/188/198 段一条都进不来。
 build_pool() {
+	reuse=$(pool_reuse)
+	nreuse=0
+	[ -n "$reuse" ] && nreuse=$(printf '%s\n' "$reuse" | grep -c .)
+	keep=$((C_BUDGET - nreuse))
+	[ "$keep" -gt 0 ] || keep=1
+
+	# 社区那一半再按源数均分：5 个源 × 每源约 26 个 ≈ 130。
+	nsrc=0
+	for s in $SOURCES; do nsrc=$((nsrc + 1)); done
+	per=0
+	[ "$nsrc" -gt 0 ] && per=$((keep / 2 / nsrc + 1))
+
+	comm=$(
+		pool_community "$per" | grep -vE '^(127\.|0\.0\.0\.0$)' | sort -u | sample_lines $((keep / 2))
+	)
+	ncomm=0
+	[ -n "$comm" ] && ncomm=$(printf '%s\n' "$comm" | grep -c .)
+	offkeep=$((keep - ncomm))
+
 	{
-		pool_official
-		pool_community
-		pool_reuse
-	} | grep -vE '^(127\.|0\.0\.0\.0$)' | sort -u | head -n "$C_BUDGET"
+		printf '%s\n' "$reuse"
+		printf '%s\n' "$comm"
+		[ "$C_OFFICIAL" = 1 ] && pool_official | grep -vE '^(127\.|0\.0\.0\.0$)' | sort -u | sample_lines "$offkeep"
+	} | grep . | sort -u
 }
 
 # ---------------- 单 IP 探测 ----------------------------------------------
@@ -417,6 +483,25 @@ selftest() {
 	got=$(printf '%s' '{"result":{"ipv6_cidrs":["2400:3200::/32"]}}' | sh "$0" _cidrs 2>/dev/null | grep -c . || true)
 	check '无 IPv4 字段时不胡编' "$got" '0'
 
+	# 候选池抽稀：名额不够时必须覆盖整条地址序。
+	# 这是回归断言 —— 旧实现是 `sort -u | head -n 预算`，100 条取 10 条
+	# 只会留 104.16.0~104.16.9，末段（社区源与 141/162/172/188/198 那些）永远进不来。
+	list100=$(awk 'BEGIN{for(i=0;i<100;i++)printf "104.16.%d.102\n", i}')
+	got=$(printf '%s\n' "$list100" | sh "$0" _sample 10 | grep -c . || true)
+	check '抽稀后条数正好等于名额' "$got" '10'
+	got=$(printf '%s\n' "$list100" | sh "$0" _sample 10 | head -1)
+	check '抽稀保留最小端' "$got" '104.16.0.102'
+	got=$(printf '%s\n' "$list100" | sh "$0" _sample 10 | tail -1)
+	check '抽稀保留最大端（head 会在这里露馅）' "$got" '104.16.99.102'
+	got=$(printf '%s\n' "$list100" | sh "$0" _sample 10 | sort -u | grep -c . || true)
+	check '抽稀结果不重复' "$got" '10'
+	got=$(printf '1.1.1.1\n2.2.2.2\n3.3.3.3\n' | sh "$0" _sample 10 | grep -c . || true)
+	check '条目少于名额时全取' "$got" '3'
+	got=$(printf '%s\n' "$list100" | sh "$0" _sample 0 | grep -c . || true)
+	check '名额为 0 时不炸也不清空整池' "$got" '1'
+	got=$(printf '' | sh "$0" _sample 10 | grep -c . || true)
+	check '空输入产出空' "$got" '0'
+
 	if [ "$fails" = 0 ]; then
 		echo '[OK] selftest 全部通过'
 		return 0
@@ -432,6 +517,7 @@ usage() {
   run-now   后台起一轮并立即返回（Web 按钮用）
   status    输出最近一轮状态 JSON
   show      以人类可读形式输出榜单
+  pool      只打印本轮会用的候选 IP 列表（联网取源，不测速）——核对源配置用
   colo IP   查询单个 IP 的落地机房代码（如 SIN/NRT/HKG）
   stop      请求当前这一轮尽快收尾
   daemon    常驻，按 interval_hours 循环
@@ -449,6 +535,7 @@ case "${1:-}" in
 			 printf '{"state":"started"}\n' ;;
 	status)  if [ -s "$STATUS" ]; then cat "$STATUS"; else printf '{"state":"never_run","items":[]}\n'; fi ;;
 	show)    if [ -s "$BEST" ]; then cat "$BEST"; else echo '尚无结果，先执行 cf-ipcheck run'; fi ;;
+	pool)    load_config; build_pool ;;
 	colo)    load_config; colo_of "${2:-}"
 			 printf '\n' ;;
 	stop)    : >"$STOP"; echo '已请求停止（当前这一轮结束后不再继续探测）' ;;
@@ -468,5 +555,6 @@ case "${1:-}" in
 	selftest) selftest ;;
 	_expand) expand_prefixes ;;
 	_cidrs)  official_cidrs ;;
+	_sample) sample_lines "${2:-256}" ;;
 	*)       usage; exit 2 ;;
 esac

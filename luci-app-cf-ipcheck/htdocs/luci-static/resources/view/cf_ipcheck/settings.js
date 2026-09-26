@@ -264,8 +264,10 @@ return view.extend({
 		o.rmempty = false;
 
 		o = src.option(form.DynamicList, 'community_sources', _('社区优选源 URL'),
-			_('每行一个 HTTPS 文本地址，内容里的 IP 或 CIDR 都会被提取（CIDR 按 /24 展开）。' +
-			  '留空即不使用。'));
+			_('每行一个 HTTPS 文本地址，内容里的 IP / CIDR / IP:端口 都会被提取（CIDR 按 /24 取样）。' +
+			  '默认五条是 2026-09-26 逐个核过仍在更新的社区列表 —— 它们只代表"别人测出来不错"，' +
+			  '在你线路上算不算好仍由本页的实测说了算。候选池名额分配：上一轮入围全保 → 社区源最多占剩下的一半 → ' +
+			  '官方网段抽稀填满其余；某个源拉不到只记日志，不影响本轮。留空即不使用。'));
 
 		var thr = m.section(form.TypedSection, 'global', _('测速与判定'));
 		thr.anonymous = true;
