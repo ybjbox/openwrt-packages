@@ -13,16 +13,22 @@ config global 'global'
 	option probe_port '443'
 
 	# 候选池来源
-	option use_official_ranges '1'   # api.cloudflare.com/client/v4/ips 的网段（按 /24 采样）
+	# 默认只吃社区优选列表（下面那组），不再把官方网段按 /24 铺成近六千个候选。
+	# 想要更大覆盖面就把 use_official_ranges 打开，官方段会抽稀填满剩余名额。
+	option use_official_ranges '0'   # api.cloudflare.com/client/v4/ips 的网段（按 /24 采样）
 	option reuse_last '1'            # 把上一轮入围 IP 带回候选池
 	# 社区源只是"别人替你挑出来的种子"，好坏仍以本机实测为准；
-	# 每条都是纯文本（IP / CIDR / IP:port 都能读），拉不到只记日志不影响本轮。
-	# 2026-09-26 逐个 curl 核过：格式可解析、当天仍在更新。
-	list community_sources 'https://raw.githubusercontent.com/XIU2/CloudflareSpeedTest/master/ip.txt'
+	# 每条都要求提取到的 IPv4 绝大多落在 Cloudflare 官方段内（2026-09-27 逐个
+	# 用 api.cloudflare.com/client/v4/ips 核过比例，见 README）。
+	list community_sources 'https://bestcf.pages.dev/entryip/50.txt'
+	list community_sources 'https://bestcf.pages.dev/cfyes/ipv4.txt'
+	list community_sources 'https://bestcf.pages.dev/wetest/ipv4.txt'
+	list community_sources 'https://bestcf.pages.dev/ircf/ipv4.txt'
+	list community_sources 'https://bestcf.pages.dev/nirevil/ipv4.txt'
 	list community_sources 'https://raw.githubusercontent.com/ymyuuu/IPDB/main/BestCF/bestcfv4.txt'
-	list community_sources 'https://raw.githubusercontent.com/gslege/CloudflareIP/main/All.txt'
-	list community_sources 'https://raw.githubusercontent.com/svip-s/cloudflare_ip/main/full_ips.txt'
 	list community_sources 'https://raw.githubusercontent.com/hubbylei/bestcf/main/bestcf.txt'
+	list community_sources 'https://raw.githubusercontent.com/gslege/CloudflareIP/main/All.txt'
+	list community_sources 'https://raw.githubusercontent.com/XIU2/CloudflareSpeedTest/master/ip.txt'
 
 	# 池子与并发
 	option candidate_budget '256'    # 单轮最多探测多少个 IP

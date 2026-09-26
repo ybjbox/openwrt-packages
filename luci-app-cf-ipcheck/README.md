@@ -32,15 +32,34 @@ SNI 与 Host 都是你填的节点域名，因此这一步同时验证了 TLS �
 1. **Cloudflare 官方网段**：实时拉 `api.cloudflare.com/client/v4/ips`，把每个前缀
    按 **/24 粒度**展开取样（`/20` = 16 个候选）。现网 15 条 IPv4 前缀展开后是
    **5956 个**候选，远超预算。
-2. **社区优选源**（`community_sources`，默认五条，2026-09-26 逐个 curl 核过仍在更新）：
+2. **社区优选源**（`community_sources`，默认九条，2026-09-27 逐个核过）：
 
-   | 源 | 提取到的候选数 | 内容形态 |
-   | :--- | ---: | :--- |
-   | `XIU2/CloudflareSpeedTest/ip.txt` | 5955 | CIDR 段（≈官方网段的重述） |
-   | `ymyuuu/IPDB` `BestCF/bestcfv4.txt` | 10 | 纯 IPv4（每小时实测优选） |
-   | `gslege/CloudflareIP` `All.txt` | 100 | `IP#地区` |
-   | `svip-s/cloudflare_ip` `full_ips.txt` | 433 | `IP:port#地区 [延迟 速度]` |
-   | `hubbylei/bestcf` `bestcf.txt` | 10 | 纯 IPv4 |
+   「落在 CF 官方段内」这一列是拿 `api.cloudflare.com/client/v4/ips` 现算出来的，
+   不满 100% 的要么是混了 IPv6/杂项，要么根本不是 CF anycast。
+
+   | 源 | 提取到 IPv4 | 落在 CF 官方段内 | 形态 |
+   | :--- | ---: | ---: | :--- |
+   | `bestcf.pages.dev/entryip/50.txt` | 50 | 47（94%） | `IP:443#CF Anycast Entry IP` |
+   | `bestcf.pages.dev/cfyes/ipv4.txt` | 12 | 12（100%） | `IP:443#CFYes 优选` |
+   | `bestcf.pages.dev/wetest/ipv4.txt` | 17 | 17（100%） | `IP:443#WeTest 优选` |
+   | `bestcf.pages.dev/ircf/ipv4.txt` | 10 | 10（100%） | `IP:443#IRCF 优选` |
+   | `bestcf.pages.dev/nirevil/ipv4.txt` | 37 | 35（95%） | `IP:443#NiREvil 优选` |
+   | `ymyuuu/IPDB` `BestCF/bestcfv4.txt` | 10 | 10（100%） | 纯 IPv4 |
+   | `hubbylei/bestcf` `bestcf.txt` | 10 | 10（100%） | 纯 IPv4 |
+   | `gslege/CloudflareIP` `All.txt` | 100 | 100（100%） | `IP#地区` |
+   | `XIU2/CloudflareSpeedTest/ip.txt` | 25 个前缀 | 25（100%） | CIDR（按 /24 取样） |
+
+   **别往这里加"现成的大份优选清单"**：`bestcf.pages.dev/random-region/mix.txt`（306 条）、
+   `mix2.txt`（515 条）、`cf.junzhen.qzz.io/best_ips*.txt`、`svip-s/cloudflare_ip` 的
+   `best_ips.txt` / `full_ips.txt`，实测**一条都不在 Cloudflare 官方段内**
+   （例：`108.61.242.146` 是 Vultr，`43.129.x`/`118.25.x` 是腾讯云）—— 那是别人搭的
+   中转/入场机器，不是 CF anycast，进候选池只会白占名额。
+   （`svip-s` 那条是我 09-26 没核段内占比就加进去的，这次移除。）
+
+   `entryip/50.txt` 值得单独说一句：它就是 CF 各段的**入口 IP 代表清单**（50 条），
+   相当于把官方网段铺出来的近六千个 /24 采样压成 50 个。所以本包现在默认
+   `use_official_ranges=0` —— 平时只吃这类清单，不再大基数扫；想扩大覆盖面时
+   临时打开，官方段会用剩余名额等间隔抽稀补满。
 
    `IP:port` 里的端口会被丢掉（探测端口统一用 `probe_port`），注释、CSV 表头、
    IPv6 一律忽略；某个源挂了只记日志，不影响本轮。`cf-ipcheck pool` 可以直接看
@@ -169,9 +188,9 @@ luci-app-dhcp-comment 一样停在「正在载入视图」，一个空的 `new f
 | `interval_hours` | `6` | 定时周期 |
 | `probe_domains` | `www.cloudflare.com` | **必填**，逗号分隔；必须是真正解析到 Cloudflare 后面的域名（节点域名 / Worker 域名） |
 | `probe_port` | `443` | 探测端口 |
-| `use_official_ranges` | `1` | 是否使用 CF 官方网段 |
+| `use_official_ranges` | `0` | 是否把官方网段也铺进池子（默认关，避免近六千个 /24 采样挤掉社区优选） |
 | `reuse_last` | `1` | 是否回灌上一轮入围 IP |
-| `community_sources` | 五条（见上） | 社区源 URL（list），逐个 HTTPS 抓取；池子一半名额按源均分 |
+| `community_sources` | 九条（见上） | 社区源 URL（list），逐个 HTTPS 抓取；池子一半名额按源均分 |
 | `candidate_budget` | `256` | 单轮候选上限 |
 | `concurrency` | `8` | 并发探测数 |
 | `probe_timeout` | `5` | 单 IP 超时（同时作为连接与整请求超时） |

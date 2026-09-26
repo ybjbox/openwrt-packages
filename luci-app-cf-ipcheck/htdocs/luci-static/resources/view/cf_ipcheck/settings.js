@@ -284,8 +284,9 @@ return view.extend({
 		src.anonymous = true;
 
 		o = src.option(form.Flag, 'use_official_ranges', _('Cloudflare 官方网段'),
-			_('实时拉取 api.cloudflare.com/client/v4/ips，把每个前缀按 /24 展开取样，' +
-			  '避免上千 IP 全扫。'));
+			_('实时拉 api.cloudflare.com/client/v4/ips，把每个前缀按 /24 展开取样。默认关：' +
+			  '官方段展开是近六千个候选，抽稀后仍会占掉大半名额，把别人已经优选好的地址挤出去。' +
+			  '想扩大覆盖面（刚换线路、怀疑候选池老化）再打开，它会用剩余名额等间隔抽稀。'));
 		o.rmempty = false;
 
 		o = src.option(form.Flag, 'reuse_last', _('带上上一轮入围 IP'),
@@ -293,10 +294,13 @@ return view.extend({
 		o.rmempty = false;
 
 		o = src.option(form.DynamicList, 'community_sources', _('社区优选源 URL'),
-			_('每行一个 HTTPS 文本地址，内容里的 IP / CIDR / IP:端口 都会被提取（CIDR 按 /24 取样）。' +
-			  '默认五条是 2026-09-26 逐个核过仍在更新的社区列表 —— 它们只代表"别人测出来不错"，' +
-			  '在你线路上算不算好仍由本页的实测说了算。候选池名额分配：上一轮入围全保 → 社区源最多占剩下的一半 → ' +
-			  '官方网段抽稀填满其余；某个源拉不到只记日志，不影响本轮。留空即不使用。'));
+			_('每行一个 HTTPS 文本地址，IP / CIDR / IP:端口 都能提取（CIDR 按 /24 取样），' +
+			  '注释、CSV 表头、IPv6 自动忽略；某个源拉不到只记日志，不影响本轮。' +
+			  '默认九条是 2026-09-27 逐个核过的：提取到的 IPv4 绝大多落在 Cloudflare 官方段内 —— ' +
+			  '像 bestcf.pages.dev/random-region/mix.txt 那种 306 条全在段外的清单其实是别人的中转/VPS，' +
+			  '不是 CF anycast，就没有收进来。这些列表只代表"别人线路上测出来不错"，' +
+			  '在你这儿算不算好仍由本页实测说了算。名额分配：上一轮入围全保 → 社区源占剩下一半且逐源均分 → ' +
+			  '官方网段抽稀填满其余。想看本轮实际会用哪些 IP，命令行跑 cf-ipcheck pool。'));
 
 		var thr = m.section(form.TypedSection, 'global', _('测速与判定'));
 		thr.anonymous = true;
