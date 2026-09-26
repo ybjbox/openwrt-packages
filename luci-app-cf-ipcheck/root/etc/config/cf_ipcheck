@@ -5,8 +5,9 @@ config global 'global'
 	# 定时周期（小时）
 	option interval_hours '6'
 
-	# 探测目标域名，逗号分隔。必须是真正解析到 Cloudflare 后面的域名，
-	# 否则 --resolve 指到 CF IP 上拿不到正常响应。
+	# 探测目标域名，逗号分隔。填你**真正要用的那个域名**（EDT/Worker 节点域名最合适）：
+	# 干扰是按 SNI 走的，用 www.cloudflare.com 测出来的“可用”不等于你节点可用。
+	# 403/404 都算达标，只看 TLS 能否走通并拿到 HTTP 响应；默认值只是开箱能跑的兜底。
 	option probe_domains 'www.cloudflare.com'
 
 	# 探测端口

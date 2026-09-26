@@ -349,8 +349,12 @@ return view.extend({
 		o.default = '6';
 
 		o = s.option(form.Value, 'probe_domains', _('探测域名'),
-			_('逗号分隔。必须填写真正解析到 Cloudflare 后面的域名（如节点域名或 Worker 域名）；' +
-			  '探测时用 --resolve 把它钉到候选 IP 上，所以 SNI 与 Host 都是这个域名。'));
+			_('逗号分隔。请填你**真正要用的那个域名**（EDT / Worker 节点域名最合适）：' +
+			  '干扰是按 SNI 走的，同一个 IP 上 www.cloudflare.com 能通并不等于你的节点能通，' +
+			  '反过来用节点域名测出来的榜单才是可直接应用的结果。' +
+			  '域名必须架在 Cloudflare 后面（橙色云、CF 给它签了证书）；403 / 404 都算达标，' +
+			  '判定只看「带真实 SNI 的 HTTPS 能否走通并拿到 HTTP 响应」，不看内容。' +
+			  '探测时用 --resolve 把该域名钉到候选 IP 上，所以 SNI 与 Host 都是这个域名。'));
 		o.default = 'www.cloudflare.com';
 
 		o = s.option(form.Value, 'probe_port', _('探测端口'),

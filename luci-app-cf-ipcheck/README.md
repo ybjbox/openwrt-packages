@@ -15,6 +15,54 @@ ICMP 低延迟完全不代表代理线路能用（还可能被运营商限速）
 探测时用 `curl --resolve <域名>:<端口>:<候选IP>` 把域名钉到候选 IP 上，
 SNI 与 Host 都是你填的节点域名，因此这一步同时验证了 TLS 握手与真实 HTTP 响应。
 
+## 探测域名该怎么选、怎么搭
+
+**必须是真正架在 Cloudflare 后面的名字**：CF 给它签了证书、且任何请求都能给出
+HTTP 响应。403 / 404 都算「可用」（判定只看 2xx/3xx/4xx）—— 我们要的是
+「这个 IP 上能不能完成 TLS 并拿到 CF 的回应」，不是页面内容。
+
+三条实测对照（同一批候选 IP，路由器上跑）：
+
+| 填的探测域名 | 结果 | 说明 |
+| :--- | :--- | :--- |
+| 你自己的 EDT/Worker 节点域名 | 6/6 达标（返回 403） | **首选**，见下 |
+| `www.cloudflare.com` | 5/6 达标 | 能用，但测的是 CF 官网那条路 |
+| 另一个同样解析到 CF 的域名 | 0/6，全部 `tls` 失败 | 名字没在 CF 上正确代理，就不能当探测域名 |
+
+为什么首选**你真正要用的节点域名**：干扰是按 SNI 走的。同一个 IP 上
+`cloudflare.com` 的 SNI 能通，不等于你节点的 SNI 能通；用别人的域名测出来的榜单，
+套到你节点上可能一片连不上。反过来说，`probe_domains` 就是你的可用性测试的目标本身。
+
+想专门要一个不暴露节点的探测域名，两种 0 成本搭法：
+
+```text
+A. Cloudflare Worker（1 分钟）
+   Dashboard → Workers & Pages → Create → 空白模板，代码就：
+     export default { fetch: () => new Response('ok', { status: 200 }) }
+   部署后拿到 https://<名字>.<你的子域>.workers.dev，直接填进 probe_domains。
+   更建议再给它绑一个你自己域名的 Custom domain（在下面这个 zone 里加一条
+   proxied 记录 → Route 到这个 Worker），因为 workers.dev 在中国大陆的
+   路由质量与你节点不同，拿它测出来的优选 IP 可能对节点并不适用。
+
+B. Cloudflare Pages：建个空项目即可，任意路径都返回 200，同样在 CF 后面。
+```
+
+填之前先花 10 秒自验（挑一个已知 CF 段内 IP 钉一下，看状态码和证书）：
+
+```sh
+# 1) 域名是否解析到 Cloudflare 段（DoH 查询，看返回是否 172.64/104.16/141.101… 等）
+curl -s "https://cloudflare-dns.com/dns-query?name=你的域名&type=A" -H 'accept: application/dns-json'
+# 2) 钉到某个 CF IP 试一次：能拿到状态码就说明 TLS 与 SNI 都对，可以用
+curl -4 -o /dev/null -sS --connect-timeout 5 --max-time 8 \
+  --resolve 你的域名:443:104.16.123.96 https://你的域名/ \
+  -w 'code=%{http_code} connect=%{time_connect}\n'
+```
+
+填进插件后，跑一轮看失败分类：整批 `tls` 就说明这个域名在这些 IP 上没有效证书
+（代理没开、或证书不含这个名字）；整批 `timeout` 通常是端口/线路问题；
+`intercepted:1` 则是本机出口被代理接管（见下面「出口接管自检」）。
+
+
 每个 IP 记录四段耗时：
 
 | 指标 | 含义 | 取值来源 |
@@ -196,6 +244,13 @@ ssh root@10.0.0.1 'apk add --allow-untrusted /tmp/luci-app-cf-ipcheck-*.apk'
 
 - 视图代码是拿设备自带的 `form/rpc/ui/view` 直接编译执行 `load()`/`render()` 验的
   （含 luci.mk 压缩后的那一份），表头 8 列、榜单行数、meta 行与按钮处理函数逐项核对。
+- 2026-09-27 另有一台设备的坑值得记：那台机器上 `/dev/null` 不是字符设备，而是落在
+  512K tmpfs 里的普通文件，`curl -o /dev/null` 遇到大响应就短写失败（`rc=23`
+  `Failure writing output to destination`），表现是**“域名越正常越测不通”**的假象。
+  引擎现在会检测 `[ -c /dev/null ]`，不是字符设备就改用运行目录里的 `.null`
+  （建好并 `chmod 666`，因为探测是以 `probe_user` 的身份跑的，替代文件必须让那个用户写得动），
+  同时在日志里提示。换域名对比一验就通：`www.cloudflare.com` 5/6 达标、
+  节点域名 6/6 达标、另一个未正确代理的域名 0/6 全 `tls` 失败。
 - 2026-09-27 增量验：`check-sources` 在真机上 13 条源并发 4 秒出结果，BusyBox awk 算出的
   段内数与 GNU awk 在 Windows 上算的逐条一致；视图在 `intercepted=0/1` 两种状态下分别
   渲染出 4 个具体节点、红条有无、状态栏文案都对得上，且没有出现 `[object …]` 之类的

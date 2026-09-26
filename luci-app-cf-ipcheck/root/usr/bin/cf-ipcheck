@@ -35,6 +35,20 @@ command -v uci >/dev/null 2>&1 && HAS_UCI=1
 
 mkdir -p "$RUN_DIR" "$ETC_DIR" 2>/dev/null || true
 
+# 丢弃响应体用的“黑洞”。不能硬写 /dev/null：真机遇到过 /dev/null 变成普通文件、
+# 且落在 512K 的 tmpfs 上 —— 大响应写不下就短写，curl 报 rc=23
+# “Failure writing output to destination”，表现是探测域名越大页越全挂。
+# 不是字符设备时退到运行目录里的临时文件（curl 每次 -o 会截断重写）。
+if [ -c /dev/null ]; then
+	NULL_DEV=/dev/null
+else
+	NULL_DEV=$RUN_DIR/.null
+	# 探测是以 probe_user（默认 nobody）跑的，所以这个替代文件必须让别的用户写得动，
+	# 否则 curl 打不开输出目标，照样是 rc=23。
+	: >"$NULL_DEV" 2>/dev/null || true
+	chmod 666 "$NULL_DEV" 2>/dev/null || true
+fi
+
 log() {
 	printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >>"$LOG" 2>/dev/null || true
 }
@@ -83,6 +97,9 @@ load_config() {
 	C_INTERVAL=$(cfg interval_hours 6)
 	C_UPLOAD=$(cfg upload_gist 0)
 	SOURCES=$(cfg_list community_sources)
+	# /dev/null 坏了（变成普通文件、或落在很小的 tmpfs）会让大响应的探测集体报 rc=23，
+	# 现象是“域名越正常越测不通”，所以要吭一声。
+	[ -c /dev/null ] || log "本机 /dev/null 不是字符设备，改用 $NULL_DEV 丢弃响应体"
 }
 
 # ------- 候选池：官方网段 + 社区源 + 上轮入围，三路合并（设计参考 cf-auto，非代码衍生）----
@@ -328,7 +345,7 @@ canary_check() {
 	dom=$(printf '%s' "$C_DOMAINS" | cut -d, -f1 | tr -d ' ')
 	[ -n "$dom" ] || return 0
 	for ip in 203.0.113.77 198.51.100.77; do
-		code=$(run_probe "curl -4 -o /dev/null -sS --connect-timeout 3 --max-time 4 --resolve $dom:$C_PORT:$ip https://$dom/ -w '%{http_code}'" 2>/dev/null)
+		code=$(run_probe "curl -4 -o $NULL_DEV -sS --connect-timeout 3 --max-time 4 --resolve $dom:$C_PORT:$ip https://$dom/ -w '%{http_code}'" 2>/dev/null)
 		if [ "$(canary_verdict "$code")" = intercepted ]; then
 			log "canary $ip 竟然返回 HTTP $code：本机 443 出口被透明代理接管，本轮逐 IP 结果不可信"
 			printf '1\n'
@@ -354,8 +371,8 @@ run_probe() { # $1 = 交给 shell 执行的命令串
 }
 
 probe_cmd() { # $1=IP $2=域名 $3=额外 path -> 拼出 curl 命令串
-	printf "curl -4 -o /dev/null -sS --connect-timeout %s --max-time %s --resolve %s:%s:%s https://%s%s -w '%%{http_code},%%{time_connect},%%{time_appconnect},%%{time_starttransfer},%%{time_total}'" \
-		"$C_TIMEOUT" "$C_TIMEOUT" "$2" "$C_PORT" "$1" "$2" "${3:-/}"
+	printf "curl -4 -o %s -sS --connect-timeout %s --max-time %s --resolve %s:%s:%s https://%s%s -w '%%{http_code},%%{time_connect},%%{time_appconnect},%%{time_starttransfer},%%{time_total}'" \
+		"$NULL_DEV" "$C_TIMEOUT" "$C_TIMEOUT" "$2" "$C_PORT" "$1" "$2" "${3:-/}"
 }
 
 # ---------------- 源可用性检测 ---------------------------------------------
@@ -666,6 +683,23 @@ selftest() {
 	got=$(printf '1.1.1.1\n' | sh "$0" _cfin "" 2>/dev/null)
 	check '没有网段时算出 0 而不是报错' "$got" '0'
 
+	# 探测命令串是用 printf 拼的（因为要整条交给 su -c），格式与参数最容易错位：
+	# 错位一次的表现为 `-o 5`（把超时秒数当成输出路径）。这里按结构钉，不写死数值，
+	# 免得改了 probe_timeout 就把自检判死。
+	pc=$(sh "$0" _probecmd 1.2.3.4 example.com / 2>/dev/null)
+	case "$pc" in
+		"curl -4 -o $NULL_DEV -sS --connect-timeout "*) ok=yes; ;;
+		*) ok=no; ;;
+	esac
+	check '命令串开头是 curl -4 -o <黑洞> -sS --connect-timeout' "$ok" 'yes'
+	ct=$(printf '%s' "$pc" | sed -n 's/.*--connect-timeout \([0-9]*\) --max-time \([0-9]*\) .*/\1 \2/p')
+	check 'connect-timeout 与 max-time 都取到同一个超时值' \
+		"$(printf '%s' "$ct" | awk '{print ($1==$2 && $1>0) ? "same" : "diff"}')" 'same'
+	check '命令串里 --resolve 顺序为 域名:端口:IP' \
+		"$(printf '%s' "$pc" | grep -c -E -- '--resolve example.com:[0-9]+:1\.2\.3\.4')" '1'
+	check '命令串带上 -w 的五段计时' \
+		"$(printf '%s' "$pc" | grep -c "time_starttransfer")" '1'
+
 	if [ "$fails" = 0 ]; then
 		echo '[OK] selftest 全部通过'
 		return 0
@@ -726,5 +760,9 @@ case "${1:-}" in
 	_sample) sample_lines "${2:-256}" ;;
 	_canaryv) canary_verdict "${2:-}" ;;
 	_cfin)   cf_count_in "${2:-}" ;;
+	_probecmd)
+		load_config
+		probe_cmd "${2:-1.2.3.4}" "${3:-example.com}" "${4:-/}"
+		printf '\n' ;;
 	*)       usage; exit 2 ;;
 esac
