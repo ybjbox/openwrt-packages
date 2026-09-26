@@ -179,7 +179,9 @@ curl -4 -o /dev/null -sS --connect-timeout 5 --max-time 8 \
 >    而被接管时是 `达标 256/256`、connect 清一色 0.000x。**"全部达标"本身就是故障证据**，
 >    所以 `candidate_budget`、`total_limit` 这些门槛在绕过之后才有意义。
 >
->    留空 `probe_user` 就退回 root 直发（会被接管，但 canary 会把那轮标成不可信）。
+>    `probe_user` 填 `none` 就退回 root 直发（会被接管，但 canary 会把那轮标成不可信）。
+>    必须是 `none` 这个哨兵值而不是留空：uci 分不清「显式留空」和「没有这一项」，
+>    空值取回来是 rc=1，会又落回默认的 `nobody`。
 >    没有透明代理的机器上，`su` 到 nobody 也一样能正常出网，不必改。
 >
 > 另一种完全不碰路由器的做法：把 `root/usr/bin/cf-ipcheck` 拷到没被接管的机器上跑，
@@ -234,7 +236,7 @@ ssh root@10.0.0.1 'apk add --allow-untrusted /tmp/luci-app-cf-ipcheck-*.apk'
   第一次装的时候暴露出真缺陷：`root/etc/init.d/cf-ipcheck` 与 `root/usr/bin/cf-ipcheck`
   在仓库里是 100644，装到设备上成了 `-rw-r--r--`，procd 的 enable/start 与
   rpcd 的 `file.exec` 全都 Permission denied —— 手工 chmod 会把这个问题一直藏着。
-  现已 `git update-index --chmod=+x` 修正，并由 `tests/lint.sh` 的 [6/6] 钉死。
+  现已 `git update-index --chmod=+x` 修正，并由 `tests/lint.sh` 的 [6/7] 钉死。
 - 修好之后重新 `apk del` + `apk add` 干净走过一遍：post-install 不再报错，
   两个可执行文件直接以 `-rwxr-xr-x` 落盘，`/etc/rc.d/S99cf-ipcheck` 由 enable 建出来，
   `/etc/init.d/cf-ipcheck status` = running，`selftest` 全通过；
@@ -255,6 +257,24 @@ ssh root@10.0.0.1 'apk add --allow-untrusted /tmp/luci-app-cf-ipcheck-*.apk'
   段内数与 GNU awk 在 Windows 上算的逐条一致；视图在 `intercepted=0/1` 两种状态下分别
   渲染出 4 个具体节点、红条有无、状态栏文案都对得上，且没有出现 `[object …]` 之类的
   字符串拼接残留。
+
+- 2026-09-27 这批修复（锁判活 + status 自愈 + 按 IP 合并 + 失败分类 + MiB/s + 多域名列 +
+  数值配置容错）的验证到哪一步：
+  - 引擎 `selftest` 从 46 项扩到 **65 项**，在 Windows 的 bash + GNU awk 5.4 下全绿；
+    BusyBox ash 那一遍由 CI 的 `lint-and-busybox` job 跑（本机没有 busybox），**这一遍还没跑过**。
+  - 新缺陷全是新断言抓出来的，四条都值得记：`cut -d' ' -f2` 在找不到分隔符时会把
+    **整行**吐出来（旧格式锁的“时间戳”变成 pid 本身，活锁被误判为陈旧）；
+    锁里的 pid 必须用 `$(exec sh -c 'echo $PPID')` 取，加个 `|| true` 就会记成命令替换的
+    临时进程（表现是重复起两轮）；`_aggregate` 的断言一度按 colored.tsv 的列序写了 `$9`，
+    而探测 TSV 的域名是第 8 列。
+  - 视图改成用 Node + LuCI 桩（`E/_/rpc/form/view`）跑真实渲染函数断言：列数 9/10、
+    `unreachable`/`parse_error`/`error+reason` 三种失败各有各的文案、`counts` 进 meta、
+    `null` 吞吐显示 `—`，16 条全绿。它只验渲染逻辑，**不验**设备自带 form/rpc 的组合。
+  - `tests/lint.sh` 新增 [7/7]「引擎 ↔ 页面 JSON 契约」：三张键表正反双向核对 + 禁止
+    已废弃的 `speed_mbps`。反向样例验过（只改页面那一侧的 `speed_mibs` 会出两条 FAIL、
+    退出码 1），不是只会在绿灯时好看的检查。
+  - **还没做**：新版引擎在真机 busybox 上跑一轮（锁/自愈/MiB/s 列/多域名列）、
+    apk 重新构建（按 Ryan 的话：等他说了再构建）。
 
 未覆盖：肉眼在普通浏览器里看整页排版。验证用的内嵌页签 `document.hidden=true` 且
 `requestAnimationFrame` 不触发，LuCI 的视图引导和 CBI `Map.render()` 在这种页签里根本不会
@@ -287,7 +307,7 @@ ssh root@10.0.0.1 'apk add --allow-untrusted /tmp/luci-app-cf-ipcheck-*.apk'
 | `speed_domain` | `speed.cloudflare.com` | 吞吐测试地址（同样 `--resolve` 钉到候选 IP 上访问） |
 | `colo_domain` | `www.cloudflare.com` | 探测域名自己取不到 `colo=` 时的兜底域名（EDT/Worker 常把 `/cdn-cgi/trace` 拦成 403） |
 | `canary_check` | `1` | 每轮先用保留地址自检出口有没有被透明代理接管，接管则打标 |
-| `probe_user` | `nobody` | 探测发起身份；nobody 的 gid 65534 正好被 OpenClash 的 mark 链豁免，留空则退回 root（会被接管） |
+| `probe_user` | `nobody` | 探测发起身份；nobody 的 gid 65534 正好被 OpenClash 的 mark 链豁免。要退回 root 直发就填 `none`（留空会被当成没设置，又落回 `nobody`） |
 | `annotate` | `cf-ipcheck \| {colo} \| {total}ms` | `best-ip.txt` 每行注释模板，见「产出文件」里的占位符说明 |
 | `upload_gist` | `0` | 每轮后是否上传 Gist |
 | `gist_id` / `gist_file` | 空 / `cf-ip.txt` | Gist ID 与文件名 |
@@ -341,11 +361,39 @@ cf-ipcheck selftest   # 离线自检，不联网
 
 | 路径 | 内容 |
 | :--- | :--- |
-| `/etc/cf-ipcheck/best-ip.txt` | 榜单（刷机/重启后仍在），每行 `IP:端口 <注释>`；上传 Gist 用的就是它 |
-| `/tmp/cf-ipcheck/result.json` | 结构化结果（四段耗时 + `colo` + `intercepted`），页面渲染的是它 |
-| `/tmp/cf-ipcheck/status.json` | 运行时状态（`running` / `done` / `error` / `never_run`） |
-| `/tmp/cf-ipcheck/{probed,qualified,ranked,colored}.tsv` | 本轮原始/达标/排序结果，排查“为什么某条没上榜”时看这里 |
+| `/etc/cf-ipcheck/best-ip.txt` | 榜单（在 flash 上，重启后仍在），每行 `IP:端口 <注释>`；上传 Gist 用的就是它 |
+| `/etc/cf-ipcheck/result.json` | 整轮结果的**持久副本**：`/tmp` 是易失的，重启后页面靠它把上一次结果读回来 |
+| `/tmp/cf-ipcheck/result.json` | 同一份内容，本轮完成时写出 |
+| `/tmp/cf-ipcheck/status.json` | 运行时状态：`running` / `done` / `error`（带 `reason`）/ `never_run` |
+| `/tmp/cf-ipcheck/{probed,aggregated,qualified,ranked,colored}.tsv` | 本轮原始（ip×域名）/ 按 IP 合并后 / 达标 / 排序 / 加了 colo+吞吐的结果，排查“为什么某条没上榜”时看这里 |
+| `/tmp/cf-ipcheck/lock` | 运行锁，内容是 `<pid> <启动秒>`（判活用 `kill -0`，超过 6 小时无条件回收） |
 | `/tmp/cf-ipcheck/cf-ipcheck.log` | 运行日志（`logread -e cf-ipcheck` 亦可） |
+
+`colored.tsv` 的列序是 `ip code connect tls ttfb total colo speed domain`（吞吐单位
+MiB/s，未测是 `-`），第 8、9 列分别进 `result.json` 的 `speed_mibs` 与 `domain`。
+
+### 一轮的收尾与自愈
+
+这几条都是被真机场景逼出来的，改引擎时别顺手删掉：
+
+- **同一 IP 只留一行**：探测是 `IP × 探测域名` 的笛卡尔积（不同域名走不同 CF 前置机，
+  同一 IP 能差几倍），但榜单语义是「哪个 IP 好用」。`aggregate_per_ip()` 先按 IP 合并
+  （有成功就取 `total` 最小那次并连带它的域名，全失败留第一条失败记录）。不合并的话
+  同一个 IP 会在榜单里出现 N 遍、`keep_count` 的名额被重复项吃光、`qualified` 还会超过候选池。
+- **失败分类 `counts`**：在合并**之后**统计（`none:41, timeout:9, dns:3`），所以每个 IP 只计一次。
+  页面 meta 行只报失败类，`none` 就是达标数、不重复报。
+- **锁必须判活**：只看文件在不在，一轮被 OOM/断电打断过之后服务就永久停摆
+  （每轮都以为“还有实例在跑”）。`lock_live` 用 `kill -0` + 6 小时上限回收陈旧锁；
+  锁里的 pid 是 `$(exec sh -c 'echo $PPID')` 取的 —— `run-now` 走的是 `( do_run & )`，
+  用 `$$` 会记下立刻退出的父进程；少了 `exec` 又会记成命令替换的临时进程（selftest 里两条都钉了）。
+- **`status` 会自愈**：`running` 而锁主已不在 → 改写成 `error/interrupted`（或直接给上一次
+  `/etc` 里的结果）；`/tmp` 被清 → 从 `/etc/cf-ipcheck/result.json` 恢复，不会谎称“从未运行过”。
+- **本轮不可信时不查机房、不测吞吐**：`intercepted=1` 时那两列取的是代理自己的表现，
+  花两轮请求也只会得到一整列相同的假数。
+- **数值配置带脏值不再拖死整轮**：`cfg_num` 认不出「一整串都是数字」就退回默认值并记日志 ——
+  脏值会让后面的 `$(( ))` 在非交互 shell 里**直接把进程打死**，表现为“按了没反应”。
+- **`/etc/config/cf_ipcheck` 里的注释会在页面上改任何一项后消失**：uci 写回时不保留注释。
+  仓库里那份是文档（含每条源的出处与段内占比），改过配置想找回说明就看仓库版本。
 
 ### 下载速度实测（只对入围 IP）
 
@@ -353,6 +401,8 @@ cf-ipcheck selftest   # 离线自检，不联网
 真机实测：三个 `total` 只差十几毫秒的 IP，拉 10MB 的吞吐是
 **10.6 / 3.57 / 0.19 MB/s**（差的这三个 total 都在同一量级里），差 50 倍；
 另一个 IP 连接就要 1.2 秒、10MB 直接拉不完。所以吞吐是独立的信号，值得测。
+（这几个数是当时按 MB/s 记的原始记录；引擎现在统一按 **MiB/s** 报，除以 1.048576 即可换算，
+比例关系不变。）
 
 但姿势有讲究：
 
@@ -367,8 +417,10 @@ cf-ipcheck selftest   # 离线自检，不联网
 
 测的是 `speed.cloudflare.com/__down?bytes=N`，同样用 `--resolve` 钉在候选 IP 上访问，
 所以量到的是那个 IP 的吞吐；换成你自己域名下的大文件也可以（`speed_domain`）。
-结果落在 `colored.tsv` 第 8 列、`result.json` 的 `speed_mbps`（没测到是 `null`），
-以及 `best-ip.txt` 的 `{speed}` 占位符（没测到是 `-`）。
+结果落在 `colored.tsv` 第 8 列、`result.json` 的 `speed_mibs`（没测到是 `null`，
+界面上是 `—`），以及 `best-ip.txt` 的 `{speed}` 占位符（没测到是 `-`）。
+**测不出来时是 `-` 而不是 `0.00`**：0.00 会被读成「这个 IP 很慢」，而实情是压根没连上，
+两者处置完全不同；curl 非 0 退出（半路超时也是）一律记 `-`，哪怕它照样吐了个 `speed_download`。
 
 ### `annotate` 注释模板的三个占位符
 
@@ -382,7 +434,7 @@ uci 分不清“显式留空”和“没这一项”（实测 `uci -q get` 对�
 | :--- | :--- | :--- |
 | `{colo}` | 入围 IP 请求 `https://<探测域名>/cdn-cgi/trace` 返回的 `colo=`；取不到就用 `colo_domain`（默认 `www.cloudflare.com`）再试一次 | 落地机房代码（LAX / NRT / FRA…）。同一批入围里哪些其实落到不同机房，一眼看得出来。EDT / Worker 类节点域名通常把 `/cdn-cgi/trace` 拦成 403，所以这层兜底是必须的，否则整列都是 `n/a`；关掉 `colo_probe` 也会是 `n/a` |
 | `{total}` | curl 的 `%{time_total}`（毫秒，保留一位小数，也就是排序用的那个数） | 把“当初测到多少”记在文件里，换线路或过几天再测时能对比出差异；此刻达标不代表下次还达标 |
-| `{speed}` | `speed_of()` 拉 `speed_domain` 的 `__down?bytes=speed_bytes` 得到的 `%{speed_download}`，换算成 MB/s（两位小数） | 吞吐。**只对榜单前 `speed_count` 个 IP 有值**，其余（以及关掉吞吐测试时）是 `-` |
+| `{speed}` | `speed_of()` 拉 `speed_domain` 的 `__down?bytes=speed_bytes` 得到的 `%{speed_download}`，换算成 MiB/s（两位小数） | 吞吐。**只对榜单前 `speed_count` 个 IP 有值**，其余（关掉吞吐测试、或本轮出口被接管时）是 `-` |
 
 默认模板 `cf-ipcheck | {colo} | {total}ms` 渲染出来：
 

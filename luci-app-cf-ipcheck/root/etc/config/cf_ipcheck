@@ -16,6 +16,8 @@ config global 'global'
 	# 候选池来源
 	# 默认只吃社区优选列表（下面那组），不再把官方网段按 /24 铺成近六千个候选。
 	# 想要更大覆盖面就把 use_official_ranges 打开，官方段会抽稀填满剩余名额。
+	# 提醒：在 LuCI 页面上改任何一项都会让 uci 重写这个文件，**所有注释都会消失**
+	# （包括下面每条源的出处标注）。要留档就在页面上看「源可用性检测」，或备份这份文件。
 	option use_official_ranges '0'   # api.cloudflare.com/client/v4/ips 的网段（按 /24 采样）
 	option reuse_last '1'            # 把上一轮入围 IP 带回候选池
 	# 社区源只是"别人替你挑出来的种子"，好坏仍以本机实测为准。
@@ -70,9 +72,10 @@ config global 'global'
 	option colo_domain 'www.cloudflare.com'
 
 	# 下载速度实测：延迟榜出来后，只对榜单前 speed_count 个 IP **串行**拉
-	# speed_domain 的 __down?bytes=speed_bytes，量 MB/s（并发一起拉会互抢带宽，
+	# speed_domain 的 __down?bytes=speed_bytes，量 MiB/s（并发一起拉会互抢带宽，
 	# 数字全废）。要单独一个超时：跨境拉 10MB 常在几秒到几十秒，复用 probe_timeout
 	# 会把所有测量都截断成 0。代价是流量：默认 10 × 10MB = 每轮约 100MB。
+	# 出口被接管（canary 报警）或 probe_user 没绕开代理时整列不测，直接记 -。
 	option speed_probe '1'
 	option speed_count '10'
 	option speed_bytes '10485760'
@@ -87,11 +90,12 @@ config global 'global'
 	# 探测用哪个身份发起。默认 nobody：OpenClash 的 mangle 链第一条就是
 	# `meta skgid 65534 ... return`，用 nobody 跑探测正好绕过接管，量到的才是
 	# 候选 IP 本身（root 直发会被代理接管，connect 恒为 0.000x 秒）。
-	# 留空则退回 root 直发。
+	# 想退回 root 直发就填 none —— 必须是 none 而不是删掉这一项：uci 分不清
+	# “显式留空”和“没有这一项”，空值取回来是 rc=1，会落回默认的 nobody。
 	option probe_user 'nobody'
 
 	# ip.txt 注释模板，三个占位符：{colo}=落地机房代码（cdn-cgi/trace 的 colo=），
-	# {total}=总耗时毫秒（排序用的那个数），{speed}=实测下载 MB/s（没测到是 -）。
+	# {total}=总耗时毫秒（排序用的那个数），{speed}=实测下载 MiB/s（没测到是 -）。
 	# 渲染结果会去掉首尾空格，所以只想输出「IP:端口」就把这里填成一个空格；
 	# 整个留空会回到默认模板（uci 分不清“显式留空”和“没这一项”）。
 	option annotate 'cf-ipcheck | {colo} | {total}ms'

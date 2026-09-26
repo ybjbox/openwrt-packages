@@ -13,6 +13,9 @@
 #   6) RED LINE 5: scripts under root/usr/bin and */etc/init.d carry mode
 #      100755 in the git index, otherwise they install as -rw-r--r-- and
 #      procd/rpcd cannot exec them
+#   7) RED LINE 6: the JSON keys cf-ipcheck writes and the keys the LuCI view
+#      reads must match in both directions (renaming one side silently blanks
+#      a table column instead of failing loudly)
 set -u
 
 fail=0
@@ -22,6 +25,7 @@ ALL_FILES="/tmp/lint_all_files.$$"
 TMP_ERR="/tmp/lint_err.$$"
 TMP_DUP="/tmp/lint_dup.$$"
 SHELL_LIST="/tmp/lint_shell.$$"
+TMP_ENGINE="/tmp/lint_engine.$$"
 
 # --- collect every regular file, excluding build noise -----------------------
 # Excluded per CI spec: .git node_modules scratch tmp_* (and any tmp_* dir).
@@ -29,8 +33,8 @@ find . \
     \( -name .git -o -name node_modules -o -name scratch -o -name 'tmp_*' \) -prune -o \
     -type f -print > "$ALL_FILES"
 
-# === [1/6] shell syntax check (sh -n) ========================================
-echo "=== [1/6] Shell syntax check (sh -n) ==="
+# === [1/7] shell syntax check (sh -n) ========================================
+echo "=== [1/7] Shell syntax check (sh -n) ==="
 : > "$SHELL_LIST"
 
 # .sh files anywhere in the repo.
@@ -67,8 +71,8 @@ while IFS= read -r f; do
     fi
 done < "$SHELL_LIST"
 
-# === [2/6] RED LINE 1: no forbidden js shipped under root/www ================
-echo "=== [2/6] Red line 1: forbidden js under root/www/ ==="
+# === [2/7] RED LINE 1: no forbidden js shipped under root/www ================
+echo "=== [2/7] Red line 1: forbidden js under root/www/ ==="
 rl1=0
 while IFS= read -r f; do
     [ -z "$f" ] && continue
@@ -88,8 +92,8 @@ if [ "$rl1" = 0 ]; then
 fi
 [ "$rl1" = 0 ] || fail=1
 
-# === [3/6] RED LINE 3: no cross-package duplicate installed file =============
-echo "=== [3/6] Red line 3: cross-package duplicate file paths ==="
+# === [3/7] RED LINE 3: no cross-package duplicate installed file =============
+echo "=== [3/7] Red line 3: cross-package duplicate file paths ==="
 # Strip the package prefix up to and including /root/, then detect duplicates.
 while IFS= read -r f; do
     [ -z "$f" ] && continue
@@ -105,8 +109,8 @@ else
     echo "[PASS] red-line-3: no cross-package duplicate file paths"
 fi
 
-# === [4/6] RED LINE 2: bandix restart hint (info only, never fails) ==========
-echo "=== [4/6] Red line 2: bandix restart hint (info only) ==="
+# === [4/7] RED LINE 2: bandix restart hint (info only, never fails) ==========
+echo "=== [4/7] Red line 2: bandix restart hint (info only) ==="
 hint=0
 while IFS= read -r f; do
     [ -z "$f" ] && continue
@@ -125,10 +129,10 @@ if [ "$hint" = 0 ]; then
     echo "      script restarts bandix after rewriting hostname_bindings.txt"
 fi
 
-# === [5/6] RED LINE 4: LuCI view JS traps (found on real device) =============
+# === [5/7] RED LINE 4: LuCI view JS traps (found on real device) =============
 # 这两条都是 2026-09-26 在雅典娜真机上验出来的：第一条让页面永远停在
 # 「正在载入视图」，第二条让结果表永远显示「尚未运行过」。
-echo "=== [5/6] Red line 4: LuCI view JS traps ==="
+echo "=== [5/7] Red line 4: LuCI view JS traps ==="
 rl4=0
 while IFS= read -r f; do
     [ -z "$f" ] && continue
@@ -161,13 +165,13 @@ else
     fail=1
 fi
 
-# === [6/6] RED LINE 5: files procd/rpcd execute must carry the exec bit ======
+# === [6/7] RED LINE 5: files procd/rpcd execute must carry the exec bit ======
 # 2026-09-26 真机装 CI 产物时暴露：仓库里 root/etc/init.d/cf-ipcheck 与
 # root/usr/bin/cf-ipcheck 是 100644，装到设备上就变成 -rw-r--r--，
 # 于是 post-install 的 enable/start 报 Permission denied，页面点「立即测速」
 # 也起不来（rpcd 是直接 execv 那个路径的）。手工 chmod 会把问题藏起来，
 # 所以这条必须在 CI 里钉死。
-echo "=== [6/6] Red line 5: executable file modes ==="
+echo "=== [6/7] Red line 5: executable file modes ==="
 # 优先看 git index 里的 mode：Windows 的 checkout 会伪造执行位，[ -x ] 在那边
 # 恒为真，只有 index mode 才是构建时真正打进包里的东西。
 USE_GIT=0
@@ -203,6 +207,79 @@ while IFS= read -r f; do
 done < "$ALL_FILES"
 if [ "$rl5" = 1 ]; then
     fail=1
+fi
+
+# === [7/7] RED LINE 6: 引擎 JSON 与页面读数字段必须对得上 ====================
+# 引擎改字段名、页面忘了改，不会有任何报错：那一列永远显示 —，或者整块信息
+# 静默消失。吞吐列就叫过 speed_mbps -> speed_mibs，靠真机才看得出来，
+# 所以这条契约检查放在 CI 里，两边任一侧单方面改名都会红。
+echo "=== [7/7] Red line 6: engine <-> view JSON field contract ==="
+ENGINE=luci-app-cf-ipcheck/root/usr/bin/cf-ipcheck
+VIEW=luci-app-cf-ipcheck/htdocs/luci-static/resources/view/cf_ipcheck/settings.js
+TMP_ENGINE="/tmp/lint_engine.$$"
+rl6=0
+
+if [ ! -f "$ENGINE" ] || [ ! -f "$VIEW" ]; then
+    echo "[FAIL] contract: 找不到引擎或页面文件（$ENGINE / $VIEW）"
+    rl6=1
+else
+    # 契约表：这三组就是页面会显示的全部数据来源。加字段必须在这里登记一份，
+    # 目的是让「引擎写了但页面没读」「页面读了但引擎没写」两种单边改动都变红。
+    # 为什么不直接正则扫引擎全文：Gist 载荷、Cloudflare /ips 的响应、自检里的
+    # 样例 JSON 也都是 "key": 形状，扫全文会把它们误当契约（files/content/result）。
+    STATUS_KEYS="state started finished pool qualified usable intercepted counts domains items reason"
+    ITEM_KEYS="ip code connect_ms tls_ms ttfb_ms total_ms colo speed_mibs domain"
+    SOURCE_KEYS="url http rc ips cf_in"
+
+    # 先把反斜杠去掉：顶层 JSON 写 "key":，items 那串写 \"key\":，去斜杠后同形。
+    sed 's/\\//g' "$ENGINE" > "$TMP_ENGINE"
+
+    for k in $STATUS_KEYS $ITEM_KEYS $SOURCE_KEYS; do
+        if grep -q "\"$k\":" "$TMP_ENGINE"; then
+            e=ok
+        else
+            e=missing
+        fi
+        if grep -q "$k" "$VIEW"; then
+            v=ok
+        else
+            v=missing
+        fi
+        if [ "$e" = ok ] && [ "$v" = ok ]; then
+            echo "[PASS] contract: $k 两边都在"
+        else
+            echo "[FAIL] contract: $k 引擎=$e 页面=$v（单边改动，界面上会静默缺一块）"
+            rl6=1
+        fi
+    done
+
+    # 反向兜底：页面从 items 里取的每个键必须登记在契约表里。
+    # 前面的 [^.alnum_] 是为了别上 "/etc/init.d/rpcd" 这种路径的尾巴。
+    for k in $(grep -oE '[^.[:alnum:]_]it\.[a-z_][a-z_]*' "$VIEW" | sed 's/^.*it\.//' | sort -u); do
+        case " $ITEM_KEYS " in
+            *" $k "*) ok=1 ;;
+            *) ok=0 ;;
+        esac
+        if [ "$ok" = 1 ]; then
+            echo "[PASS] contract: 页面读的 it.$k 已在契约表内"
+        else
+            echo "[FAIL] contract: 页面读 it.$k，但它不在 ITEM_KEYS 契约表里（引擎多半也不给）"
+            rl6=1
+        fi
+    done
+    # 已经踩过的旧名：出现即红，防止从别处粘回来
+    for stale in speed_mbps; do
+        if grep -q "$stale" "$ENGINE" "$VIEW"; then
+            echo "[FAIL] contract: $stale 是废弃字段名（吞吐单位是 MiB/s，键名 speed_mibs）"
+            rl6=1
+        fi
+    done
+    rm -f "$TMP_ENGINE"
+fi
+if [ "$rl6" = 1 ]; then
+    fail=1
+else
+    echo "[PASS] red-line-6: engine/view JSON contract holds"
 fi
 
 # --- cleanup ---

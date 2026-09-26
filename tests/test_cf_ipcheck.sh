@@ -46,16 +46,66 @@ if [ "$rc" != 0 ]; then
 	fi
 fi
 
-# 空候选池必须报 error，不能留下一份看似成功的结果
+# 空候选池必须报 error，并且说清是哪一种 error，不能留下一份看似成功的结果。
+# 没装 curl 的容器里 engine 会先报 missing_curl —— 那也是"不伪造成功"，
+# 但两种原因要能分开看，所以这里按 curl 在不在分别断言。
 : >"$ETC/best-ip.txt"
 CFIP_USE_OFFICIAL_RANGES=0 CFIP_REUSE_LAST=0 CFIP_COMMUNITY_SOURCES='' \
 	sh "$BIN" run >/dev/null 2>&1
-if grep -q '"state":"error"' "$RUN/status.json" 2>/dev/null; then
-	echo '[PASS] 空候选池被识别为 error 而非伪造成功'
+if command -v curl >/dev/null 2>&1; then want_reason=empty_pool; else want_reason=missing_curl; fi
+reason=$(sed -n 's/.*"reason":"\([^"]*\)".*/\1/p' "$RUN/status.json" 2>/dev/null)
+if grep -q '"state":"error"' "$RUN/status.json" 2>/dev/null && [ "$reason" = "$want_reason" ]; then
+	echo "[PASS] 空候选池被识别为 error/$want_reason 而非伪造成功"
 else
-	echo "::error::空候选池未产生 error 状态，实际内容=<$(head -c 120 "$RUN/status.json" 2>/dev/null)>"
+	echo "::error::空候选池未产生 error/$want_reason，实际内容=<$(head -c 160 "$RUN/status.json" 2>/dev/null)>"
 	rc=1
 fi
+
+# 陈旧锁绝不能把后面所有轮次卡死：被 OOM/断电打断过一次之后，
+# 只要锁主进程不在了就必须照常开跑（回归点：早先只看文件在不在）。
+# 取一个必然不存在的 pid：超过内核 pid_max 一号，任何进程都占不上。
+maxp=$(cat /proc/sys/kernel/pid_max 2>/dev/null || echo 32768)
+deadpid=$((${maxp:-32768} + 1))
+printf '%s %s\n' "$deadpid" "$(date +%s)" >"$RUN/lock"
+: >"$ETC/best-ip.txt"
+CFIP_USE_OFFICIAL_RANGES=0 CFIP_REUSE_LAST=0 CFIP_COMMUNITY_SOURCES='' \
+	sh "$BIN" run >/dev/null 2>&1
+reason=$(sed -n 's/.*"reason":"\([^"]*\)".*/\1/p' "$RUN/status.json" 2>/dev/null)
+if [ "$reason" = "$want_reason" ]; then
+	echo "[PASS] 陈旧锁被回收，本轮照常执行（$want_reason 说明真的跑进来了）"
+else
+	echo "::error::陈旧锁没被回收，status=<$(head -c 160 "$RUN/status.json" 2>/dev/null)>"
+	rc=1
+fi
+rm -f "$RUN/lock"
+
+# status 自愈：停在 running 但锁主已经不在，就不能再对外说 running
+printf '{"state":"running","started":"x","items":[]}' >"$RUN/status.json"
+printf '%s %s\n' "$deadpid" "$(date +%s)" >"$RUN/lock"
+got=$(sh "$BIN" status 2>/dev/null | sed -n 's/.*"state":"\([^"]*\)".*/\1/p')
+if [ "$got" = error ] || [ "$got" = never_run ] || [ "$got" = done ]; then
+	echo "[PASS] running + 死锁不会被当成还在跑（读到的是 $got）"
+else
+	echo "::error::running + 死锁仍报 running，原始输出=<$(sh "$BIN" status 2>/dev/null)>"
+	rc=1
+fi
+rm -f "$RUN/lock" "$RUN/status.json"
+
+# 真有活锁时 run-now 必须拒绝并说明原因（不能两个实例同时探测，数字会互抢）
+printf '%s %s\n' "$$" "$(date +%s)" >"$RUN/lock"
+got=$(sh "$BIN" _locklive 2>/dev/null)
+if [ "$got" = alive ]; then
+	echo '[PASS] _locklive 认得自家活锁'
+else
+	echo "::error::_locklive 应答 alive，实际=<${got:-}>"
+	rc=1
+fi
+got=$(sh "$BIN" run-now 2>/dev/null)
+case "$got" in
+	*'"state":"running"'*) echo '[PASS] 活锁下 run-now 直接回 running，不重复起一轮' ;;
+	*) echo "::error::活锁下 run-now 应答 running，实际=<$(printf '%s' "$got")>"; rc=1 ;;
+esac
+rm -f "$RUN/lock"
 
 rm -rf "$RUN" "$ETC" 2>/dev/null || true
 

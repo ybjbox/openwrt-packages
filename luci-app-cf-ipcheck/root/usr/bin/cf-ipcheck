@@ -16,6 +16,9 @@
 #   指标：connect(TCP 握手) / tls(appconnect-connect) / ttfb / total，排序 total->ttfb。
 #   为什么不用 ping：Cloudflare 是 anycast，ICMP 低延迟不代表你的线路能用。
 #
+# 多个探测域名时按 IP 合并（aggregate_per_ip）：一个 IP 只在榜单里出现一次，
+# 取它表现最好的那个域名的那一次；所以 qualified 永远 <= 候选池大小。
+#
 # 配置来源：优先 uci（cf-ipcheck），若 uci 不可用（例如 CI 容器）则读 CFIP_* 环境变量，
 # 这样同一份脚本既能被 procd 用，也能被 tests/ 下的 busybox 测试直接驱动。
 
@@ -27,11 +30,17 @@ ETC_DIR=${CFIP_ETC_DIR:-/etc/cf-ipcheck}
 STATUS=$RUN_DIR/status.json
 RESULT=$RUN_DIR/result.json
 BEST=$ETC_DIR/best-ip.txt
+# 整轮结果往 /etc 也放一份：/tmp 是易失的，设备重启后 status.json 就没了，
+# 页面会退化成"从未运行过"，而 best-ip.txt（同样在 /etc）明明还在。
+RESULT_KEEP=$ETC_DIR/result.json
 LOG=$RUN_DIR/cf-ipcheck.log
 LOCK=$RUN_DIR/lock
 STOP=$RUN_DIR/STOP
+# 锁的最长寿命：进程被 OOM 杀掉后 pid 可能被复用，超过这个时间就当作陈旧锁回收。
+LOCK_MAX=21600
 HAS_UCI=0
 command -v uci >/dev/null 2>&1 && HAS_UCI=1
+STARTED=''
 
 mkdir -p "$RUN_DIR" "$ETC_DIR" 2>/dev/null || true
 
@@ -64,6 +73,23 @@ cfg() {
 	printf '%s' "$v"
 }
 
+# cfg_num <option> <default>：数值项专用，认不出「一整串都是数字」就退回默认值。
+# 为什么非要这一层：脏值（比如手改配置时把行尾注释一起带进值里）会让后面的
+# $(( )) 在非交互 shell 里**直接把整个进程打死** —— 不报错、不留日志，
+# 页面上就是「按了开始没反应」。宁可退回默认并记一行说明。
+cfg_num() {
+	v=$(cfg "$1" "$2")
+	case "$v" in
+		''|*[!0-9]*)
+			log "配置项 $1 取到的值不是纯数字（<$(printf '%s' "$v" | cut -c1-48)>），按默认值 $2 处理"
+			printf '%s' "$2"
+			;;
+		*)
+			printf '%s' "$v"
+			;;
+	esac
+}
+
 # cfg_list <option> -> 每行一个元素
 cfg_list() {
 	if [ "$HAS_UCI" = 1 ]; then
@@ -77,30 +103,35 @@ cfg_list() {
 
 load_config() {
 	C_DOMAINS=$(cfg probe_domains 'www.cloudflare.com')
-	C_PORT=$(cfg probe_port 443)
-	C_BUDGET=$(cfg candidate_budget 256)
-	C_CONC=$(cfg concurrency 8)
-	C_TIMEOUT=$(cfg probe_timeout 5)
-	C_KEEP=$(cfg keep_count 10)
-	C_TTFB=$(cfg ttfb_limit 3000)
-	C_TOTAL=$(cfg total_limit 5000)
-	C_OFFICIAL=$(cfg use_official_ranges 1)
+	C_PORT=$(cfg_num probe_port 443)
+	C_BUDGET=$(cfg_num candidate_budget 256)
+	C_CONC=$(cfg_num concurrency 8)
+	C_TIMEOUT=$(cfg_num probe_timeout 5)
+	C_KEEP=$(cfg_num keep_count 10)
+	C_TTFB=$(cfg_num ttfb_limit 3000)
+	C_TOTAL=$(cfg_num total_limit 5000)
+	# 官方网段默认关：15 个前缀展开成 /24 采样是近六千个地址，
+	# 而社区优选源已经是别人实测过的好 IP，命中率高的多。想做大范围扫面再打开。
+	C_OFFICIAL=$(cfg use_official_ranges 0)
 	C_REUSE=$(cfg reuse_last 1)
 	C_COLOR=$(cfg colo_probe 1)
 	C_COLODOMAIN=$(cfg colo_domain 'www.cloudflare.com')
 	C_CANARY=$(cfg canary_check 1)
 	C_SPEED=$(cfg speed_probe 1)
-	C_SPEEDN=$(cfg speed_count 10)
-	C_SPEEDKB=$(cfg speed_bytes 10485760)
-	C_SPEEDTO=$(cfg speed_timeout 25)
+	C_SPEEDN=$(cfg_num speed_count 10)
+	C_SPEEDKB=$(cfg_num speed_bytes 10485760)
+	C_SPEEDTO=$(cfg_num speed_timeout 25)
 	C_SPEEDDOM=$(cfg speed_domain 'speed.cloudflare.com')
+	# probe_user 填 none 是“故意用 root 直发”的哨兵值：uci 分不清“显式留空”
+	# 和“没有这一项”（空值 get 回来 rc=1），只能靠哨兵表达。
 	C_PUSER=$(cfg probe_user nobody)
+	[ "$C_PUSER" = none ] && C_PUSER=''
 	C_ANNOT=$(cfg annotate 'cf-ipcheck | {colo} | {total}ms')
 	C_GIST=$(cfg gist_id '')
 	C_GISTFILE=$(cfg gist_file 'cf-ip.txt')
 	C_TOKEN=$(cfg token_file '/etc/cf-ipcheck.token')
 	C_GISTTOK=$(cfg gist_token '')
-	C_INTERVAL=$(cfg interval_hours 6)
+	C_INTERVAL=$(cfg_num interval_hours 6)
 	C_UPLOAD=$(cfg upload_gist 0)
 	SOURCES=$(cfg_list community_sources)
 	# /dev/null 坏了（变成普通文件、或落在很小的 tmpfs）会让大响应的探测集体报 rc=23，
@@ -108,11 +139,59 @@ load_config() {
 	[ -c /dev/null ] || log "本机 /dev/null 不是字符设备，改用 $NULL_DEV 丢弃响应体"
 }
 
+# ---------------- 运行锁（带存活判定）--------------------------------------
+# 只看“锁文件在不在”是不够的：后台那一轮被 OOM/断电/重启打断时锁会残留，
+# 之后每一轮都以为“还有实例在跑”，服务静默永久停摆。所以锁里写
+# `<pid> <启动秒>`：进程不在就回收，另外再加 LOCK_MAX 上限兜住 pid 复用。
+lock_field() { # $1=列号（1=pid，2=启动秒）
+	[ -f "$LOCK" ] || return 0
+	# 不能用 cut -d' ' -f2：行里找不到分隔符时，cut（GNU 与 BusyBox 都一样）会把
+	# **整行**当成要求的字段吐出来 —— 旧格式锁（只有一个 pid）的“时间戳”就成了
+	# pid 本身，算出来的锁龄是「现在减去 pid」，直接把活锁判死。
+	head -n 1 "$LOCK" 2>/dev/null | awk -v f="$1" '{ print (NF >= f ? $f : "") }'
+}
+
+lock_live() {
+	[ -f "$LOCK" ] || return 1
+	pid=$(lock_field 1)
+	# 锁内容读不出 pid（写坏了）就当陈旧锁回收，绝不能反过来卡死自己
+	case "${pid:-}" in
+		''|*[!0-9]*) return 1 ;;
+	esac
+	kill -0 "$pid" 2>/dev/null || return 1
+	ts=$(lock_field 2)
+	if [ -n "${ts:-}" ]; then
+		[ $(( $(date +%s) - ts )) -lt "$LOCK_MAX" ] 2>/dev/null || return 1
+	fi
+	return 0
+}
+
+# 成功拿到锁返回 0；已有实例在跑返回 1
+lock_acquire() {
+	lock_live && return 1
+	# $$ 在子 shell 里仍是顶层 shell 的 pid（POSIX 行为），而 run-now 是
+	# `( do_run & )` 起的孙进程 —— 直接用 $$ 会记下一个立刻退出的 pid。
+	# 必须 `exec`：命令替换本身要 fork 一个临时子 shell，加了 exec 才是让 sh
+	# 顶替那个临时子 shell（它的父进程就是真正在跑这一轮的进程）；
+	# 少了 exec（或后面再拼个 `|| true`）就变成临时子 shell 的 fork，
+	# 记下的 pid 随替换结束一起消失，锁永远判死 —— 这条在自测里被抓住过。
+	myself=$(exec sh -c 'echo $PPID' 2>/dev/null)
+	case "${myself:-}" in
+		''|*[!0-9]*) myself=$$ ;;
+	esac
+	printf '%s %s\n' "$myself" "$(date +%s)" >"$LOCK"
+	return 0
+}
+
 # ------- 候选池：官方网段 + 社区源 + 上轮入围，三路合并（设计参考 cf-auto，非代码衍生）----
 # stdin: 每行 IPv4 或 CIDR（可带 :port） -> stdout: 可探测的单 IP
 # CIDR 按 /24 粒度展开（mask>=24 时按原样取 .102/.1），纯 IP 直接透传。
 # 这一步必须做：社区源（含 XIU2 那份 ip.txt）大多整段写 CIDR，
 # 不展开就会拿网络地址去连，结果是成片超时。
+#
+# 两道闸：mask<12 直接丢，块数上限 4096。少了它们，一份写了 0.0.0.0/0 或 /8
+# 的源会把候选池撑成几十万行（awk 全内存 + sort），路由器当场没电。
+# CF 官方 IPv4 前缀最宽的就是 104.16.0.0/12（4096 个 /24），不会被误杀。
 expand_prefixes() {
 	awk '
 	{
@@ -124,7 +203,7 @@ expand_prefixes() {
 		n = split(ip, o, ".")
 		bad = 0
 		for (i = 1; i <= 4; i++) if (o[i] + 0 > 255) bad = 1
-		if (bad || mask < 8 || mask > 32) next
+		if (bad || mask < 12 || mask > 32) next
 
 		# 关键：不能拿网络地址去连。.x.y.z.0 是不可分配的，直接探测必然超时。
 		if (mask == 32) { print ip; next }
@@ -139,6 +218,7 @@ expand_prefixes() {
 			next
 		}
 		blocks = (2 ^ (32 - mask)) / 256
+		if (blocks > 4096) blocks = 4096         # 第二道闸（理论上已被 mask>=12 限住）
 		for (k = 0; k < blocks; k++) {
 			a = int(base + k * 256)
 			printf "%d.%d.%d.102\n", int(a / 16777216) % 256, int(a / 65536) % 256, int(a / 256) % 256
@@ -240,7 +320,7 @@ build_pool() {
 	keep=$((C_BUDGET - nreuse))
 	[ "$keep" -gt 0 ] || keep=1
 
-	# 社区那一半再按源数均分：5 个源 × 每源约 26 个 ≈ 130。
+	# 社区那一半再按源数均分：13 个源 × 每源约 10 个 ≈ 一半名额。
 	nsrc=0
 	for s in $SOURCES; do nsrc=$((nsrc + 1)); done
 	per=0
@@ -261,23 +341,23 @@ build_pool() {
 }
 
 # ---------------- 单 IP 探测 ----------------------------------------------
-# 输出（TAB 分隔）： ip  code  connect_ms  tls_ms  ttfb_ms  total_ms  err
+# 输出（TAB 分隔）： ip code connect_ms tls_ms ttfb_ms total_ms err domain
 probe_one() {
 	ip=$1
 	dom=$2
 	raw=$(run_probe "$(probe_cmd "$ip" "$dom" /)" 2>/dev/null)
 	rc=$?
 	if [ -f "$STOP" ]; then
-		printf '%s\t0\t0\t0\t0\t0\tstopped\n' "$ip"
+		printf '%s\t0\t0\t0\t0\t0\tstopped\t%s\n' "$ip" "$dom"
 		return 0
 	fi
 	if [ "$rc" = 0 ] && [ -n "$raw" ]; then
-		printf '%s' "$raw" | awk -F, -v ip="$ip" '
+		printf '%s' "$raw" | awk -F, -v ip="$ip" -v dom="$dom" '
 			NF >= 5 {
 				c = $2 * 1000; a = $3 * 1000; s = $4 * 1000; t = $5 * 1000
 				tls = a - c; if (tls < 0) tls = 0
 				err = ($1 >= 200 && $1 < 500) ? "none" : "http"
-				printf "%s\t%s\t%.1f\t%.1f\t%.1f\t%.1f\t%s\n", ip, $1, c, tls, s, t, err
+				printf "%s\t%s\t%.1f\t%.1f\t%.1f\t%.1f\t%s\t%s\n", ip, $1, c, tls, s, t, err, dom
 			}'
 		return 0
 	fi
@@ -288,7 +368,44 @@ probe_one() {
 		35|51|60|66|77|83|90|92) err=tls ;;
 		*)  err="transport_$rc" ;;
 	esac
-	printf '%s\t0\t0\t0\t0\t0\t%s\n' "$ip" "$err"
+	printf '%s\t0\t0\t0\t0\t0\t%s\t%s\n' "$ip" "$err" "$dom"
+}
+
+# 多域名 -> 每个 IP 一行。探测是 ip × domain 的笛卡尔积（不同域名走不同的
+# CF 前置机，同一 IP 的延迟能差几倍），但榜单的语义是“哪个 IP 好用”，
+# 所以这里先按 IP 合并：有成功记录就留 total 最小的那次（连带它的域名），
+# 全失败则留第一次失败记录。不合并的话同一个 IP 会在榜单里出现 N 遍，
+# keep_count 的名额全被重复项吃掉，qualified 也会超过候选池大小。
+aggregate_per_ip() {
+	awk '
+	BEGIN { FS = "\t"; OFS = "\t" }
+	NF >= 7 {
+		ip = $1
+		if (!(ip in seen)) { seen[ip] = ++n; order[n] = ip }
+		if ($7 == "none") {
+			if (!(ip in good) || ($6 + 0) < goodtot[ip]) { good[ip] = $0; goodtot[ip] = $6 + 0 }
+		} else if (!(ip in bad)) {
+			bad[ip] = $0
+		}
+	}
+	END {
+		for (i = 1; i <= n; i++) {
+			ip = order[i]
+			line = (ip in good) ? good[ip] : bad[ip]
+			print line
+		}
+	}'
+}
+
+# 失败分类统计：只看“这个 IP 最终算成功还是算哪类失败”，所以必须在
+# aggregate_per_ip 之后跑，否则同一个 IP 的两个域名会各计一次。
+err_counts() {
+	awk -F'\t' 'NF >= 7 { c[$7]++ } END { for (k in c) printf "%s:%d\n", k, c[k] }' | sort
+}
+
+# stdin = 聚合后的 TSV -> stdout = {"none":3,"timeout":1}（键序固定，便于自测）
+counts_json() {
+	printf '{%s}' "$(err_counts | awk -F: '{ printf "%s\"%s\":%s", (n++ ? "," : ""), $1, $2 }')"
 }
 
 trace_colo() { # $1=域名 $2=IP —— 取该 IP 的 colo= 字段
@@ -310,7 +427,7 @@ colo_of() {
 }
 
 # ---------------- 过滤 + 排序（纯文本处理，可离线自测）--------------------
-# stdin: probe_one 的 TSV；stdout: 达标并按 total->ttfb 排序的前 N 行
+# stdin: probe_one/aggregate_per_ip 的 TSV；stdout: 达标并按 total->ttfb 排序的前 N 行
 #
 # 不能用 sort -k：OpenWrt 的 busybox sort 常常是无 KEY_SUPPORT 的精简版
 # （usage 只有 -nru -z），-k6,6n 会被**静默忽略**、原序输出，CI 里也一样。
@@ -376,7 +493,7 @@ canary_check() {
 # time_connect 0.0007s）。而那条链的第一条规则是 `meta skgid 65534 ... return`，
 # nobody 的组恰好被豁免 —— 所以默认把探测降到 nobody 身份跑，量到的才是
 # 候选 IP 自己的握手与响应（实测同一个 IP：nobody 下 connect 0.19s，root 下 0.0007s）。
-# 留空 probe_user 就退回 root 直发（会被接管，canary_check 会把那轮标成不可信）。
+# probe_user 填 none（或留空）就退回 root 直发（会被接管，canary 会把那轮标成不可信）。
 run_probe() { # $1 = 交给 shell 执行的命令串
 	# stdin 一定要掐掉：busybox 的 su 会吃掉继承来的 stdin。用 `sh -s < 脚本`
 	# 这种方式调用时，第一条探测就把脚本剩下的部分吞了，后面几轮静默不执行；
@@ -423,7 +540,9 @@ cf_count_in() {
 # 在这里一眼就能看到（页面「源可用性检测」读的就是这个输出）。
 check_one_source() { # $1=url $2=序号 —— 结果写进 $RUN_DIR/cs.out.<序号>
 	body=$RUN_DIR/cs.body.$2
-	code=$(curl -4 -fsSL --max-time 12 -A 'cf-ipcheck/1.0' -o "$body" \
+	# max-time 8：这是页面按钮同步等的东西，最坏耗时 = 批大小 × 超时，
+	# 12 秒一档遇到死源会转圈转到 rpcd 的默认超时之外。
+	code=$(curl -4 -fsSL --max-time 8 -A 'cf-ipcheck/1.0' -o "$body" \
 		-w '%{http_code}' "$1" 2>/dev/null)
 	rc=$?
 	ips=$(grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' "$body" 2>/dev/null | sort -u)
@@ -439,7 +558,8 @@ check_one_source() { # $1=url $2=序号 —— 结果写进 $RUN_DIR/cs.out.<序
 		>"$RUN_DIR/cs.out.$2"
 }
 
-# 并发是必须的：串行 13 个源最坏要 13×12 秒，页面上转圈转得人怀疑人生。
+# 并发是必须的：串行 13 个源最坏要 13×8 秒，页面上转圈转得人怀疑人生。
+# 6 个一批是拿最大耗时换的：13 个源 = 3 批 ≈ 24 秒内一定出结果。
 check_sources() {
 	load_config
 	i=0
@@ -453,18 +573,24 @@ check_sources() {
 		n=$((n + 1))
 		check_one_source "$s" "$n" &
 		i=$((i + 1))
-		[ "$i" -ge 4 ] && { wait; i=0; }
+		[ "$i" -ge 6 ] && { wait; i=0; }
 	done
 	wait
 
 	printf '['
 	first=1
 	k=1
-	while [ -f "$RUN_DIR/cs.out.$k" ]; do
+	while [ "$k" -le "$n" ]; do
 		[ "$first" = 1 ] || printf ','
 		first=0
-		printf '%s' "$(cat "$RUN_DIR/cs.out.$k")"
-		rm -f "$RUN_DIR/cs.out.$k"
+		if [ -f "$RUN_DIR/cs.out.$k" ]; then
+			printf '%s' "$(cat "$RUN_DIR/cs.out.$k")"
+			rm -f "$RUN_DIR/cs.out.$k"
+		else
+			# 子进程被杀也不能让整个数组变短：长度对不上，页面就会把
+			# 「第 k 个源」显示成别的源。补一条占位，标记成 rc=255。
+			printf '{"url":"#missing%s","http":"000","rc":255,"ips":0,"cf_in":-1}' "$k"
+		fi
 		k=$((k + 1))
 	done
 	printf ']\n'
@@ -492,11 +618,24 @@ render_annotate() { # $1=模板 $2=colo $3=total $4=speed
 # 分别是 10.6 / 3.57 / 0.19 MB/s —— 差 50 倍，而它们的 total 挤在同一量级里。
 # 反过来 1MB 样本抖得没法用（同一 IP 两次差 2.8 倍，那基本是在测 TCP 慢启动），
 # 所以默认拉 10MB；并且只串行测 —— 并发一起拉会互抢带宽，测出来全是被压平的假数。
-speed_of() { # $1=IP -> MB/s（两位小数）；测不出来返回 0.00
-	[ -n "$1" ] || return 0
+speed_fmt() { # $1=curl 的 speed_download（字节/秒）-> MiB/s 两位小数；测不出来 = '-'
+	case "${1:-}" in
+		''|*[!0-9.]*) printf '%s' '-' ;;
+		*) printf '%s' "$1" | awk '{ printf "%.2f", ($1 + 0) / 1048576 }' ;;
+	esac
+}
+
+speed_of() { # $1=IP -> "12.34"（MiB/s）或 '-'
+	[ -n "$1" ] || { printf '%s' '-'; return 0; }
 	out=$(run_probe "curl -4 -o $NULL_DEV -sS --connect-timeout $C_TIMEOUT --max-time $C_SPEEDTO --resolve $C_SPEEDDOM:$C_PORT:$1 https://$C_SPEEDDOM/__down?bytes=$C_SPEEDKB -w '%{speed_download}'" 2>/dev/null)
-	[ -n "$out" ] || out=0
-	printf '%s' "$out" | awk '{ printf "%.2f", ($1 + 0) / 1048576 }'
+	rc=$?
+	# 半路超时/连接失败时 curl 照样吐一个 speed_download（被截断的假吞吐），
+	# 所以只认退出码 0；否则宁可是 '-'，也不给一个看着像数的假值。
+	if [ "$rc" != 0 ]; then
+		printf '%s' '-'
+		return 0
+	fi
+	speed_fmt "$out"
 }
 
 write_outputs() {
@@ -504,43 +643,52 @@ write_outputs() {
 	pool_n=$2
 	qualified=${3:-0}
 	intercepted=${4:-0}
+	counts=${5:-'{}'}
 	tmp=$RUN_DIR/best.tmp
 	printf '%s\n' "$ranked" >"$RUN_DIR/ranked.tsv"
 	# 落地机房只对入围 IP 查一次，结果并进同一张表：
 	# best-ip.txt 与 result.json 都从 colored.tsv 生成，避免两个输出内容不一致
 	# （页面上的「落地机房」列读的就是 result.json 的 colo 字段）。
+	#
+	# 第 7 列 colo、第 8 列吞吐（MiB/s，'-' 表示未测）、第 9 列胜出时用的域名。
 	colored=$RUN_DIR/colored.tsv
 	: >"$colored"
-	while IFS="$(printf '\t')" read -r ip code c tls ttfb tot err; do
+	while IFS="$(printf '\t')" read -r ip code c tls ttfb tot err dom; do
 		[ -n "$ip" ] || continue
 		colo=''
-		[ "$C_COLOR" = 1 ] && colo=$(colo_of "$ip")
+		# 出口被接管时，colo 和吞吐量的都是代理自己那条路，跟候选 IP 无关，
+		# 再花两轮请求测只会得到一整列一模一样的假数据 —— 直接不测。
+		if [ "$C_COLOR" = 1 ] && [ "$intercepted" = 0 ]; then
+			colo=$(colo_of "$ip")
+		fi
 		[ -n "$colo" ] || colo='n/a'
-		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\n' "$ip" "$code" "$c" "$tls" "$ttfb" "$tot" "$colo" >>"$colored"
+		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\n' \
+			"$ip" "$code" "$c" "$tls" "$ttfb" "$tot" "$colo" "$dom" >>"$colored"
 	done <"$RUN_DIR/ranked.tsv"
 
-	# 第 8 列是下载速度（MB/s）。只对榜单前 speed_count 个串行实测，
-	# 其余留 `-`；关了 speed_probe 就整列都是 `-`（零流量开销）。
-	if [ "$C_SPEED" = 1 ]; then
+	# 吞吐只对榜单前 speed_count 个串行实测，其余留 '-'；
+	# 关了 speed_probe（或本轮不可信）就整列都是 '-'（零流量开销）。
+	if [ "$C_SPEED" = 1 ] && [ "$intercepted" = 0 ]; then
 		sp_tmp=$RUN_DIR/colored_sp.tsv
 		: >"$sp_tmp"
 		k=0
 		sum=''
-		while IFS="$(printf '\t')" read -r ip code c tls ttfb tot colo spd; do
+		while IFS="$(printf '\t')" read -r ip code c tls ttfb tot colo spd dom; do
 			[ -n "$ip" ] || continue
 			if [ "$k" -lt "$C_SPEEDN" ] && [ ! -f "$STOP" ]; then
 				spd=$(speed_of "$ip")
 				k=$((k + 1))
-				sum="$sum $ip=${spd}MB/s"
+				sum="$sum $ip=${spd}MiB/s"
 			fi
-			printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$ip" "$code" "$c" "$tls" "$ttfb" "$tot" "$colo" "$spd" >>"$sp_tmp"
+			printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+				"$ip" "$code" "$c" "$tls" "$ttfb" "$tot" "$colo" "$spd" "$dom" >>"$sp_tmp"
 		done <"$colored"
 		mv "$sp_tmp" "$colored"
-		[ "$k" = 0 ] || log "吞吐实测$k 个（每个 $C_SPEEDKB 字节）:$sum"
+		[ "$k" = 0 ] || log "吞吐实测 $k 个（每个 $C_SPEEDKB 字节，单位 MiB/s）:$sum"
 	fi
 
 	: >"$tmp"
-	while IFS="$(printf '\t')" read -r ip code c tls ttfb tot colo spd; do
+	while IFS="$(printf '\t')" read -r ip code c tls ttfb tot colo spd dom; do
 		[ -n "$ip" ] || continue
 		# 渲染后去掉首尾空白：模板填成一个空格 = 只要 IP:端口（uci 分不清
 		# “显式留空”和“没这一项”，真空值取回来是 rc=1，会落回默认模板）。
@@ -554,19 +702,20 @@ write_outputs() {
 	mv "$tmp" "$BEST"
 
 	{
-		printf '{"state":"done","finished":"%s","pool":%s,"qualified":%s,"usable":%s,"intercepted":%s,"domains":"%s","items":[' \
-			"$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$pool_n" "$qualified" \
-			"$(grep -c . "$colored" || true)" "$intercepted" "$C_DOMAINS"
+		printf '{"state":"done","started":"%s","finished":"%s","pool":%s,"qualified":%s,"usable":%s,"intercepted":%s,"counts":%s,"domains":"%s","items":[' \
+			"${STARTED:-}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$pool_n" "$qualified" \
+			"$(grep -c . "$colored" || true)" "$intercepted" "$counts" "$C_DOMAINS"
 		awk 'BEGIN{FS="\t"}
-			NF >= 7 {
+			NF >= 9 {
 				if (n++) printf ","
 				sp = ($8 == "" || $8 == "-") ? "null" : $8
-				printf "{\"ip\":\"%s\",\"code\":%s,\"connect_ms\":%s,\"tls_ms\":%s,\"ttfb_ms\":%s,\"total_ms\":%s,\"colo\":\"%s\",\"speed_mbps\":%s}",
-					$1, $2, $3, $4, $5, $6, $7, sp
+				printf "{\"ip\":\"%s\",\"code\":%s,\"connect_ms\":%s,\"tls_ms\":%s,\"ttfb_ms\":%s,\"total_ms\":%s,\"colo\":\"%s\",\"speed_mibs\":%s,\"domain\":\"%s\"}",
+					$1, $2, $3, $4, $5, $6, $7, sp, $9
 			}' "$colored"
-		printf ']}'
+		printf ']}\n'
 	} >"$RUN_DIR/result.tmp" && mv "$RUN_DIR/result.tmp" "$RESULT"
 	cp "$RESULT" "$STATUS" 2>/dev/null || true
+	cp "$RESULT" "$RESULT_KEEP" 2>/dev/null || true
 }
 
 # ---------------- Gist 上传（可选；失败只记日志，不影响本地结果）----------
@@ -605,25 +754,35 @@ upload_gist() {
 	fi
 }
 
+# 本轮中止的统一出口：写状态 + 放锁。reason 会被页面直接显示出来，
+# 所以宁可分成几个具体原因，也不要一律 "error"。
+abort_round() { # $1=reason
+	rm -f "$LOCK"
+	printf '{"state":"error","reason":"%s","started":"%s","items":[]}\n' "$1" "${STARTED:-}" >"$STATUS"
+	log "本轮中止：$1"
+}
+
 # ---------------- 一轮完整流程 --------------------------------------------
 do_run() {
 	load_config
-	if [ -f "$LOCK" ]; then
+	if ! lock_acquire; then
 		log '已有实例在运行，跳过本轮'
 		return 0
 	fi
-	printf '%s' "$$" >"$LOCK"
 	rm -f "$STOP"
-	started=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-	printf '{"state":"running","started":"%s","items":[]}' "$started" >"$STATUS"
+	STARTED=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+	printf '{"state":"running","started":"%s","items":[]}' "$STARTED" >"$STATUS"
+
+	if ! command -v curl >/dev/null 2>&1; then
+		abort_round missing_curl
+		return 1
+	fi
 
 	pool=$(build_pool)
 	pool_n=$(printf '%s\n' "$pool" | grep -c . || true)
 	log "候选池 $pool_n 个；探测域名 $C_DOMAINS"
 	if [ "$pool_n" = 0 ]; then
-		log '候选池为空，终止本轮'
-		rm -f "$LOCK"
-		printf '{"state":"error","reason":"empty_pool","items":[]}' >"$STATUS"
+		abort_round empty_pool
 		return 1
 	fi
 
@@ -643,16 +802,46 @@ do_run() {
 	done
 	wait
 
+	# ip × domain 的原始记录先按 IP 合并，再排序截断
+	agg=$RUN_DIR/aggregated.tsv
+	aggregate_per_ip <"$probed" >"$agg"
+
 	qual=$RUN_DIR/qualified.tsv
-	rank_all <"$probed" >"$qual"
+	rank_all <"$agg" >"$qual"
 	qualified=$(grep -c . "$qual" || true)
 	ranked=$(head -n "$C_KEEP" "$qual")
 	kept=$(printf '%s\n' "$ranked" | grep -c . || true)
-	log "达标 $qualified / $pool_n（榜单保留 $kept）"
-	write_outputs "$ranked" "$pool_n" "$qualified" "$intercepted"
+	counts=$(counts_json <"$agg")
+	log "达标 $qualified / $pool_n（榜单保留 $kept）；分类 $counts"
+	write_outputs "$ranked" "$pool_n" "$qualified" "$intercepted" "$counts"
 	rm -f "$LOCK"
 	[ "$C_UPLOAD" = 1 ] && upload_gist
 	log '本轮完成'
+}
+
+# ---------------- 状态输出（带自愈）----------------------------------------
+# 页面每 3 秒问一次 status，所以这里必须处理三种脏状态：
+#   1) /tmp 被清（重启后）但 /etc 里还留着上一轮结果 -> 从 /etc 恢复，别说“从未运行”；
+#   2) 上一轮被断电/OOM 打断，status.json 永远停在 running -> 锁主已经不在，
+#      就地改写成 error/interrupted，否则页面上的按钮卡死、只能手动清文件；
+#   3) 什么都没跑过 -> never_run。
+show_status() {
+	if [ ! -s "$STATUS" ]; then
+		if [ -s "$RESULT_KEEP" ]; then
+			cp "$RESULT_KEEP" "$STATUS" 2>/dev/null || { cat "$RESULT_KEEP"; return 0; }
+		else
+			printf '{"state":"never_run","items":[]}\n'
+			return 0
+		fi
+	fi
+	if grep -q '"state":"running"' "$STATUS" 2>/dev/null && ! lock_live; then
+		if [ -s "$RESULT_KEEP" ]; then
+			cp "$RESULT_KEEP" "$STATUS" 2>/dev/null || true
+		else
+			printf '{"state":"error","reason":"interrupted","items":[]}\n' >"$STATUS"
+		fi
+	fi
+	cat "$STATUS"
 }
 
 # ---------------- 离线自检（CI 用；不联网、不依赖 uci）--------------------
@@ -692,6 +881,16 @@ selftest() {
 		check 'JSON 字符串转义' "$esc" '"ok a\"b\\c\n"'
 	fi
 	rm -f "$RUN_DIR/st.txt"
+	# 数值配置的容错：脏值（手改配置时把行尾注释带进值里）会让 $(( )) 在非交互
+	# shell 里直接把进程打死 —— 不报错、不留日志，页面表现是“按了没反应”。
+	# 用只有环境变量才认得的假选项名，保证在装了 uci 的设备上结果也一样。
+	export CFIP_CANDIDATE_BUDGET_DIRTY='256    # 单轮最多探测多少个 IP'
+	check '脏的数值配置退回默认值而不是把整轮打死' "$(cfg_num candidate_budget_dirty 256)" '256'
+	export CFIP_CANDIDATE_BUDGET_DIRTY='128'
+	check '干净的数值配置照常透传' "$(cfg_num candidate_budget_dirty 256)" '128'
+	export CFIP_CANDIDATE_BUDGET_DIRTY=''
+	check '空值走默认值' "$(cfg_num candidate_budget_dirty 256)" '256'
+	unset CFIP_CANDIDATE_BUDGET_DIRTY
 	# CIDR 展开：绝不能吐出网络地址（.0），否则整片超时
 	got=$(printf '173.245.48.0/20\n' | sh "$0" _expand 2>/dev/null | head -1)
 	check '/20 展开为首个 /24 的 .102' "$got" '173.245.48.102'
@@ -703,6 +902,12 @@ selftest() {
 	check '裸 IP 原样保留' "$got" '104.28.1.5'
 	got=$(printf '104.28.1.5:8443\n' | sh "$0" _expand 2>/dev/null | head -1)
 	check 'IP:port 去掉端口后保留' "$got" '104.28.1.5'
+	# 宽段闸门：/8 是 65536 个 /24，让这种源进来等于把路由器打死。
+	# CF 官方前缀最宽的就是 /12，所以 12 是既不误杀也不失控的分界。
+	got=$(printf '104.0.0.0/8\n0.0.0.0/0\n' | sh "$0" _expand 2>/dev/null | grep -c . || true)
+	check '比 /12 更宽的段整条丢弃' "$got" '0'
+	got=$(printf '104.16.0.0/12\n' | sh "$0" _expand 2>/dev/null | grep -c . || true)
+	check '/12 展开成 4096 个 /24 代表地址' "$got" '4096'
 
 	# 官方网段接口字段：现网返回 ipv4_cidrs，早年是 ipv4_prefixes，两个都得认
 	got=$(printf '%s' '{"result":{"ipv4_cidrs":["173.245.48.0/24","104.28.1.0/24"]}}' | sh "$0" _cidrs 2>/dev/null | tr '
@@ -732,6 +937,24 @@ selftest() {
 	check '名额为 0 时不炸也不清空整池' "$got" '1'
 	got=$(printf '' | sh "$0" _sample 10 | grep -c . || true)
 	check '空输入产出空' "$got" '0'
+
+	# 多域名合并：同一个 IP 两个域名各一条时只能留一行，
+	# 否则 keep_count 的名额被重复项吃掉、qualified 还会超过候选池大小。
+	two=$(printf '104.16.1.1\t200\t100.0\t50.0\t118.0\t270.0\tnone\twww.cloudflare.com\n104.16.1.1\t200\t90.0\t40.0\t100.0\t150.0\tnone\tcdn.example.com\n104.16.2.2\t0\t0\t0\t0\t0\ttimeout\twww.cloudflare.com\n104.16.2.2\t200\t80.0\t30.0\t90.0\t120.0\tnone\tcdn.example.com\n104.16.3.3\t0\t0\t0\t0\t0\ttimeout\twww.cloudflare.com\n104.16.3.3\t0\t0\t0\t0\t0\tdns\tcdn.example.com')
+	got=$(printf '%s\n' "$two" | sh "$0" _aggregate | cut -f1 | tr '\n' ' ')
+	check '按 IP 合并成一行（保留输入里首次出现的顺序）' "$got" '104.16.1.1 104.16.2.2 104.16.3.3 '
+	got=$(printf '%s\n' "$two" | sh "$0" _aggregate | awk -F'\t' '$1=="104.16.1.1"{print $6"\t"$8}')
+	check '同 IP 多条成功时取 total 最小的那次（连带它的域名）' "$got" '150.0	cdn.example.com'
+	got=$(printf '%s\n' "$two" | sh "$0" _aggregate | awk -F'\t' '$1=="104.16.2.2"{print $7}')
+	check '同 IP 有成有败时留成功那条' "$got" 'none'
+	got=$(printf '%s\n' "$two" | sh "$0" _aggregate | awk -F'\t' '$1=="104.16.3.3"{print $7}')
+	check '全失败的 IP 留第一条失败记录' "$got" 'timeout'
+	got=$(printf '%s\n' "$two" | sh "$0" _aggregate | sh "$0" _counts 2>/dev/null | tr '\n' ' ')
+	check '失败分类按 IP 计数（不是按 ip×域名计数）' "$got" 'none:2 timeout:1 '
+	got=$(printf '%s\n' "$two" | aggregate_per_ip | counts_json 2>/dev/null)
+	check '分类统计输出成合法 JSON 对象' "$got" '{"none":2,"timeout":1}'
+	got=$(printf '' | counts_json 2>/dev/null)
+	check '没有记录时分类是空对象' "$got" '{}'
 
 	# 出口接管自检的判定：只看有没有拿到 HTTP 状态码。
 	# 保留地址回任何状态码（含 404）都说明 443 被本地接管。
@@ -789,11 +1012,67 @@ selftest() {
 	check '模板支持 {speed} 占位符' "$got" 'a 10.60 b'
 	got=$(sh "$0" _annot 'a {speed} b' 'LAX' '1' 2>/dev/null)
 	check '没测速度时 {speed} 渲染成 -' "$got" 'a - b'
-	# bytes/s -> MB/s；10485760B/s 应是 10.00
+	# 字节/s -> MiB/s；10485760B/s 应是 10.00。测不出来时是 '-' 而不是 0.00 ——
+	# 0.00 会被读成“这个 IP 很慢”，而实际是压根没连上，两者处置完全不同。
 	got=$(sh "$0" _speedfmt 10485760 2>/dev/null)
-	check '吞吐单位换算成 MB/s（两位小数）' "$got" '10.00'
+	check '吞吐单位换算成 MiB/s（两位小数）' "$got" '10.00'
+	got=$(sh "$0" _speedfmt 1048576 2>/dev/null)
+	check '1 MiB/s 的换算' "$got" '1.00'
 	got=$(sh "$0" _speedfmt '' 2>/dev/null)
-	check '没测到吞吐时是 0.00 而不是空' "$got" '0.00'
+	check '没测到吞吐时是 - 而不是 0.00' "$got" '-'
+	got=$(sh "$0" _speedfmt 'abc' 2>/dev/null)
+	check 'curl 吐出非数字时也是 -' "$got" '-'
+
+	# 运行锁的存活判定。回归点：只判断文件存在会把被 OOM 打断的轮次
+	# 永久当成“还在跑”，服务静默停摆。
+	maxp=$(cat /proc/sys/kernel/pid_max 2>/dev/null || echo 32768)
+	deadpid=$((${maxp:-32768} + 1))
+	now=$(date +%s)
+	printf '%s %s\n' "$deadpid" "$now" >"$LOCK"
+	check '锁主进程已经不存在时判为陈旧（可回收）' "$(lock_live && echo alive || echo dead)" 'dead'
+	printf '%s %s\n' "$$" "$now" >"$LOCK"
+	check '锁主是当前进程时判为存活' "$(lock_live && echo alive || echo dead)" 'alive'
+	printf '%s %s\n' "$$" 1 >"$LOCK"
+	check 'pid 还活着但锁龄超过上限时回收（防 pid 复用）' "$(lock_live && echo alive || echo dead)" 'dead'
+	printf '%s\n' "$$" >"$LOCK"
+	check '旧格式（只有 pid）也能判活' "$(lock_live && echo alive || echo dead)" 'alive'
+	printf 'garbage\n' >"$LOCK"
+	check '锁内容读不出 pid 时按陈旧处理，不卡死' "$(lock_live && echo alive || echo dead)" 'dead'
+	rm -f "$LOCK"
+	if lock_acquire; then check 'lock_acquire 在无锁时能拿到' yes yes; else check 'lock_acquire 在无锁时能拿到' no yes; fi
+	if lock_acquire; then check '已有活锁时 lock_acquire 必须失败' yes no; else check '已有活锁时 lock_acquire 必须失败' no no; fi
+	# lock_acquire 记的 pid 必须是“真正在跑这一轮的那个进程”。run-now 走的是
+	# `( do_run & )`，记成命令替换的临时进程就等于记了个立刻消失的 pid ——
+	# 表现是每一轮都以为没人在跑（重复并发跑）或永远以为有人在跑。
+	rm -f "$LOCK" "$RUN_DIR/bgpid"
+	( printf '%s\n' "$(exec sh -c 'echo $PPID' 2>/dev/null)" >"$RUN_DIR/bgpid"; sleep 2 ) &
+	bgw=$!
+	sleep 1
+	bp=$(cat "$RUN_DIR/bgpid" 2>/dev/null)
+	if [ -n "${bp:-}" ] && kill -0 "$bp" 2>/dev/null && [ "$bp" != "$$" ]; then
+		check 'exec sh -c echo PPID 取到的是后台运行进程本身' ok ok
+	else
+		check 'exec sh -c echo PPID 取到的是后台运行进程本身' "pid=${bp:-none} top=$$ ok" ok
+	fi
+	wait "$bgw" 2>/dev/null || true
+	rm -f "$RUN_DIR/bgpid" "$LOCK"
+	# 自愈：status 停在 running 但锁主不在了，就不能再报 running
+	printf '{"state":"running","started":"x","items":[]}' >"$STATUS"
+	rm -f "$LOCK" "$RESULT_KEEP"
+	got=$(show_status | sed -n 's/.*"reason":"\([^"]*\)".*/\1/p')
+	check 'running 状态遇到陈旧锁会被改写成 interrupted' "$got" 'interrupted'
+	printf '{"state":"done","items":[]}' >"$RESULT_KEEP"
+	printf '{"state":"running","started":"x","items":[]}' >"$STATUS"
+	got=$(show_status | sed -n 's/.*"state":"\([^"]*\)".*/\1/p')
+	check '陈旧锁时退回 /etc 里的上一轮结果' "$got" 'done'
+	rm -f "$STATUS"
+	got=$(show_status | sed -n 's/.*"state":"\([^"]*\)".*/\1/p')
+	check '/tmp 被清后仍能从 /etc 恢复状态（不说“从未运行过”）' "$got" 'done'
+	printf '{"state":"running","started":"x","items":[]}' >"$STATUS"
+	printf '%s %s\n' "$$" "$now" >"$LOCK"
+	got=$(show_status | sed -n 's/.*"state":"\([^"]*\)".*/\1/p')
+	check '真的在跑时不干预 running 状态' "$got" 'running'
+	rm -f "$LOCK" "$STATUS" "$RESULT_KEEP"
 
 	if [ "$fails" = 0 ]; then
 		echo '[OK] selftest 全部通过'
@@ -808,7 +1087,7 @@ usage() {
 用法: cf-ipcheck <command>
   run       跑一轮完整优选（前台执行，期间不要重复触发）
   run-now   后台起一轮并立即返回（Web 按钮用）
-  status    输出最近一轮状态 JSON
+  status    输出最近一轮状态 JSON（陈旧锁与重启都会被自愈）
   show      以人类可读形式输出榜单
   pool      只打印本轮会用的候选 IP 列表（联网取源，不测速）——核对源配置用
   canary    只跑一次出口接管自检，输出 {"intercepted":0|1}
@@ -822,13 +1101,13 @@ EOF
 
 case "${1:-}" in
 	run)     do_run ;;
-	run-now) if [ -f "$LOCK" ]; then
+	run-now) if lock_live; then
 				 printf '{"state":"running"}\n'
 				 exit 0
 			 fi
 			 ( do_run >/dev/null 2>&1 & )
 			 printf '{"state":"started"}\n' ;;
-	status)  if [ -s "$STATUS" ]; then cat "$STATUS"; else printf '{"state":"never_run","items":[]}\n'; fi ;;
+	status)  show_status ;;
 	show)    if [ -s "$BEST" ]; then cat "$BEST"; else echo '尚无结果，先执行 cf-ipcheck run'; fi ;;
 	pool)    load_config; build_pool ;;
 	canary)  load_config; printf '{"intercepted":%s}\n' "$(canary_check)" ;;
@@ -853,6 +1132,8 @@ case "${1:-}" in
 	_expand) expand_prefixes ;;
 	_cidrs)  official_cidrs ;;
 	_sample) sample_lines "${2:-256}" ;;
+	_aggregate) aggregate_per_ip ;;
+	_counts) err_counts ;;
 	_canaryv) canary_verdict "${2:-}" ;;
 	_cfin)   cf_count_in "${2:-}" ;;
 	_probecmd)
@@ -860,6 +1141,7 @@ case "${1:-}" in
 		probe_cmd "${2:-1.2.3.4}" "${3:-example.com}" "${4:-/}"
 		printf '\n' ;;
 	_annot)  render_annotate "${2:-}" "${3:-}" "${4:-}" "${5:--}" ;;
-	_speedfmt) printf '%s' "${2:-0}" | awk '{ printf "%.2f", ($1 + 0) / 1048576 }' ;;
+	_speedfmt) speed_fmt "${2:-}" ;;
+	_locklive) lock_live && echo alive || echo dead ;;
 	*)       usage; exit 2 ;;
 esac
