@@ -39,6 +39,6 @@ jobs:
       - name: Build with OpenWrt SDK
         # gh-action-sdk has no "release" input; the target architecture is
         # selected via the ARCH environment variable.
-        uses: openwrt/gh-action-sdk@master
+        uses: openwrt/gh-action-sdk@v11
         env:
           ARCH: aarch64_cortex-a53-25.12.5
