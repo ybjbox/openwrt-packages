@@ -215,17 +215,38 @@ colo_of() {
 
 # ---------------- 过滤 + 排序（纯文本处理，可离线自测）--------------------
 # stdin: probe_one 的 TSV；stdout: 达标并按 total->ttfb 排序的前 N 行
+#
+# 不能用 sort -k：OpenWrt 的 busybox sort 常常是无 KEY_SUPPORT 的精简版
+# （usage 只有 -nru -z），-k6,6n 会被**静默忽略**、原序输出，CI 里也一样。
+# 所以改成把 total/ttfb 补成定宽数字前缀后用 sort -n（busybox 与 GNU 行为一致），
+# 再用 cut 去掉前缀。定宽保证同 total 时按 ttfb 依次比较。
 rank() {
-	awk -v ttfb="$C_TTFB" -v tot="$C_TOTAL" 'BEGIN{FS="\t"}
-		NF >= 7 && $7 == "none" && $6+0 > 0 && $6+0 <= tot && $5+0 <= ttfb { print }' |
-		sort -k6,6n -k5,5n |
+	awk -v ttfb="$C_TTFB" -v tot="$C_TOTAL" '
+		BEGIN { FS = "\t"; OFS = "\t" }
+		NF >= 7 && $7 == "none" && $6+0 > 0 && $6+0 <= tot && $5+0 <= ttfb {
+			printf "%015.3f\t%015.3f\t%s\n", $6, $5, $0
+		}' |
+		sort -n |
+		cut -f3- |
 		head -n "$C_KEEP"
+}
+
+# 达标数（截断前）与榜单行数（截断后）分开统计，别让日志把两者混为一谈
+rank_all() {
+	awk -v ttfb="$C_TTFB" -v tot="$C_TOTAL" '
+		BEGIN { FS = "\t"; OFS = "\t" }
+		NF >= 7 && $7 == "none" && $6+0 > 0 && $6+0 <= tot && $5+0 <= ttfb {
+			printf "%015.3f\t%015.3f\t%s\n", $6, $5, $0
+		}' |
+		sort -n |
+		cut -f3-
 }
 
 # ---------------- 落地输出 -------------------------------------------------
 write_outputs() {
 	ranked=$1
 	pool_n=$2
+	qualified=${3:-0}
 	tmp=$RUN_DIR/best.tmp
 	printf '%s\n' "$ranked" >"$RUN_DIR/ranked.tsv"
 	# 落地机房只对入围 IP 查一次，结果并进同一张表：
@@ -250,8 +271,8 @@ write_outputs() {
 	mv "$tmp" "$BEST"
 
 	{
-		printf '{"state":"done","finished":"%s","pool":%s,"usable":%s,"domains":"%s","items":[' \
-			"$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$pool_n" \
+		printf '{"state":"done","finished":"%s","pool":%s,"qualified":%s,"usable":%s,"domains":"%s","items":[' \
+			"$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$pool_n" "$qualified" \
 			"$(grep -c . "$colored" || true)" "$C_DOMAINS"
 		awk 'BEGIN{FS="\t"}
 			NF >= 7 {
@@ -325,10 +346,13 @@ do_run() {
 	done
 	wait
 
-	ranked=$(rank <"$probed")
-	usable=$(printf '%s\n' "$ranked" | grep -c . || true)
-	log "达标 $usable / $pool_n"
-	write_outputs "$ranked" "$pool_n"
+	qual=$RUN_DIR/qualified.tsv
+	rank_all <"$probed" >"$qual"
+	qualified=$(grep -c . "$qual" || true)
+	ranked=$(head -n "$C_KEEP" "$qual")
+	kept=$(printf '%s\n' "$ranked" | grep -c . || true)
+	log "达标 $qualified / $pool_n（榜单保留 $kept）"
+	write_outputs "$ranked" "$pool_n" "$qualified"
 	rm -f "$LOCK"
 	[ "$C_UPLOAD" = 1 ] && upload_gist
 	log '本轮完成'
@@ -350,16 +374,19 @@ selftest() {
 	C_KEEP=3
 	# 104.16.1.1 total=120 最优；104.16.9.9 total=8000 超 total_limit 应剔除；
 	# 104.16.5.5 total=400 但 ttfb=4500 超 ttfb_limit 应剔除；104.16.2.2 失败(dns)应剔除。
-	sample=$(printf '104.16.2.2\t0\t0\t0\t0\t0\tdns\n104.16.1.1\t200\t100.0\t50.0\t118.0\t120.0\tnone\n104.16.9.9\t200\t6000.0\t500.0\t7000.0\t8000.0\tnone\n104.16.5.5\t200\t300.0\t200.0\t4500.0\t4600.0\tnone\n104.16.3.3\t200\t150.0\t60.0\t260.0\t270.0\tnone')
+	# 排序断言要能区分「按 total 升序」与「busybox 退化成的整行字典序」：
+	# 下面三条存活行的 IP 字典序（1.1 < 2.2 < 3.3）与 total 升序
+	# （3.3=120 < 2.2=190 < 1.1=270）刚好相反，任何不真正按数值排序的实现都会被抓。
+	sample=$(printf '104.16.9.9\t200\t6000.0\t500.0\t7000.0\t8000.0\tnone\n104.16.5.5\t200\t300.0\t200.0\t4500.0\t4600.0\tnone\n104.16.2.2\t0\t0\t0\t0\t0\tdns\n104.16.1.1\t200\t100.0\t50.0\t118.0\t270.0\tnone\n104.16.3.3\t200\t150.0\t60.0\t260.0\t120.0\tnone\n104.16.2.2\t200\t120.0\t55.0\t150.0\t190.0\tnone')
 	got=$(printf '%s\n' "$sample" | rank | cut -f1 | tr '\n' ' ')
-	check '过滤不可用/超标并按时延升序' "$got" '104.16.1.1 104.16.3.3 '
+	check '按 total 数值升序（区别于整行字典序）' "$got" '104.16.3.3 104.16.2.2 104.16.1.1 '
 	# 全失败时 rank 应产出空而非报错
 	only_bad=$(printf '1.1.1.1\t0\t0\t0\t0\t0\ttimeout\n' | rank | grep -c . || true)
 	check '全部失败时返回空榜单' "$only_bad" '0'
 	# keep_count 截断
 	C_KEEP=1
 	trunc=$(printf '%s\n' "$sample" | rank | cut -f1 | tr '\n' ' ')
-	check 'keep_count 截断' "$trunc" '104.16.1.1 '
+	check 'keep_count 截断' "$trunc" '104.16.3.3 '
 	C_KEEP=10
 	# JSON 转义：内容里的引号与反斜杠不能破坏结构。
 	# 输入行 `ok a"b\c` 期望输出 "ok a\"b\\c\n"

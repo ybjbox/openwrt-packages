@@ -82,9 +82,10 @@ function renderTable(st) {
 		}
 	}
 
-	var meta = _('候选 %1$s 个 · 达标 %2$s 个 · 探测域名 %3$s · 完成于 %4$s')
+	var meta = _('候选 %1$s 个 · 达标 %2$s 个 · 榜单 %5$s 条 · 探测域名 %3$s · 完成于 %4$s')
 		.replace('%1$s', st.pool != null ? st.pool : '—')
-		.replace('%2$s', st.usable != null ? st.usable : (st.items || []).length)
+		.replace('%2$s', st.qualified != null ? st.qualified : (st.items || []).length)
+		.replace('%5$s', st.usable != null ? st.usable : (st.items || []).length)
 		.replace('%3$s', st.domains || '—')
 		.replace('%4$s', st.finished || st.started || '—');
 
