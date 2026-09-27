@@ -178,14 +178,26 @@ function stateLabel(st) {
 	}
 }
 
-/* 各版本 LuCI 的提示接口不一致（老的 ui.toast(type,title,msg) 与新的
- * ui.addToast(title,msg,type)），这里按存在性挑一个；两个都没有就算了，
- * 状态一律还会写进页面本身，不靠提示传达。 */
+/* 各版本 LuCI 的提示接口不一致，而且这台机器上的 26.249 两个都没有（真机验过：
+ * ui.js 里搜不到任何 toast 函数）。所以除了特性探测，还必须有一条页内兜底：
+ * 否则「复制榜单 IP」「已请求停止」这些反馈点了完全看不见。 */
+var noticeTimer = null;
+
 function notify(title, message, type) {
 	if (typeof ui.addToast === 'function')
-		ui.addToast(title, message, type || 'info');
-	else if (typeof ui.toast === 'function')
-		ui.toast(type || 'info', title, message);
+		return ui.addToast(title, message, type || 'info');
+	if (typeof ui.toast === 'function')
+		return ui.toast(type || 'info', title, message);
+	if (!nodes.notice)
+		return;
+	nodes.notice.className = 'cf-notice small' + (type === 'error' ? ' danger' : (type === 'warning' ? ' warning' : ''));
+	nodes.notice.textContent = message ? '%s — %s'.format(title, message) : String(title);
+	nodes.notice.style.display = 'block';
+	if (noticeTimer)
+		clearTimeout(noticeTimer);
+	noticeTimer = setTimeout(function () {
+		nodes.notice.style.display = 'none';
+	}, 8000);
 }
 
 /* 复制：navigator.clipboard 在非安全上下文或被策略挡掉时会 reject，
@@ -207,13 +219,25 @@ function fallbackCopy(text) {
 
 function copyText(text) {
 	return new Promise(function (resolve) {
+		var settled = false;
+		function done(v) {
+			if (!settled) {
+				settled = true;
+				resolve(v);
+			}
+		}
+		/* 没有真实用户激活时，writeText 可能既不 resolve 也不 reject（真机上就是这样
+		 * 把整个调用挂住的）。给它 1.5 秒，到点就退到 execCommand，别让用户对着
+		 * 一个没反应的按钮等。 */
+		var timer = setTimeout(function () { done(fallbackCopy(text)); }, 1500);
 		if (navigator.clipboard && navigator.clipboard.writeText) {
 			navigator.clipboard.writeText(text).then(
-				function () { resolve(true); },
-				function () { resolve(fallbackCopy(text)); });
+				function () { clearTimeout(timer); done(true); },
+				function () { clearTimeout(timer); done(fallbackCopy(text)); });
 			return;
 		}
-		resolve(fallbackCopy(text));
+		clearTimeout(timer);
+		done(fallbackCopy(text));
 	});
 }
 
@@ -332,12 +356,13 @@ function fmtTime(iso) {
 	if (mins < 1)
 		rel = _('刚刚');
 	else if (mins < 60)
-		rel = _(' %s 分钟前').format(String(mins));
+		rel = _('%s 分钟前').format(String(mins));
 	else if (mins < 2880)
-		rel = _(' %s 小时前').format(String(Math.round(mins / 60)));
+		rel = _('%s 小时前').format(String(Math.round(mins / 60)));
 	else
-		rel = _(' %s 天前').format(String(Math.round(mins / 1440)));
-	return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds()) + rel;
+		rel = _('%s 天前').format(String(Math.round(mins / 1440)));
+	return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds()) +
+		'（' + rel + '）';
 }
 
 /* 结果比设定的周期还老时明说 —— 否则一张过时的榜很容易被当成"现在的线路状况"。 */
@@ -741,6 +766,10 @@ return view.extend({
 		nodes.status = E('em', {}, stateLabel(st) +
 			(st.intercepted == 1 ? ' · ' + _('出口被接管，数字不可信') : '') +
 			scheduleText(st));
+		nodes.notice = E('div', {
+			class: 'cf-notice small',
+			style: 'display:none;margin-top:.15em'
+		});
 
 		var bar = E('div', { class: 'cbi-section', id: 'cf-ipcheck-actions' }, [
 			E('div', { class: 'cbi-section-node' }, [
@@ -753,6 +782,11 @@ return view.extend({
 					E('div', { class: 'cbi-value-field' }, [
 						btnRun, ' ', btnStop, ' ', btnRefresh, ' ', btnCopy
 					])
+				]),
+				/* 这台机器上的 LuCI 没有 toast，所有 notify() 最终落到这一行 */
+				E('div', { class: 'cbi-value' }, [
+					E('label', { class: 'cbi-value-title' }, _('提示')),
+					E('div', { class: 'cbi-value-field' }, nodes.notice)
 				])
 			])
 		]);
