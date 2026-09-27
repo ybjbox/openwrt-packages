@@ -61,6 +61,34 @@ else
 	rc=1
 fi
 
+# 运行目录必须让探测身份穿得过去：真机上 procd 的 umask 077 把 /tmp/cf-ipcheck 做成
+# 700，nobody 进不去 → sink 写不到 → curl 在联网之前 rc=23，126 个候选里 112 个
+# 被记成"传输错误"。末位是奇数才代表 other 有 x。
+mode=$(stat -c '%a' "$RUN" 2>/dev/null || echo skip)
+case "$mode" in
+	skip) echo '::notice::stat 不可用，跳过运行目录 mode 断言' ;;
+	*1|*3|*5|*7) echo "[PASS] 运行目录 mode=$mode，探测用户能穿过它写 sink" ;;
+	*) echo "::error::运行目录 mode=$mode 把探测用户挡在外面，整轮会假性 transport_23"; rc=1 ;;
+esac
+
+# sink 写不动时必须在联网之前中止并给出具体原因，而不是交出一张全挂的榜单。
+# 用一个不存在的探测用户来制造写失败（没有 su 的环境走 root 直发，跳过）。
+: >"$ETC/best-ip.txt"
+if command -v su >/dev/null 2>&1; then
+	CFIP_NULL_DEV="$RUN/.null-sink" CFIP_PROBE_USER=cfip-no-such-user \
+	CFIP_USE_OFFICIAL_RANGES=0 CFIP_REUSE_LAST=0 CFIP_COMMUNITY_SOURCES='' \
+		sh "$BIN" run >/dev/null 2>&1
+	reason=$(sed -n 's/.*"reason":"\([^"]*\)".*/\1/p' "$RUN/status.json" 2>/dev/null)
+	if [ "$reason" = sink_not_writable ]; then
+		echo '[PASS] 探测身份写不动 sink 时中止为 sink_not_writable（不伪造榜单）'
+	else
+		echo "::error::sink 不可写没有被单独识别，reason=<$reason> status=<$(head -c 160 "$RUN/status.json")>"
+		rc=1
+	fi
+else
+	echo '::notice::环境无 su，跳过 sink 可写性中止断言'
+fi
+
 # 陈旧锁绝不能把后面所有轮次卡死：被 OOM/断电打断过一次之后，
 # 只要锁主进程不在了就必须照常开跑（回归点：早先只看文件在不在）。
 # 取一个必然不存在的 pid：超过内核 pid_max 一号，任何进程都占不上。

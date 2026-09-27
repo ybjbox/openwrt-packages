@@ -68,15 +68,25 @@ HAS_UCI=0
 STARTED=''
 
 mkdir -p "$RUN_DIR" "$ETC_DIR" 2>/dev/null || true
+# $RUN_DIR 必须让探测身份穿得过去：procd 起的进程 umask 常是 077，mkdir 出来就是
+# 700，nobody 连目录都进不去 —— 里面的 sink 文件就算 666 也写不到，curl 在联网
+# 之前就 rc=23，整轮候选全被记成"传输错误"（真机 126 个候选里 112 个这样挂掉）。
+# 711 而不是 755：只放行按名字访问，不让别的用户列出目录里有什么。
+chmod 711 "$RUN_DIR" 2>/dev/null || true
 
 # 丢弃响应体用的“黑洞”。不能硬写 /dev/null：真机遇到过 /dev/null 变成普通文件、
 # 且落在 512K 的 tmpfs 上 —— 大响应写不下就短写，curl 报 rc=23
 # “Failure writing output to destination”，表现是探测域名越大页越全挂。
 # 不是字符设备时退到运行目录里的临时文件（curl 每次 -o 会截断重写）。
-if [ -c /dev/null ]; then
-	NULL_DEV=/dev/null
-else
-	NULL_DEV=$RUN_DIR/.null
+NULL_DEV=${CFIP_NULL_DEV:-}
+if [ -z "$NULL_DEV" ]; then
+	if [ -c /dev/null ]; then
+		NULL_DEV=/dev/null
+	else
+		NULL_DEV=$RUN_DIR/.null
+	fi
+fi
+if [ "$NULL_DEV" != /dev/null ]; then
 	# 探测是以 probe_user（默认 nobody）跑的，所以这个替代文件必须让别的用户写得动，
 	# 否则 curl 打不开输出目标，照样是 rc=23。
 	: >"$NULL_DEV" 2>/dev/null || true
@@ -680,6 +690,14 @@ probe_cmd() { # $1=IP $2=域名 $3=额外 path -> 拼出 curl 命令串
 		"${CURL_BIN:-curl}" "$NULL_DEV" "$C_TIMEOUT" "$C_TIMEOUT" "$2" "$C_PORT" "$1" "$2" "${3:-/}"
 }
 
+# 开跑前先以探测身份真写一次 sink。写不动的症状和"网全挂了"完全一样（curl 在联网
+# 之前就 rc=23，整轮候选全被归成 transport_23），所以宁可中止并给出具体原因，
+# 也不要交出一张 100% 假故障的榜单 —— 真机上就是这么静默挂了 112/126 个候选的。
+sink_writable() {
+	[ "$NULL_DEV" = /dev/null ] && return 0
+	run_probe "printf x >\"$NULL_DEV\"" >/dev/null 2>&1
+}
+
 # ---------------- 源可用性检测 ---------------------------------------------
 # $1 = 空格分隔的 CIDR 列表；stdin = 每行一个 IPv4 -> stdout = 落在这些段内的条数。
 # BusyBox awk 没有按位与，所以用「整除到块号」来判成员：blk = 2^(32-mask)，
@@ -948,6 +966,10 @@ do_run() {
 		abort_round missing_curl
 		return 1
 	fi
+	if ! sink_writable; then
+		abort_round sink_not_writable
+		return 1
+	fi
 
 	pool=$(build_pool)
 	pool_n=$(printf '%s\n' "$pool" | grep -c . || true)
@@ -1037,10 +1059,12 @@ do_diag() {
 		# 打成什么形状（真机上就是重复行 / 带下标 / 数组式这三种在打架）。
 		uci_list=$(printf '%s\n' "$( "$UCI_BIN" -q show "$CONF.@global[0].community_sources" 2>&1 | head -n 3 | tr '\n' '~' )" | cut -c1-260)
 	fi
-	printf '{"has_uci":%s,"uci":"%s","su":"%s","curl":"%s","jq":"%s","devnull_is_chardev":%s,"null_dev":"%s","sources":%s,"domains":"%s","port":"%s","budget":"%s","official":"%s","reuse":"%s","colo":"%s","colo_domain":"%s","canary":"%s","probe_user":"%s","speed":"%s","speed_count":"%s","speed_bytes":"%s","speed_domain":"%s","interval":"%s","upload":"%s","run_dir":"%s","etc_dir":"%s","uci_show":"%s","uci_get_probe_port":"%s","uci_get_rc":%s,"uci_list_raw":"%s"}\n' \
+	printf '{"has_uci":%s,"uci":"%s","su":"%s","curl":"%s","jq":"%s","devnull_is_chardev":%s,"null_dev":"%s","sink_writable":%s,"run_dir_mode":"%s","sources":%s,"domains":"%s","port":"%s","budget":"%s","official":"%s","reuse":"%s","colo":"%s","colo_domain":"%s","canary":"%s","probe_user":"%s","speed":"%s","speed_count":"%s","speed_bytes":"%s","speed_domain":"%s","interval":"%s","upload":"%s","run_dir":"%s","etc_dir":"%s","uci_show":"%s","uci_get_probe_port":"%s","uci_get_rc":%s,"uci_list_raw":"%s"}\n' \
 		"$HAS_UCI" "$(json_str "${UCI_BIN:-}")" "$(json_str "${SU_BIN:-}")" \
 		"$(json_str "${CURL_BIN:-}")" "$(json_str "${JQ_BIN:-}")" \
 		"$([ -c /dev/null ] && printf 1 || printf 0)" "$(json_str "$NULL_DEV")" \
+		"$(sink_writable && printf 1 || printf 0)" \
+		"$(stat -c '%a' "$RUN_DIR" 2>/dev/null || printf '?')" \
 		"${nsrc:-0}" "$(json_str "$C_DOMAINS")" "$(json_str "$C_PORT")" \
 		"$(json_str "$C_BUDGET")" "$(json_str "$C_OFFICIAL")" "$(json_str "$C_REUSE")" \
 		"$(json_str "$C_COLOR")" "$(json_str "$C_COLODOMAIN")" "$(json_str "$C_CANARY")" \

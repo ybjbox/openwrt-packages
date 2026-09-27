@@ -71,6 +71,11 @@ function reasonText(reason) {
 				'先点下面「检测源可用性」看是不是哪些源改了路径，或临时打开「Cloudflare 官方网段」。');
 		case 'missing_curl':
 			return _('这台机器上没有 curl：所有探测都是 curl --resolve 发起的，请安装 curl 与 ca-bundle。');
+		case 'sink_not_writable':
+			return _('探测身份写不了丢弃响应体的目标，本轮已在联网之前中止。' +
+				'这会让每一条探测都以 curl rc=23 失败，看起来像“所有 IP 都不通”，其实是本地写不了：' +
+				'确认「探测身份」那个用户对运行目录（默认 /tmp/cf-ipcheck）有进入权限、且其中的 .null 归它可写，' +
+				'清掉该目录后再跑一轮。');
 		case 'interrupted':
 			return _('上一轮没跑完就断了（进程被杀、断电或重启），运行锁已被回收，这一条是自动判出来的。' +
 				'下面显示的是上一次成功完成的榜单；直接点「立即测速」即可重来。');
