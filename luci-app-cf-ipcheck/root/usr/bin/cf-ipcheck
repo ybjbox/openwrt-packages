@@ -43,8 +43,28 @@ LOCK=$RUN_DIR/lock
 STOP=$RUN_DIR/STOP
 # 锁的最长寿命：进程被 OOM 杀掉后 pid 可能被复用，超过这个时间就当作陈旧锁回收。
 LOCK_MAX=21600
+# 找可执行文件必须按绝对路径探一遍，不能只信 command -v：
+# rpcd 起子进程时继承的 PATH 可能不含 /sbin。真机实测就是这样 —— uci 在
+# /sbin/uci，`command -v uci` 在页面触发的那条路径上失败 → HAS_UCI=0 →
+# 整套 uci 配置被静默忽略、全部落回默认值，表现是"页面里明明配了 13 条源，
+# 点立即测速却说候选池是空的"，而且日志里看不出任何异常。
+find_bin() { # $1=名字 $2..=候选绝对路径
+	name=$1
+	shift
+	for p in "$@"; do
+		[ -x "$p" ] && { printf '%s' "$p"; return 0; }
+	done
+	path=$(command -v "$name" 2>/dev/null || true)
+	[ -n "$path" ] && { printf '%s' "$path"; return 0; }
+	return 1
+}
+
+UCI_BIN=$(find_bin uci /sbin/uci /usr/sbin/uci /bin/uci /usr/bin/uci || true)
+SU_BIN=$(find_bin su /sbin/su /usr/sbin/su /bin/su /usr/bin/su || true)
+CURL_BIN=$(find_bin curl /usr/bin/curl /bin/curl /usr/sbin/curl /sbin/curl || true)
+JQ_BIN=$(find_bin jq /usr/bin/jq /bin/jq /usr/sbin/jq /sbin/jq || true)
 HAS_UCI=0
-command -v uci >/dev/null 2>&1 && HAS_UCI=1
+[ -n "$UCI_BIN" ] && HAS_UCI=1
 STARTED=''
 
 mkdir -p "$RUN_DIR" "$ETC_DIR" 2>/dev/null || true
@@ -71,7 +91,7 @@ log() {
 cfg() {
 	v=''
 	if [ "$HAS_UCI" = 1 ]; then
-		v=$(uci -q get "$CONF.@global[0].$1" 2>/dev/null || true)
+		v=$("$UCI_BIN" -q get "$CONF.@global[0].$1" 2>/dev/null || true)
 	fi
 	[ -n "$v" ] || eval "v=\${CFIP_$(printf '%s' "$1" | tr 'a-z' 'A-Z' | tr '.' '_'):-}"
 	[ -n "$v" ] || v=$2
@@ -155,7 +175,7 @@ one_host() {
 # cfg_list <option> -> 每行一个元素
 cfg_list() {
 	if [ "$HAS_UCI" = 1 ]; then
-		uci -q show "$CONF" 2>/dev/null | \
+		"$UCI_BIN" -q show "$CONF" 2>/dev/null | \
 			sed -n "s/^$CONF\.[^.]*\.$1='\(.*\)'$/\1/p"
 		return 0
 	fi
@@ -328,8 +348,8 @@ expand_prefixes() {
 # 键名以接口实际返回为准：现在是 ipv4_cidrs，早年是 ipv4_prefixes，两个都取，
 # 取不到就交给上层记日志——绝不静默当空池处理。
 official_cidrs() {
-	if command -v jq >/dev/null 2>&1; then
-		jq -r '.result.ipv4_cidrs[]?, .result.ipv4_prefixes[]?' 2>/dev/null
+	if [ -n "$JQ_BIN" ]; then
+		"$JQ_BIN" -r '.result.ipv4_cidrs[]?, .result.ipv4_prefixes[]?' 2>/dev/null
 		return 0
 	fi
 	data=$(cat)
@@ -547,7 +567,7 @@ counts_json() {
 trace_colo() { # $1=域名 $2=IP —— 取该 IP 的 colo= 字段
 	d=$1
 	[ -n "$d" ] || return 0
-	run_probe "curl -4 -sS --connect-timeout $C_TIMEOUT --max-time $C_TIMEOUT --resolve $d:$C_PORT:$2 https://$d/cdn-cgi/trace" 2>/dev/null | \
+	run_probe "${CURL_BIN:-curl} -4 -sS --connect-timeout $C_TIMEOUT --max-time $C_TIMEOUT --resolve $d:$C_PORT:$2 https://$d/cdn-cgi/trace" 2>/dev/null | \
 		sed -n 's/^colo=//p' | head -n 1 || true
 }
 
@@ -614,7 +634,7 @@ canary_check() {
 	dom=$(printf '%s' "$C_DOMAINS" | cut -d, -f1 | tr -d ' ')
 	[ -n "$dom" ] || return 0
 	for ip in 203.0.113.77 198.51.100.77; do
-		code=$(run_probe "curl -4 -o $NULL_DEV -sS --connect-timeout 3 --max-time 4 --resolve $dom:$C_PORT:$ip https://$dom/ -w '%{http_code}'" 2>/dev/null)
+		code=$(run_probe "${CURL_BIN:-curl} -4 -o $NULL_DEV -sS --connect-timeout 3 --max-time 4 --resolve $dom:$C_PORT:$ip https://$dom/ -w '%{http_code}'" 2>/dev/null)
 		if [ "$(canary_verdict "$code")" = intercepted ]; then
 			log "canary $ip 竟然返回 HTTP $code：本机 443 出口被透明代理接管，本轮逐 IP 结果不可信"
 			printf '1\n'
@@ -635,16 +655,17 @@ run_probe() { # $1 = 交给 shell 执行的命令串
 	# stdin 一定要掐掉：busybox 的 su 会吃掉继承来的 stdin。用 `sh -s < 脚本`
 	# 这种方式调用时，第一条探测就把脚本剩下的部分吞了，后面几轮静默不执行；
 	# 从管道/rpcd 调用同样有这颗雷。
-	if [ -n "$C_PUSER" ] && command -v su >/dev/null 2>&1; then
-		su -s /bin/sh "$C_PUSER" -c "$1" </dev/null
+	if [ -n "$C_PUSER" ] && [ -n "$SU_BIN" ]; then
+		"$SU_BIN" -s /bin/sh "$C_PUSER" -c "$1" </dev/null
 	else
 		sh -c "$1" </dev/null
 	fi
 }
 
 probe_cmd() { # $1=IP $2=域名 $3=额外 path -> 拼出 curl 命令串
-	printf "curl -4 -o %s -sS --connect-timeout %s --max-time %s --resolve %s:%s:%s https://%s%s -w '%%{http_code},%%{time_connect},%%{time_appconnect},%%{time_starttransfer},%%{time_total}'" \
-		"$NULL_DEV" "$C_TIMEOUT" "$C_TIMEOUT" "$2" "$C_PORT" "$1" "$2" "${3:-/}"
+	# 命令串里写绝对路径：它是整条交给 `su -c` 的，那条 shell 的 PATH 不一定有 /usr/bin。
+	printf "%s -4 -o %s -sS --connect-timeout %s --max-time %s --resolve %s:%s:%s https://%s%s -w '%%{http_code},%%{time_connect},%%{time_appconnect},%%{time_starttransfer},%%{time_total}'" \
+		"${CURL_BIN:-curl}" "$NULL_DEV" "$C_TIMEOUT" "$C_TIMEOUT" "$2" "$C_PORT" "$1" "$2" "${3:-/}"
 }
 
 # ---------------- 源可用性检测 ---------------------------------------------
@@ -765,7 +786,7 @@ speed_fmt() { # $1=curl 的 speed_download（字节/秒）-> MB/s 两位小数�
 
 speed_of() { # $1=IP -> "12.34"（MB/s）或 '-'
 	valid_ip4 "$1" || { printf '%s' '-'; return 0; }
-	out=$(run_probe "curl -4 -o $NULL_DEV -sS --connect-timeout $C_TIMEOUT --max-time $C_SPEEDTO --resolve $C_SPEEDDOM:$C_PORT:$1 https://$C_SPEEDDOM/__down?bytes=$C_SPEEDKB -w '%{speed_download}'" 2>/dev/null)
+	out=$(run_probe "${CURL_BIN:-curl} -4 -o $NULL_DEV -sS --connect-timeout $C_TIMEOUT --max-time $C_SPEEDTO --resolve $C_SPEEDDOM:$C_PORT:$1 https://$C_SPEEDDOM/__down?bytes=$C_SPEEDKB -w '%{speed_download}'" 2>/dev/null)
 	rc=$?
 	# 半路超时/连接失败时 curl 照样吐一个 speed_download（被截断的假吞吐），
 	# 所以只认退出码 0；否则宁可是 '-'，也不给一个看着像数的假值。
@@ -911,7 +932,7 @@ do_run() {
 	STARTED=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 	printf '{"state":"running","started":"%s","items":[]}' "$STARTED" >"$STATUS"
 
-	if ! command -v curl >/dev/null 2>&1; then
+	if [ -z "$CURL_BIN" ]; then
 		abort_round missing_curl
 		return 1
 	fi
@@ -980,6 +1001,25 @@ show_status() {
 		fi
 	fi
 	cat "$STATUS"
+}
+
+# ---------------- 引擎自述（排查"配置没生效"用）------------------------------
+# 真机上踩过一次：LuCI 页面里 uci 明明配了 13 条源，引擎却因为 rpcd 给的 PATH 里
+# 没有 /sbin 而找不到 uci，于是静默按默认值跑，表现成"候选池是空的"，日志里
+# 一切正常。这个子命令把引擎**实际读到的东西**一次打出来，不用靠猜。
+do_diag() {
+	load_config
+	nsrc=$(printf '%s\n' "$SOURCES" | grep -c . || true)
+	printf '{"has_uci":%s,"uci":"%s","su":"%s","curl":"%s","jq":"%s","devnull_is_chardev":%s,"null_dev":"%s","sources":%s,"domains":"%s","port":"%s","budget":"%s","official":"%s","reuse":"%s","colo":"%s","colo_domain":"%s","canary":"%s","probe_user":"%s","speed":"%s","speed_count":"%s","speed_bytes":"%s","speed_domain":"%s","interval":"%s","upload":"%s","run_dir":"%s","etc_dir":"%s"}\n' \
+		"$HAS_UCI" "$(json_str "${UCI_BIN:-}")" "$(json_str "${SU_BIN:-}")" \
+		"$(json_str "${CURL_BIN:-}")" "$(json_str "${JQ_BIN:-}")" \
+		"$([ -c /dev/null ] && printf 1 || printf 0)" "$(json_str "$NULL_DEV")" \
+		"${nsrc:-0}" "$(json_str "$C_DOMAINS")" "$(json_str "$C_PORT")" \
+		"$(json_str "$C_BUDGET")" "$(json_str "$C_OFFICIAL")" "$(json_str "$C_REUSE")" \
+		"$(json_str "$C_COLOR")" "$(json_str "$C_COLODOMAIN")" "$(json_str "$C_CANARY")" \
+		"$(json_str "${C_PUSER:-root}")" "$(json_str "$C_SPEED")" "$(json_str "$C_SPEEDN")" \
+		"$(json_str "$C_SPEEDKB")" "$(json_str "$C_SPEEDDOM")" "$(json_str "$C_INTERVAL")" \
+		"$(json_str "$C_UPLOAD")" "$(json_str "$RUN_DIR")" "$(json_str "$ETC_DIR")"
 }
 
 # ---------------- 离线自检（CI 用；不联网、不依赖 uci）--------------------
@@ -1075,6 +1115,17 @@ selftest() {
 	check 'colo 非纯 IPv4 参数直接拒绝，不拼进 shell 字符串' "$got" '1'
 	sh "$0" colo 'x' >/dev/null 2>&1
 	check 'colo 参数非法时退出码 2' "$?" '2'
+	# find_bin：rpcd 给子进程的 PATH 可能没有 /sbin，所以 uci/su/curl/jq 一律
+	# 按绝对路径找、找不到再退回 command -v。这两条钉住它的两级行为。
+	got=$(find_bin sh /nonexistent-dir-for-test/sh 2>/dev/null || true)
+	check 'find_bin 绝对路径落空时退回 command -v' "$([ -n "$got" ] && echo ok || echo no)" 'ok'
+	got=$(find_bin cfip_no_such_binary_xyz /nope/a /nope/b 2>/dev/null || true)
+	check 'find_bin 对不存在的程序返回空（调用方据此降级）' "${got:-EMPTY}" 'EMPTY'
+	# diag：把"引擎到底读到了什么"打出来。这次真机上的"配置静默失效"就是缺这个。
+	dg=$(sh "$0" diag 2>/dev/null)
+	check 'diag 输出以 {"has_uci":0|1, 开头' "$(printf '%s' "$dg" | grep -c '^{"has_uci":[01],' || true)" '1'
+	check 'diag 里 sources 是数字' "$(printf '%s' "$dg" | sed -n 's/.*"sources":\([0-9][0-9]*\),.*/\1/p' | grep -c '^[0-9]' || true)" '1'
+	check 'diag 里 probe_user 空值会写成 root 而不是空串' "$(printf '%s' "$dg" | grep -c '"probe_user":"[a-z_]*"' || true)" '1'
 	# 官方网段缓存：新鲜命中时**不许**联网（CI 里联网就会拿到真段表，断言就会漂）。
 	now=$(date +%s)
 	check '刚写入的缓存算新鲜' "$(net_cache_fresh "$now" "$now" && echo f || echo s)" 'f'
@@ -1180,11 +1231,13 @@ selftest() {
 	# 错位一次的表现为 `-o 5`（把超时秒数当成输出路径）。这里按结构钉，不写死数值，
 	# 免得改了 probe_timeout 就把自检判死。
 	pc=$(sh "$0" _probecmd 1.2.3.4 example.com / 2>/dev/null)
+	# 允许 curl 前面带绝对路径（find_bin 会解析成 /usr/bin/curl；命令串是整条交给
+	# `su -c` 的，那条 shell 的 PATH 不一定有 /usr/bin）
 	case "$pc" in
-		"curl -4 -o $NULL_DEV -sS --connect-timeout "*) ok=yes; ;;
-		*) ok=no; ;;
+		*curl\ -4\ -o\ $NULL_DEV\ -sS\ --connect-timeout\ *) ok=yes ;;
+		*) ok=no ;;
 	esac
-	check '命令串开头是 curl -4 -o <黑洞> -sS --connect-timeout' "$ok" 'yes'
+	check '命令串是 <curl> -4 -o <黑洞> -sS --connect-timeout' "$ok" 'yes'
 	ct=$(printf '%s' "$pc" | sed -n 's/.*--connect-timeout \([0-9]*\) --max-time \([0-9]*\) .*/\1 \2/p')
 	check 'connect-timeout 与 max-time 都取到同一个超时值' \
 		"$(printf '%s' "$ct" | awk '{print ($1==$2 && $1>0) ? "same" : "diff"}')" 'same'
@@ -1295,6 +1348,7 @@ usage() {
   colo IP   查询单个 IP 的落地机房代码（如 SIN/NRT/HKG）
   stop      请求当前这一轮尽快收尾
   daemon    常驻，按 interval_hours 循环
+  diag      打印引擎实际读到的配置与找到的可执行文件路径（排查"配置没生效"用）
   selftest  离线自检，不联网
 EOF
 }
@@ -1343,6 +1397,7 @@ case "${1:-}" in
 					 sleep 60
 				 fi
 			 done ;;
+	diag)    do_diag ;;
 	selftest) selftest ;;
 	_expand) expand_prefixes ;;
 	_cidrs)  official_cidrs ;;

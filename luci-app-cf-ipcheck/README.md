@@ -440,6 +440,14 @@ cf-ipcheck selftest   # 离线自检，不联网
   不依赖 uci 的 reload 触发是否真把 procd 实例拉起来。
 - **ACL 只放开 `/usr/bin/cf-ipcheck` 的 `exec`**：早先还顺带授意了 4 条 `file.read`
   （status/result/best-ip），而页面从头到尾只走 `file.exec` —— 白要权限。
+- **可执行文件一律按绝对路径找（`find_bin`）**：rpcd 起子进程时给的 PATH 不含 `/sbin`，
+  而 `uci` 就在 `/sbin/uci`。真机上撞出来的后果很难查：`command -v uci` 失败 →
+  `HAS_UCI=0` → 整套 uci 配置被静默忽略、全部落回默认值，页面里明明配了 13 条源，
+  点「立即测速」却报"候选池是空的"，日志里一切正常。现在 `uci`/`su`/`curl`/`jq` 都先探
+  绝对路径再退回 `command -v`，`su -c` 那条命令串里的 curl 也换成绝对路径。
+  配套加了 `cf-ipcheck diag`：把引擎**实际读到的**配置（`has_uci`、找到的各二进制路径、
+  源条数、域名、池子大小、吞吐参数、`/dev/null` 是否还是字符设备）一次打成 JSON ——
+  以后"配置到底生效没有"是一条命令就能回答的问题，不用靠猜。
 - **`/etc/config/cf_ipcheck` 里的注释会在页面上改任何一项后消失**：uci 写回时不保留注释。
   仓库里那份是文档（含每条源的出处与段内占比），改过配置想找回说明就看仓库版本。
 
