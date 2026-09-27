@@ -1010,7 +1010,18 @@ show_status() {
 do_diag() {
 	load_config
 	nsrc=$(printf '%s\n' "$SOURCES" | grep -c . || true)
-	printf '{"has_uci":%s,"uci":"%s","su":"%s","curl":"%s","jq":"%s","devnull_is_chardev":%s,"null_dev":"%s","sources":%s,"domains":"%s","port":"%s","budget":"%s","official":"%s","reuse":"%s","colo":"%s","colo_domain":"%s","canary":"%s","probe_user":"%s","speed":"%s","speed_count":"%s","speed_bytes":"%s","speed_domain":"%s","interval":"%s","upload":"%s","run_dir":"%s","etc_dir":"%s"}\n' \
+	# 光报 has_uci 不够：真机上就撞过 uci 找得到、但一条值都没读回来，
+	# 而 diag 里每个值都恰好等于默认值，根本看不出区别。所以把 uci 的原始
+	# 输出、单条 get 的返回值与退出码一起打出来，一眼定位是哪一步断的。
+	uci_show=''
+	uci_rc=-1
+	uci_get=''
+	if [ "$HAS_UCI" = 1 ]; then
+		uci_show=$(printf '%s\n' "$( "$UCI_BIN" -q show "$CONF" 2>&1 | head -n 6 | tr '\n' '~' )" | cut -c1-300)
+		uci_get=$("$UCI_BIN" -q get "$CONF.@global[0].probe_port" 2>&1)
+		uci_rc=$?
+	fi
+	printf '{"has_uci":%s,"uci":"%s","su":"%s","curl":"%s","jq":"%s","devnull_is_chardev":%s,"null_dev":"%s","sources":%s,"domains":"%s","port":"%s","budget":"%s","official":"%s","reuse":"%s","colo":"%s","colo_domain":"%s","canary":"%s","probe_user":"%s","speed":"%s","speed_count":"%s","speed_bytes":"%s","speed_domain":"%s","interval":"%s","upload":"%s","run_dir":"%s","etc_dir":"%s","uci_show":"%s","uci_get_probe_port":"%s","uci_get_rc":%s}\n' \
 		"$HAS_UCI" "$(json_str "${UCI_BIN:-}")" "$(json_str "${SU_BIN:-}")" \
 		"$(json_str "${CURL_BIN:-}")" "$(json_str "${JQ_BIN:-}")" \
 		"$([ -c /dev/null ] && printf 1 || printf 0)" "$(json_str "$NULL_DEV")" \
@@ -1019,7 +1030,8 @@ do_diag() {
 		"$(json_str "$C_COLOR")" "$(json_str "$C_COLODOMAIN")" "$(json_str "$C_CANARY")" \
 		"$(json_str "${C_PUSER:-root}")" "$(json_str "$C_SPEED")" "$(json_str "$C_SPEEDN")" \
 		"$(json_str "$C_SPEEDKB")" "$(json_str "$C_SPEEDDOM")" "$(json_str "$C_INTERVAL")" \
-		"$(json_str "$C_UPLOAD")" "$(json_str "$RUN_DIR")" "$(json_str "$ETC_DIR")"
+		"$(json_str "$C_UPLOAD")" "$(json_str "$RUN_DIR")" "$(json_str "$ETC_DIR")" \
+		"$(json_str "$uci_show")" "$(json_str "$uci_get")" "$uci_rc"
 }
 
 # ---------------- 离线自检（CI 用；不联网、不依赖 uci）--------------------
