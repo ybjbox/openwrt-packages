@@ -218,6 +218,25 @@ load_config() {
 	[ -c /dev/null ] || log "本机 /dev/null 不是字符设备，改用 $NULL_DEV 丢弃响应体"
 }
 
+# valid_ip4 <字符串> -> 只有纯 IPv4 才返回 0。
+# 凡是会进 `su -c` 那条 shell 字符串的地址都必须先过这一关：探测池里的地址是
+# grep 提取出来的（天然干净），但 `cf-ipcheck colo <IP>` 的参数是外部输入 ——
+# 传错东西不该顺带被 shell 执行掉（这条是在核对"页面上能不能落文件"时发现的）。
+valid_ip4() {
+	# 空串与含非数字字符的先在这里挡掉：**awk 一条记录都读不到时退出码是 0**，
+	# 只靠下面的正则会把空参数当成合法地址放行（这条断言当场把它抓出来了）。
+	case "${1:-}" in
+		''|*[!0-9.]*) return 1 ;;
+	esac
+	printf '%s' "${1:-}" | awk '
+	/^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$/ {
+		split($0, o, ".")
+		for (i = 1; i <= 4; i++) if (o[i] + 0 > 255) exit 1
+		exit 0
+	}
+	{ exit 1 }'
+}
+
 # ---------------- 运行锁（带存活判定）--------------------------------------
 # 只看“锁文件在不在”是不够的：后台那一轮被 OOM/断电/重启打断时锁会残留，
 # 之后每一轮都以为“还有实例在跑”，服务静默永久停摆。所以锁里写
@@ -457,6 +476,11 @@ build_pool() {
 probe_one() {
 	ip=$1
 	dom=$2
+	# 地址与域名都会被拼进整条交给 `su -c` 的 shell 字符串，进来先各过一道校验
+	if ! valid_ip4 "$ip"; then
+		printf '%s\t0\t0\t0\t0\t0\tinvalid_ip\t%s\n' "${ip%% *}" "$dom"
+		return 0
+	fi
 	raw=$(run_probe "$(probe_cmd "$ip" "$dom" /)" 2>/dev/null)
 	rc=$?
 	if [ -f "$STOP" ]; then
@@ -532,7 +556,7 @@ trace_colo() { # $1=域名 $2=IP —— 取该 IP 的 colo= 字段
 # 整列 colo 全是 n/a，页面上「落地机房」和 best-ip.txt 里的 {colo} 就都废了。
 colo_of() {
 	ip=${1:-}
-	[ -n "$ip" ] || return 0
+	valid_ip4 "$ip" || return 0
 	c=$(trace_colo "$(printf '%s' "$C_DOMAINS" | cut -d, -f1 | tr -d ' ')" "$ip")
 	[ -n "$c" ] || c=$(trace_colo "$C_COLODOMAIN" "$ip")
 	# colo= 后面那段是远端给的，直接进 JSON 会被人用一个引号打断整份结果
@@ -738,7 +762,7 @@ speed_fmt() { # $1=curl 的 speed_download（字节/秒）-> MiB/s 两位小数�
 }
 
 speed_of() { # $1=IP -> "12.34"（MiB/s）或 '-'
-	[ -n "$1" ] || { printf '%s' '-'; return 0; }
+	valid_ip4 "$1" || { printf '%s' '-'; return 0; }
 	out=$(run_probe "curl -4 -o $NULL_DEV -sS --connect-timeout $C_TIMEOUT --max-time $C_SPEEDTO --resolve $C_SPEEDDOM:$C_PORT:$1 https://$C_SPEEDDOM/__down?bytes=$C_SPEEDKB -w '%{speed_download}'" 2>/dev/null)
 	rc=$?
 	# 半路超时/连接失败时 curl 照样吐一个 speed_download（被截断的假吞吐），
@@ -1035,6 +1059,20 @@ selftest() {
 	got=$(printf 'https://a.com/x\nhttp://b.com\n\njavascript:alert\n' | \
 		grep -E '^https://[^[:space:]]+$' | grep -c . || true)
 	check '社区源只吃 https 单行地址（http 清单在链路上能被改包）' "$got" '1'
+	# 地址校验：这些串最终会被拼成**整条交给 `su -c` 的 shell 字符串**，
+	# 所以"参数看起来像什么"必须在这里定死，不能靠上层自觉。
+	check '纯 IPv4 通过' "$(valid_ip4 '104.16.202.102' && echo ok || echo no)" 'ok'
+	check '带分号的地址被拒（否则那就成了执行）' "$(valid_ip4 '1.1.1.1; id' && echo ok || echo no)" 'no'
+	check '八位组超范围被拒' "$(valid_ip4 '300.1.1.1' && echo ok || echo no)" 'no'
+	check '段数不足被拒' "$(valid_ip4 '1.2.3' && echo ok || echo no)" 'no'
+	check '主机名不是地址' "$(valid_ip4 'example.com' && echo ok || echo no)" 'no'
+	check '空串被拒' "$(valid_ip4 '' && echo ok || echo no)" 'no'
+	check '尾巴带点的被拒' "$(valid_ip4 '1.2.3.' && echo ok || echo no)" 'no'
+	check '点在中间的畸形地址被拒' "$(valid_ip4 '1..2.3' && echo ok || echo no)" 'no'
+	got=$(sh "$0" colo '1.1.1.1; id' 2>&1 | head -n 1 | grep -c 'IPv4' || true)
+	check 'colo 非纯 IPv4 参数直接拒绝，不拼进 shell 字符串' "$got" '1'
+	sh "$0" colo 'x' >/dev/null 2>&1
+	check 'colo 参数非法时退出码 2' "$?" '2'
 	# 官方网段缓存：新鲜命中时**不许**联网（CI 里联网就会拿到真段表，断言就会漂）。
 	now=$(date +%s)
 	check '刚写入的缓存算新鲜' "$(net_cache_fresh "$now" "$now" && echo f || echo s)" 'f'
@@ -1269,7 +1307,11 @@ case "${1:-}" in
 	pool)    load_config; build_pool ;;
 	canary)  load_config; printf '{"intercepted":%s}\n' "$(canary_check)" ;;
 	check-sources) check_sources ;;
-	colo)    load_config; colo_of "${2:-}"
+	colo)    if ! valid_ip4 "${2:-}"; then
+				 echo '参数必须是一个纯 IPv4（不接受主机名，也不接受任何多余字符）'
+				 exit 2
+			 fi
+			 load_config; colo_of "${2:-}"
 			 printf '\n' ;;
 	stop)    : >"$STOP"; echo '已请求停止（当前这一轮结束后不再继续探测）' ;;
 	daemon)  while :; do

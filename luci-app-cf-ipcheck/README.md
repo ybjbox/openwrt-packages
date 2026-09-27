@@ -359,7 +359,11 @@ cf-ipcheck show       # 人类可读榜单
 cf-ipcheck pool       # 只打印本轮会用的候选 IP（联网取源、不测速）
 cf-ipcheck canary     # 只跑一次出口接管自检：{"intercepted":0|1}
 cf-ipcheck check-sources  # 逐个源体检：HTTP / 提取到的 IPv4 数 / 落在 CF 段内的数量
-cf-ipcheck colo <IP>  # 单 IP 落地机房
+cf-ipcheck colo <IP>  # 单 IP 落地机房。参数必须是纯 IPv4：这个串会被拼进整条交给 `su -c`
+                      # 的命令里，所以畸形输入（`1.1.1.1; id`、空串、带主机名）一律拒绝，
+                      # 退出码 2 —— 探测池里的地址是 grep 提取的，天然干净，只有这个命令行
+                      # 入口是外部输入。`valid_ip4()` 里另有一坑：awk 读不到任何记录时
+                      # 退出码是 0，空串必须在进 awk 之前先挡掉（这条断言当场抓出来的）。
 cf-ipcheck stop       # 让当前这轮尽快收尾
 cf-ipcheck daemon     # 常驻定时（由 /etc/init.d/cf-ipcheck 启动）
 cf-ipcheck selftest   # 离线自检，不联网
