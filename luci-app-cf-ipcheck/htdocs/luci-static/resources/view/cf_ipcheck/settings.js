@@ -48,20 +48,54 @@ function applyHelp(root) {
 		var desc = row.querySelector('.cbi-value-description');
 		if (!full || !desc || desc.querySelector('.cf-help-mark'))
 			return;
-		/* title 同时挂在 label 与说明上：鼠标落在哪一处都能看到完整解释。
-		 * ⓘ 只能加在说明文字后面 —— label 是控件的点击目标，点在它上面的任何
-		 * 元素都会把那个开关翻过去。 */
-		[ lab, desc ].forEach(function (el) {
-			if (!el)
-				return;
-			el.setAttribute('title', full);
-			el.style.cursor = 'help';
-		});
-		desc.appendChild(E('span', {
-			class: 'cf-help-mark',
-			style: 'margin-left:.35em;opacity:.5'
-		}, 'ⓘ'));
+		/* label 也挂一份 title：鼠标停在字段名上就能看到解释，
+		 * 但 ⓘ 只加在说明文字上 —— label 是控件的点击目标，点它会翻开关。 */
+		if (lab)
+			lab.setAttribute('title', full);
+		attachMark(desc, full);
 	});
+}
+
+/* ⓘ 的两种读法：鼠标悬停看 title，触屏/键盘点一下就地展开完整解释。
+ * 展开体插在说明文字后面，再点一次收起 —— 收起时页面仍然只占一行。 */
+function attachMark(el, full) {
+	var mark = E('span', {
+		class: 'cf-help-mark',
+		tabindex: '0',
+		role: 'button',
+		'aria-expanded': 'false',
+		title: full,
+		style: 'margin-left:.35em;opacity:.55;cursor:pointer'
+	}, 'ⓘ');
+	var body = null;
+
+	function toggle(ev) {
+		ev.preventDefault();
+		ev.stopPropagation();
+		if (!body) {
+			body = E('div', {
+				class: 'cf-help-body',
+				style: 'display:block;margin-top:.3em;padding:.35em .55em;' +
+					'background:rgba(128,128,128,.13);border-radius:.25em;opacity:.9'
+			}, full);
+			el.appendChild(body);
+		}
+		else {
+			var open = body.style.display !== 'none';
+			body.style.display = open ? 'none' : 'block';
+		}
+		mark.setAttribute('aria-expanded', body.style.display === 'none' ? 'false' : 'true');
+	}
+
+	mark.addEventListener('click', toggle);
+	mark.addEventListener('keydown', function (ev) {
+		if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar')
+			toggle(ev);
+	});
+	el.setAttribute('title', full);
+	el.style.cursor = 'help';
+	el.appendChild(mark);
+	return el;
 }
 
 function execCfIpcheck(args) {
@@ -304,20 +338,18 @@ function renderTable(st) {
 				]),
 				tbody
 			]),
-			E('p', { class: 'small', style: 'cursor:help', title:
-				_('TCP 握手 = 与对端完成三次连接；TLS 握手 = 从连上到 TLS 协商完成（含证书校验）；' +
+			attachMark(E('p', { class: 'small' }, [
+				E('abbr', { title: _('Time To First Byte，首字节时间') }, _('TTFB')),
+				_(' 列 = 首字节耗时，排序看「总计」，两道门槛都过才算达标；' +
+				  '「下载 MB/s」只对榜单前若干个 IP 实测、只作参考不参与排序。')
+			]), _('TCP 握手 = 与对端完成三次连接；TLS 握手 = 从连上到 TLS 协商完成（含证书校验）；' +
 				  'TTFB = 发出请求到收到第一个字节的耗时，代表「对端处理 + 回程」，是这几个指标里最贴近「打开页面快不快」的一个；' +
 				  '总计 = 整个请求收尾。Cloudflare 是 anycast，同一个 IP 从不同线路会打到不同机房，' +
 				  '所以 ICMP ping 再低也不说明代理能用 —— 只看这几段、且只看带真实 SNI 的 HTTPS 能否走通。' +
 				  '排序按总计升序、同值再看 TTFB；total_limit 与 ttfb_limit 两道门槛都过才算达标。' +
 				  '多域名时每个 IP 只留表现最好那次（连带那个域名），所以达标数不会超过候选池。' +
 				  '「下载 MB/s」是榜单出来后只对前若干个 IP 串行拉一次大文件测出来的吞吐（十进制 MB/s，1 MB = 1000 KB）—— ' +
-				  '延迟接近的 IP 吞吐可以差几十倍，但单次测量抖动大，所以只拿来参考、不参与排序；没测或测失败显示 —。')
-			}, [
-				E('abbr', { title: _('Time To First Byte，首字节时间') }, _('TTFB')),
-				_(' 列 = 首字节耗时，排序看「总计」，两道门槛都过才算达标；' +
-				  '「下载 MB/s」只对榜单前若干个 IP 实测、只作参考不参与排序。悬停这一行看完整口径。')
-			])
+				  '延迟接近的 IP 吞吐可以差几十倍，但单次测量抖动大，所以只拿来参考、不参与排序；没测或测失败显示 —。'))
 		])
 	]);
 }
@@ -819,11 +851,11 @@ return view.extend({
 
 		/* 源可用性检测：不自动跑（十来个源逐个拉太慢），点按钮才检测 */
 		nodes.srcHost = E('div', { id: 'cf-ipcheck-sources-host' },
-			E('p', { class: 'small', style: 'cursor:help', title:
+			attachMark(E('p', { class: 'small' },
+				_('逐条实拉，列出 HTTP 状态、提取到的 IPv4 数与落在 CF 官方段内的比例。')),
 				_('逐条 URL 实拉一次，列出 HTTP 状态、提取到的 IPv4 数量，以及其中落在 Cloudflare 官方网段内的比例。' +
 				  '段内占比掉到 90% 以下通常说明源改内容了（例如开始提供别人自己的中转 IP），' +
-				  '拉不到的那条会标黄，引擎本轮会跳过它并记日志。')
-			}, _('逐条实拉，列出 HTTP 状态、提取到的 IPv4 数与落在 CF 官方段内的比例；占比掉到 90% 以下说明源改内容了。')));
+				  '拉不到的那条会标黄，引擎本轮会跳过它并记日志。')));
 
 		var srccard = E('div', { class: 'cbi-section', id: 'cf-ipcheck-sources-card' }, [
 			E('div', { class: 'cbi-section-node' }, [
