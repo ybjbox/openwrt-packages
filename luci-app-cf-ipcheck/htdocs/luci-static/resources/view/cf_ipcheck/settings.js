@@ -514,19 +514,17 @@ function renderTable(st) {
 		_('TCP 握手'), _('TLS 握手'), _('TTFB'), _('总计'), _('落地机房'), _('下载 MB/s')
 	];
 	/* 数字列一律右对齐 + 等宽：左对齐时 56.9 / 807.4 / 12.67 的小数点各排在一条边上，
-	 * 比较一列要逐行看；右对齐后同列位数齐，大小一眼可比。
-	 * 机房列也右对齐：它左对齐时 SIN 贴着列首、数字贴着列尾，中间能空出 160px
-	 * （真机量过），读起来像断了两截。列宽用百分比定死，不让浏览器把富余全塞给
-	 * 某一列 —— 否则每列内部都会多出一条说不清的空白。 */
+	 * 比较一列要逐行看；右对齐后同列位数齐，大小一眼可比。机房列也右对齐。
+	 * 表格按内容收缩（不铺满卡片宽）：卡片宽 1125 而内容只要约 700，剩下的 400 多
+	 * 像素只要铺满就会变成每列左侧一条说不清的空白（真机量过：SIN 与 11.22 之间
+	 * 160px，改成定宽百分比后仍剩 77px）。宁可右边留白，也不要列间断层。 */
 	var colCls = [
 		'right', 'left mono', 'right', 'right mono', 'right mono',
 		'right mono', 'right mono', 'right', 'right mono'
 	];
-	var colW = [ '4%', '22%', '8%', '12%', '12%', '12%', '12%', '9%', '9%' ];
 	if (withDom) {
 		head.push(_('胜出域名'));
 		colCls.push('left');
-		colW = [ '4%', '18%', '7%', '11%', '11%', '11%', '11%', '8%', '8%', '11%' ];
 	}
 	lastItems = st.items || [];
 
@@ -553,7 +551,12 @@ function renderTable(st) {
 			if (withDom)
 				vals.push(it.domain || '—');
 			tbody.appendChild(E('tr', {}, vals.map(function (v, c) {
-				return E('td', { class: colCls[c] || 'left' }, v);
+				return E('td', {
+					class: colCls[c] || 'left',
+					/* 与表头同一左右内边距：都是右对齐，边距不一致时表头数字和
+					 * 单元格数字会错开一条缝。 */
+					style: 'white-space:nowrap;padding-left:.7em;padding-right:.7em'
+				}, v);
 			})));
 		}
 	}
@@ -572,13 +575,13 @@ function renderTable(st) {
 		E('div', { class: 'cbi-section-node' }, [
 			noticeFor(st),
 			E('p', { class: 'small' }, meta),
-			E('div', { class: 'table cbi-section-table', style: 'width:100%;table-layout:fixed' }, [
+			E('div', { class: 'table cbi-section-table', style: 'width:auto;max-width:100%' }, [
 				E('thead', {}, [
 					E('tr', { class: 'tr table-titles' },
 						head.map(function (t, c) {
 							return E('th', {
 								class: 'th ' + (colCls[c] || 'left'),
-								style: 'width:' + (colW[c] || 'auto')
+								style: 'white-space:nowrap;padding-left:.7em;padding-right:.7em'
 							}, t);
 						}))
 				]),
