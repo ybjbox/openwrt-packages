@@ -45,17 +45,21 @@ function applyHelp(root) {
 		var lab = row.querySelector('label[for]');
 		var key = lab ? lab.htmlFor.split('.').pop() : '';
 		var full = HELP[key];
-		if (!full || !lab || lab.querySelector('.cf-help-mark'))
+		var desc = row.querySelector('.cbi-value-description');
+		if (!full || !desc || desc.querySelector('.cf-help-mark'))
 			return;
-		[ lab, row.querySelector('.cbi-description') ].forEach(function (el) {
+		/* title 同时挂在 label 与说明上：鼠标落在哪一处都能看到完整解释。
+		 * ⓘ 只能加在说明文字后面 —— label 是控件的点击目标，点在它上面的任何
+		 * 元素都会把那个开关翻过去。 */
+		[ lab, desc ].forEach(function (el) {
 			if (!el)
 				return;
 			el.setAttribute('title', full);
 			el.style.cursor = 'help';
 		});
-		lab.appendChild(E('span', {
+		desc.appendChild(E('span', {
 			class: 'cf-help-mark',
-			style: 'margin-left:.35em;opacity:.5;font-weight:400'
+			style: 'margin-left:.35em;opacity:.5'
 		}, 'ⓘ'));
 	});
 }
