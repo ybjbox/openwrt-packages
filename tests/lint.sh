@@ -283,6 +283,73 @@ else
     echo "[PASS] red-line-6: engine/view JSON contract holds"
 fi
 
+# --- red-line-7: 表单字段一律「短说明留在页面 + 完整解释挂悬停」---------------
+# 真机量过：17 条长说明一共 2299px，页面被拉到看不见榜单。这条只是防止以后再加字段时
+# 顺手把整段背景知识写回 description —— 那种改动肉眼看不出来，只能靠结构断言。
+if [ -f "$VIEW" ] && [ -f "$ENGINE" ]; then
+    rl7=0
+    OPTS=$(grep -oE "\.option\(form\.[A-Za-z]+, '[a-z_]+'" "$VIEW" | sed "s/.*, '//; s/'$//" | sort)
+    HELPS=$(grep -oE "help\('[a-z_]+'" "$VIEW" | sed "s/help('//; s/'$//" | sort)
+    # 两侧都压成空格分隔的集合再判成员：留着换行的话 *" $k "* 只会命中首尾两项。
+    OPTSET=" $(printf '%s ' $OPTS)"
+    HELPSET=" $(printf '%s ' $HELPS)"
+    for k in $OPTS; do
+        case "$HELPSET" in
+            *" $k "*) : ;;
+            *) echo "[FAIL] help-7: 字段 $k 没有 help() 条目（长解释会退回页面上常驻）"; rl7=1 ;;
+        esac
+    done
+    # 反过来也要成对：HELP 里残留的键说明字段被改名/删掉了，悬停提示会静默失效。
+    for k in $HELPS; do
+        case "$OPTSET" in
+            *" $k "*) : ;;
+            *) echo "[FAIL] help-7: help('$k') 找不到对应字段（改名留下的孤儿键）"; rl7=1 ;;
+        esac
+    done
+    dup=$(printf '%s\n' $HELPS | uniq -d)
+    if [ -n "$dup" ]; then
+        echo "[FAIL] help-7: help() 键重复，后一条会覆盖前一条: $dup"
+        rl7=1
+    fi
+    # 页面上常驻的那句必须短：help('key', _('短句'), _('长句')) 的第二个实参。
+    # 短句通常单独占一行，所以匹配到 help('key', 之后要么在同一行、要么在下一行取 _('…')。
+    # 字面圆括号一律写成 [(]：`\(` 在 gawk 的动态正则里会被当成未转义分组，整段 awk 直接报错。
+    # LC_ALL=C 是必须的：gawk 在 UTF-8 locale 下 length() 数的是字符数，busybox awk 数的是字节，
+    # 不钉住 locale 的话同一条阈值在两个 CI 容器里量出来的数差三倍，断言就成了看运气。
+    TMP_HELP="/tmp/lint_help.$$"
+    LC_ALL=C awk -v q="'" -v lim=160 '
+        function measure(s,   i, short) {
+            gsub(/^[ \t]+/, "", s)
+            if (s !~ ("^_[(]" q)) return
+            sub("^_[(]" q, "", s)
+            i = index(s, q "),")
+            short = (i > 0) ? substr(s, 1, i - 1) : s
+            if (length(short) > lim) { printf "%d bytes: %s\n", length(short), short; bad = 1 }
+        }
+        {
+            line = $0
+            gsub(/^[ \t]+/, "", line)
+            if (pending) { pending = 0; measure(line); }
+            if (line ~ ("^help[(]" q "[a-z_]+" q ",")) {
+                rest = line
+                sub("^help[(]" q "[a-z_]+" q ",[ \t]*", "", rest)
+                if (rest ~ ("^_[(]" q)) measure(rest); else pending = 1
+            }
+        }
+        END { exit !bad }' "$VIEW" > "$TMP_HELP"
+    if [ -s "$TMP_HELP" ]; then
+        echo "[FAIL] help-7: 以下短说明超过 160 字节（长解释应该只出现在悬停里）："
+        sed 's|^|       |' "$TMP_HELP"
+        rl7=1
+    fi
+    rm -f "$TMP_HELP"
+    if [ "$rl7" = 1 ]; then
+        fail=1
+    else
+        echo "[PASS] red-line-7: form fields all use short description + hover detail"
+    fi
+fi
+
 # --- cleanup ---
 rm -f "$ALL_FILES" "$TMP_ERR" "$TMP_DUP" "$SHELL_LIST" 2>/dev/null
 
