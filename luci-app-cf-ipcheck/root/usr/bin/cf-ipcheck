@@ -172,11 +172,21 @@ one_host() {
 	printf '%s' "$h"
 }
 
+# uci_list_parse：stdin = `uci show <某个 list 选项>` 的原始输出，stdout = 每行一个值。
+# 为什么要单独一步：list 在不同 uci 版本里至少有三种打印形状 ——
+#   pkg.sec.opt='a'          pkg.sec.opt[0]='a'          pkg.sec.opt=( 'a','b' )
+# 原先的实现只认第一种（sed 锚定 `\.opt='...'` 整行），真机上撞出来的后果是
+# 页面里 13 条社区源、引擎一条都读不到，候选池空、报错还看不出原因。
+# 这里不猜形状：等号前面整段丢掉，方括号/圆括号/引号一律剥掉，再按逗号切。
+uci_list_parse() {
+	sed -e 's/^[^=]*=//' -e 's/[][()]//g' | tr -d "'" | tr ',' '\n' | \
+		sed -e 's/^[ \t]*//' -e 's/[ \t]*$//' | grep . || true
+}
+
 # cfg_list <option> -> 每行一个元素
 cfg_list() {
 	if [ "$HAS_UCI" = 1 ]; then
-		"$UCI_BIN" -q show "$CONF" 2>/dev/null | \
-			sed -n "s/^$CONF\.[^.]*\.$1='\(.*\)'$/\1/p"
+		"$UCI_BIN" -q show "$CONF.@global[0].$1" 2>/dev/null | uci_list_parse
 		return 0
 	fi
 	eval "v=\${CFIP_$(printf '%s' "$1" | tr 'a-z' 'A-Z' | tr '.' '_'):-}"
@@ -1016,12 +1026,16 @@ do_diag() {
 	uci_show=''
 	uci_rc=-1
 	uci_get=''
+	uci_list=''
 	if [ "$HAS_UCI" = 1 ]; then
 		uci_show=$(printf '%s\n' "$( "$UCI_BIN" -q show "$CONF" 2>&1 | head -n 6 | tr '\n' '~' )" | cut -c1-300)
 		uci_get=$("$UCI_BIN" -q get "$CONF.@global[0].probe_port" 2>&1)
 		uci_rc=$?
+		# list 那一侧单独留一份原文：cfg_list 出问题时，光看条数猜不到 uci 到底
+		# 打成什么形状（真机上就是重复行 / 带下标 / 数组式这三种在打架）。
+		uci_list=$(printf '%s\n' "$( "$UCI_BIN" -q show "$CONF.@global[0].community_sources" 2>&1 | head -n 3 | tr '\n' '~' )" | cut -c1-260)
 	fi
-	printf '{"has_uci":%s,"uci":"%s","su":"%s","curl":"%s","jq":"%s","devnull_is_chardev":%s,"null_dev":"%s","sources":%s,"domains":"%s","port":"%s","budget":"%s","official":"%s","reuse":"%s","colo":"%s","colo_domain":"%s","canary":"%s","probe_user":"%s","speed":"%s","speed_count":"%s","speed_bytes":"%s","speed_domain":"%s","interval":"%s","upload":"%s","run_dir":"%s","etc_dir":"%s","uci_show":"%s","uci_get_probe_port":"%s","uci_get_rc":%s}\n' \
+	printf '{"has_uci":%s,"uci":"%s","su":"%s","curl":"%s","jq":"%s","devnull_is_chardev":%s,"null_dev":"%s","sources":%s,"domains":"%s","port":"%s","budget":"%s","official":"%s","reuse":"%s","colo":"%s","colo_domain":"%s","canary":"%s","probe_user":"%s","speed":"%s","speed_count":"%s","speed_bytes":"%s","speed_domain":"%s","interval":"%s","upload":"%s","run_dir":"%s","etc_dir":"%s","uci_show":"%s","uci_get_probe_port":"%s","uci_get_rc":%s,"uci_list_raw":"%s"}\n' \
 		"$HAS_UCI" "$(json_str "${UCI_BIN:-}")" "$(json_str "${SU_BIN:-}")" \
 		"$(json_str "${CURL_BIN:-}")" "$(json_str "${JQ_BIN:-}")" \
 		"$([ -c /dev/null ] && printf 1 || printf 0)" "$(json_str "$NULL_DEV")" \
@@ -1031,7 +1045,7 @@ do_diag() {
 		"$(json_str "${C_PUSER:-root}")" "$(json_str "$C_SPEED")" "$(json_str "$C_SPEEDN")" \
 		"$(json_str "$C_SPEEDKB")" "$(json_str "$C_SPEEDDOM")" "$(json_str "$C_INTERVAL")" \
 		"$(json_str "$C_UPLOAD")" "$(json_str "$RUN_DIR")" "$(json_str "$ETC_DIR")" \
-		"$(json_str "$uci_show")" "$(json_str "$uci_get")" "$uci_rc"
+		"$(json_str "$uci_show")" "$(json_str "$uci_get")" "$uci_rc" "$(json_str "$uci_list")"
 }
 
 # ---------------- 离线自检（CI 用；不联网、不依赖 uci）--------------------
@@ -1102,6 +1116,20 @@ selftest() {
 	check '单个域名非法时退回默认值' "$got" 'fallback.com'
 	got=$(one_host 'a.com, b.com' 'fallback.com')
 	check '单个域名只取第一段' "$got" 'a.com'
+	# uci 打印 list 的形状不止一种，旧实现只认第一种，真机上因此一条源都读不到。
+	got=$(printf "cf_ipcheck.global.community_sources='a.com'\ncf_ipcheck.global.community_sources='b.com'\n" | \
+		sh "$0" _ucilist | tr '\n' ' ')
+	check 'uci list 形状一：重复的 opt=v' "$got" 'a.com b.com '
+	got=$(printf "cf_ipcheck.global.community_sources[0]='a.com'\ncf_ipcheck.global.community_sources[1]='b.com'\n" | \
+		sh "$0" _ucilist | tr '\n' ' ')
+	check 'uci list 形状二：带下标（旧实现在这里静默返回空）' "$got" 'a.com b.com '
+	got=$(printf "cf_ipcheck.global.community_sources=( 'a.com','b.com' )\n" | \
+		sh "$0" _ucilist | tr '\n' ' ')
+	check 'uci list 形状三：数组式' "$got" 'a.com b.com '
+	got=$(printf "cf_ipcheck.global.enabled='0'\n" | sh "$0" _ucilist | tr -d '\n')
+	check 'uci 单值选项也能原样取出' "$got" '0'
+	got=$(printf '' | sh "$0" _ucilist | grep -c . || true)
+	check 'uci 什么都没返回时是空而不是报错' "$got" '0'
 	# 消毒：colo 是远端响应里 sed 出来的，一个引号就能让整份 result.json 变成
 	# 前端读不出的 parse_error。
 	got=$(json_word 'a","b":"c')
@@ -1414,6 +1442,7 @@ case "${1:-}" in
 	_expand) expand_prefixes ;;
 	_cidrs)  official_cidrs ;;
 	_sample) sample_lines "${2:-256}" ;;
+	_ucilist) uci_list_parse ;;
 	_aggregate) aggregate_per_ip ;;
 	_counts) err_counts ;;
 	_canaryv) canary_verdict "${2:-}" ;;
