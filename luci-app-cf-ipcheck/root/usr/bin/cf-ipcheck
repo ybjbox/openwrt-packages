@@ -962,12 +962,15 @@ do_run() {
 	STARTED=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 	printf '{"state":"running","started":"%s","items":[]}' "$STARTED" >"$STATUS"
 
-	if [ -z "$CURL_BIN" ]; then
-		abort_round missing_curl
-		return 1
-	fi
+	# sink 先于 curl：这条检查只是"以探测身份往自己的文件里写一个 x"，不需要 curl，
+	# 放在后面就会在没装 curl 的环境里永远测不到（CI 的 busybox 容器正是这种环境）。
+	# 而它挡的恰恰是最难看出来的失败模式 —— 每条探测在联网之前就 rc=23。
 	if ! sink_writable; then
 		abort_round sink_not_writable
+		return 1
+	fi
+	if [ -z "$CURL_BIN" ]; then
+		abort_round missing_curl
 		return 1
 	fi
 

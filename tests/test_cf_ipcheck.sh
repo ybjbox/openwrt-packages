@@ -73,6 +73,8 @@ esac
 
 # sink 写不动时必须在联网之前中止并给出具体原因，而不是交出一张全挂的榜单。
 # 用一个不存在的探测用户来制造写失败（没有 su 的环境走 root 直发，跳过）。
+# 这条不依赖 curl：引擎里 sink 检查排在 curl 检查之前，正是为了让没装 curl 的
+# busybox 容器也能把它跑到。
 : >"$ETC/best-ip.txt"
 if command -v su >/dev/null 2>&1; then
 	CFIP_NULL_DEV="$RUN/.null-sink" CFIP_PROBE_USER=cfip-no-such-user \
@@ -83,6 +85,17 @@ if command -v su >/dev/null 2>&1; then
 		echo '[PASS] 探测身份写不动 sink 时中止为 sink_not_writable（不伪造榜单）'
 	else
 		echo "::error::sink 不可写没有被单独识别，reason=<$reason> status=<$(head -c 160 "$RUN/status.json")>"
+		rc=1
+	fi
+	# 反向对照：同一个 sink 换成 root 直发就必须写得动，否则上面那条是空断言。
+	CFIP_NULL_DEV="$RUN/.null-sink" CFIP_PROBE_USER=none \
+	CFIP_USE_OFFICIAL_RANGES=0 CFIP_REUSE_LAST=0 CFIP_COMMUNITY_SOURCES='' \
+		sh "$BIN" run >/dev/null 2>&1
+	reason=$(sed -n 's/.*"reason":"\([^"]*\)".*/\1/p' "$RUN/status.json" 2>/dev/null)
+	if [ "$reason" != sink_not_writable ]; then
+		echo "[PASS] root 直发写同一个 sink 不被误判（读到 $reason）"
+	else
+		echo '::error::root 也写不动 sink，说明 sink_writable 恒假'
 		rc=1
 	fi
 else
