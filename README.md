@@ -51,6 +51,31 @@ git clone https://github.com/ybjbox/openwrt-packages.git package/openwrt-package
 
 ---
 
+## 🧪 开发与测试
+
+改完代码请跑一遍这几项（都在仓库根目录执行）：
+
+```bash
+# 1) 静态红线（POSIX sh 语法 / 跨包重复路径 / 视图陷阱 / 执行位 / JSON 契约）
+sh tests/lint.sh
+
+# 2) cf-ipcheck 引擎离线回归（绝不联网）
+sh tests/test_cf_ipcheck.sh
+
+# 3) 引擎自带自检（离线，当前 102 项）
+sh luci-app-cf-ipcheck/root/usr/bin/cf-ipcheck selftest
+
+# 4) LuCI 视图渲染桩测（需要 Node 22+，51 条断言）
+node tests/viewtest.mjs
+```
+
+第 4 项用 stub 把 `form / rpc / ui / view / E / _ / L` 注进 `new Function`，
+在 `return view.extend({` 前插一行导出钩子，从而直接调视图的私有函数
+（`renderTable` / `parseStatus` / `fmtTime` / `notify` …）断言渲染出的文字、列数与对齐类名。
+它**不联网、不依赖真实 DOM**，CI 里跑在单独的 ubuntu job 上（lint 那个 job 在 alpine 容器里，没有 Node）。
+
+---
+
 ## 📄 开源协议
 
 [Apache License 2.0](LICENSE)

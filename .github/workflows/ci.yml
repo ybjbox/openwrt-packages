@@ -36,6 +36,24 @@ jobs:
         # 纯离线：CIDR 展开 / 达标过滤 / 排序 / JSON 转义 / 空池不误报成功
         run: sh tests/test_cf_ipcheck.sh
 
+  view-test:
+    name: LuCI view render test
+    # 不能并进上面那个 job：它在 alpine 容器里跑，而 alpine 没有 Node。
+    # 视图的形状（列数、右对齐类名、六态文案）用 grep 断言表达不出来，
+    # 只能把视图丢进 stub 里真渲染一次再断言 DOM。
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 准备 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 视图渲染桩测
+        run: node tests/viewtest.mjs
+
   build:
     name: Build package (OpenWrt SDK)
     # Only build on manual dispatch to avoid burning SDK minutes on every push/PR.
