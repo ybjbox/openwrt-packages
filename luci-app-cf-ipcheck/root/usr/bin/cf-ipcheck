@@ -891,9 +891,9 @@ write_outputs() {
 	mv "$tmp" "$BEST"
 
 	{
-		printf '{"state":"done","started":"%s","finished":"%s","pool":%s,"qualified":%s,"usable":%s,"intercepted":%s,"counts":%s,"domains":"%s","items":[' \
+		printf '{"state":"done","started":"%s","finished":"%s","pool":%s,"qualified":%s,"usable":%s,"intercepted":%s,"counts":%s,"domains":"%s","budget":%s,"port":%s,"items":[' \
 			"${STARTED:-}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$pool_n" "$qualified" \
-			"$(grep -c . "$colored" || true)" "$intercepted" "$counts" "$C_DOMAINS"
+			"$(grep -c . "$colored" || true)" "$intercepted" "$counts" "$C_DOMAINS" "$C_BUDGET" "$C_PORT"
 		awk 'BEGIN{FS="\t"}
 			NF >= 9 {
 				if (n++) printf ","
@@ -960,7 +960,10 @@ do_run() {
 	fi
 	rm -f "$STOP"
 	STARTED=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-	printf '{"state":"running","started":"%s","items":[]}' "$STARTED" >"$STATUS"
+	# budget / port 一起写进状态：真机上出现过"表单改成 64 没保存，跑的还是 256"，
+	# 而页面只报候选数，看不出这一轮到底按什么配置跑的。
+	printf '{"state":"running","started":"%s","budget":%s,"port":%s,"items":[]}' \
+		"$STARTED" "$C_BUDGET" "$C_PORT" >"$STATUS"
 
 	# sink 先于 curl：这条检查只是"以探测身份往自己的文件里写一个 x"，不需要 curl，
 	# 放在后面就会在没装 curl 的环境里永远测不到（CI 的 busybox 容器正是这种环境）。
@@ -1021,12 +1024,22 @@ do_run() {
 #   2) 上一轮被断电/OOM 打断，status.json 永远停在 running -> 锁主已经不在，
 #      就地改写成 error/interrupted，否则页面上的按钮卡死、只能手动清文件；
 #   3) 什么都没跑过 -> never_run。
+# 把"当前配置里的 enabled / interval_hours"并进 status JSON 再输出。
+# 读时合并、不写进文件：状态文件是上一轮跑的时候写的，而这两个值恰恰是用户
+# 刚在页面上改过的 —— 页面要靠它们说"定时实测开着，下一轮大约几点"。
+merge_cfg() {
+	awk -v e="\"enabled\":$(cfg_num enabled 0),\"interval\":$C_INTERVAL" '
+		{ if ((i = match($0, /\}[ \t]*$/)) > 0) $0 = substr($0, 1, i - 1) "," e "}" }
+		{ print }'
+}
+
 show_status() {
+	load_config
 	if [ ! -s "$STATUS" ]; then
 		if [ -s "$RESULT_KEEP" ]; then
-			cp "$RESULT_KEEP" "$STATUS" 2>/dev/null || { cat "$RESULT_KEEP"; return 0; }
+			cp "$RESULT_KEEP" "$STATUS" 2>/dev/null || { merge_cfg <"$RESULT_KEEP"; return 0; }
 		else
-			printf '{"state":"never_run","items":[]}\n'
+			printf '{"state":"never_run","items":[]}\n' | merge_cfg
 			return 0
 		fi
 	fi
@@ -1037,7 +1050,7 @@ show_status() {
 			printf '{"state":"error","reason":"interrupted","items":[]}\n' >"$STATUS"
 		fi
 	fi
-	cat "$STATUS"
+	merge_cfg <"$STATUS"
 }
 
 # ---------------- 引擎自述（排查"配置没生效"用）------------------------------

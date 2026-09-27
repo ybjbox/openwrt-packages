@@ -120,6 +120,44 @@ else
 fi
 rm -f "$RUN/lock"
 
+# status 必须回显"当前配置"的 enabled / interval：页面靠它写"定时实测开着，
+# 下一轮约几点"。这两个值不能取上一轮落盘时的旧值 —— 用户刚改完就想看到。
+printf '{"state":"done","items":[]}\n' >"$RUN/status.json"
+got=$(CFIP_ENABLED=1 CFIP_INTERVAL_HOURS=3 sh "$BIN" status 2>/dev/null)
+if printf '%s' "$got" | grep -q '"enabled":1' && printf '%s' "$got" | grep -q '"interval":3'; then
+	echo '[PASS] status 合并了当前的 enabled / interval'
+else
+	echo "::error::status 没合并当前配置，实际=<$(printf '%s' "$got" | head -c 160)>"
+	rc=1
+fi
+# 合并是字符串拼接，最容易被它把 JSON 拼坏：结尾必须还是 }，且原字段还在。
+if printf '%s' "$got" | grep -q '{"state":"done","items":\[\],"enabled"' \
+	&& [ "$(printf '%s' "$got" | tail -c 1)" = "}" ]; then
+	echo '[PASS] 合并后的 status 仍是合法 JSON 形状（原字段在前，结尾单 }）'
+else
+	echo "::error::合并把 status JSON 拼坏了，实际=<$(printf '%s' "$got" | head -c 160)>"
+	rc=1
+fi
+# never_run 也要带这两个值：页面第一次打开、还没跑过时也要能报"定时实测关/开"。
+rm -f "$RUN/status.json" "$ETC/result.json"
+got=$(CFIP_ENABLED=0 CFIP_INTERVAL_HOURS=12 sh "$BIN" status 2>/dev/null)
+if printf '%s' "$got" | grep -q '"never_run"' && printf '%s' "$got" | grep -q '"interval":12'; then
+	echo '[PASS] never_run 也带上了当前配置'
+else
+	echo "::error::never_run 丢了当前配置，实际=<$(printf '%s' "$got" | head -c 160)>"
+	rc=1
+fi
+
+# 手工改过的 uci 里 enabled 未必是 0/1；非数字不能让拼出来的 JSON 变成 "enabled":yes
+printf '{"state":"done","items":[]}\n' >"$RUN/status.json"
+got=$(CFIP_ENABLED=yes CFIP_INTERVAL_HOURS=3 sh "$BIN" status 2>/dev/null)
+if printf '%s' "$got" | grep -q '"enabled":0'; then
+	echo '[PASS] enabled 是脏值时合并出的仍是合法 JSON（落回 0）'
+else
+	echo "::error::enabled 脏值没被挡住，实际=<$(printf '%s' "$got" | head -c 160)>"
+	rc=1
+fi
+
 # status 自愈：停在 running 但锁主已经不在，就不能再对外说 running
 printf '{"state":"running","started":"x","items":[]}' >"$RUN/status.json"
 printf '%s %s\n' "$deadpid" "$(date +%s)" >"$RUN/lock"

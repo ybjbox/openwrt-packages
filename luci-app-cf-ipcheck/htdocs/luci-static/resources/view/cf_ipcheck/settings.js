@@ -24,9 +24,12 @@ var callExec = rpc.declare({
 });
 
 /* 模块级句柄：结果块每次刷新都会整块换掉新节点，定时器不能挂在它身上 */
-var nodes = { table: null, srcHost: null };
+var nodes = { table: null, srcHost: null, status: null };
 var poll = null;
 var inflight = null;
+/* 最近一次渲染榜单用的 items：「复制榜单 IP」是事件回调里读的，
+ * 那时候手上的 st 早就出了作用域，只能靠这个模块级引用传过去。 */
+var lastItems = [];
 
 /* 字段说明的取舍：页面上只留一行短说明，完整解释挂到悬停提示里。
  * 真机量过：17 条长说明一共占 2299px，页面被拉到看不见榜单，而其中大半是一次性
@@ -143,9 +146,10 @@ function reasonText(reason) {
 			return _('这台机器上没有 curl：所有探测都是 curl --resolve 发起的，请安装 curl 与 ca-bundle。');
 		case 'sink_not_writable':
 			return _('探测身份写不了丢弃响应体的目标，本轮已在联网之前中止。' +
-				'这会让每一条探测都以 curl rc=23 失败，看起来像“所有 IP 都不通”，其实是本地写不了：' +
-				'确认「探测身份」那个用户对运行目录（默认 /tmp/cf-ipcheck）有进入权限、且其中的 .null 归它可写，' +
-				'清掉该目录后再跑一轮。');
+				'这会让每一条探测都以 curl rc=23 失败，看起来像“所有 IP 都不通”，其实是本地写不了。' +
+				'引擎每轮开始都会把运行目录（默认 /tmp/cf-ipcheck）chmod 成 711、把 .null 放成 666，' +
+				'所以正常情况下不该出现：反复出现就查运行目录所在分区的剩余空间，' +
+				'或者「探测身份」是否被改成了一个不存在的用户。');
 		case 'interrupted':
 			return _('上一轮没跑完就断了（进程被杀、断电或重启），运行锁已被回收，这一条是自动判出来的。' +
 				'下面显示的是上一次成功完成的榜单；直接点「立即测速」即可重来。');
@@ -182,6 +186,59 @@ function notify(title, message, type) {
 		ui.addToast(title, message, type || 'info');
 	else if (typeof ui.toast === 'function')
 		ui.toast(type || 'info', title, message);
+}
+
+/* 复制：navigator.clipboard 在非安全上下文或被策略挡掉时会 reject，
+ * 所以留一条 execCommand 的退路；两条都不成就把文本亮出来让人自己抄。 */
+function fallbackCopy(text) {
+	var ta = E('textarea', { style: 'position:fixed;left:-9999px;top:0' });
+	ta.value = text;
+	document.body.appendChild(ta);
+	ta.select();
+	var ok = false;
+	try {
+		ok = document.execCommand('copy');
+	} catch (e) {
+		ok = false;
+	}
+	document.body.removeChild(ta);
+	return ok;
+}
+
+function copyText(text) {
+	return new Promise(function (resolve) {
+		if (navigator.clipboard && navigator.clipboard.writeText) {
+			navigator.clipboard.writeText(text).then(
+				function () { resolve(true); },
+				function () { resolve(fallbackCopy(text)); });
+			return;
+		}
+		resolve(fallbackCopy(text));
+	});
+}
+
+/* 单行输入框把自身值挂到 title 上：社区源 URL 那类长串在框里会被截断，
+ * 没有 title 就没法确认自己填的是哪一条。密码框排除在外（不能把令牌
+ * 复制到一个悬停就显示的属性里）。 */
+function attachValueTips(root) {
+	if (!root || !root.querySelectorAll)
+		return;
+
+	function sync(inp) {
+		if (!inp || inp.type !== 'text')
+			return;
+		if (inp.value)
+			inp.setAttribute('title', inp.value);
+		else
+			inp.removeAttribute('title');
+	}
+
+	Array.prototype.forEach.call(root.querySelectorAll('input[type="text"], input:not([type])'), sync);
+
+	/* 委托一条：DynamicList 每加一行就新建一个 input，渲染时挂好的监听覆盖不到它们。 */
+	root.addEventListener('input', function (ev) {
+		sync(ev.target);
+	}, true);
 }
 
 /* 表格内那一句：只回答「这张表为什么是空的」。
@@ -258,6 +315,68 @@ function fmtMBps(v) {
 	return Number(v).toFixed(2);
 }
 
+function pad2(n) {
+	return (n < 10 ? '0' : '') + n;
+}
+
+/* 引擎给的是 UTC 的 ISO 串（2026-09-27T11:03:53Z）。原样印出来有两个毛病：跟墙上钟
+ * 差一个时区（本机 UTC+8），而且没人能从时间戳看出这榜是五分钟前还是三天前的。
+ * 所以转本地时分秒，再补一句相对时间。 */
+function fmtTime(iso) {
+	var d = iso ? new Date(iso) : null;
+	if (!d || isNaN(d.getTime()))
+		return iso || '—';
+	var now = new Date();
+	var mins = Math.round((now.getTime() - d.getTime()) / 60000);
+	var rel;
+	if (mins < 1)
+		rel = _('刚刚');
+	else if (mins < 60)
+		rel = _(' %s 分钟前').format(String(mins));
+	else if (mins < 2880)
+		rel = _(' %s 小时前').format(String(Math.round(mins / 60)));
+	else
+		rel = _(' %s 天前').format(String(Math.round(mins / 1440)));
+	return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds()) + rel;
+}
+
+/* 结果比设定的周期还老时明说 —— 否则一张过时的榜很容易被当成"现在的线路状况"。 */
+function staleText(st) {
+	var iv = Number(st.interval);
+	var d = st.finished ? new Date(st.finished) : null;
+	if (st.state !== 'done' || !d || isNaN(d.getTime()) || !(iv > 0))
+		return '';
+	return (new Date().getTime() - d.getTime()) > iv * 3600000
+		? _(' · 已超过设定的 %s 小时周期').format(String(iv)) : '';
+}
+
+/* 这一轮到底按什么配置跑的。真机上出现过"表单改成 64 没保存、跑的还是 256"，
+ * 页面只报候选数看不出来；把引擎实际用的值摆出来，对不上就是一眼能看见的事。 */
+function cfgText(st) {
+	if (st.budget == null && st.port == null)
+		return '';
+	return _(' · 本轮配置：上限 %s · 端口 %s').format(
+		st.budget != null ? String(st.budget) : '—',
+		st.port != null ? String(st.port) : '—');
+}
+
+/* 定时实测的下一轮预期。enabled / interval 是引擎读当前配置合并进 status 的，
+ * 所以刚保存下去的改动这里立刻能看到。 */
+function scheduleText(st) {
+	if (String(st.enabled) !== '1')
+		return _(' · 定时实测：关闭');
+	var iv = Number(st.interval);
+	if (!(iv > 0))
+		return _(' · 定时实测：开启');
+	var out = _(' · 定时实测：每 %s 小时').format(String(iv));
+	var d = st.finished ? new Date(st.finished) : null;
+	if (d && !isNaN(d.getTime())) {
+		var nx = new Date(d.getTime() + iv * 3600000);
+		out += _('，下一轮约 %s:%s').format(pad2(nx.getHours()), pad2(nx.getMinutes()));
+	}
+	return out;
+}
+
 /* 榜单里的域名种类：多于一个才值得单独一列 */
 function domainKinds(items) {
 	var seen = {}, n = 0;
@@ -288,8 +407,17 @@ function renderTable(st) {
 		'#', _('IP 地址'), _('状态码'),
 		_('TCP 握手'), _('TLS 握手'), _('TTFB'), _('总计'), _('落地机房'), _('下载 MB/s')
 	];
-	if (withDom)
+	/* 数字列一律右对齐 + 等宽：左对齐时 56.9 / 807.4 / 12.67 的小数点各排在一条边上，
+	 * 比较一列要逐行看；右对齐后同列位数齐，大小一眼可比。文本列保持左对齐。 */
+	var colCls = [
+		'right', 'left mono', 'right', 'right mono', 'right mono',
+		'right mono', 'right mono', 'left', 'right mono'
+	];
+	if (withDom) {
 		head.push(_('胜出域名'));
+		colCls.push('left');
+	}
+	lastItems = st.items || [];
 
 	var tbody = E('tbody', {});
 
@@ -300,30 +428,34 @@ function renderTable(st) {
 	} else {
 		for (var i = 0; i < st.items.length; i++) {
 			var it = st.items[i];
-			var cols = [
-				E('td', { class: 'left' }, String(i + 1)),
-				E('td', { class: 'left mono' }, it.ip || '?'),
-				E('td', { class: 'left' }, it.code != null ? String(it.code) : '—'),
-				E('td', { class: 'left' }, fmtMs(it.connect_ms)),
-				E('td', { class: 'left' }, fmtMs(it.tls_ms)),
-				E('td', { class: 'left' }, fmtMs(it.ttfb_ms)),
-				E('td', { class: 'left' }, fmtMs(it.total_ms)),
-				E('td', { class: 'left' }, it.colo || '—'),
-				E('td', { class: 'left' }, fmtMBps(it.speed_mbytes))
+			var vals = [
+				String(i + 1),
+				it.ip || '?',
+				it.code != null ? String(it.code) : '—',
+				fmtMs(it.connect_ms),
+				fmtMs(it.tls_ms),
+				fmtMs(it.ttfb_ms),
+				fmtMs(it.total_ms),
+				it.colo || '—',
+				fmtMBps(it.speed_mbytes)
 			];
 			if (withDom)
-				cols.push(E('td', { class: 'left mono' }, it.domain || '—'));
-			tbody.appendChild(E('tr', {}, cols));
+				vals.push(it.domain || '—');
+			tbody.appendChild(E('tr', {}, vals.map(function (v, c) {
+				return E('td', { class: colCls[c] || 'left' }, v);
+			})));
 		}
 	}
 
-	var meta = _('候选 %1$s 个 · 达标 %2$s 个 · 榜单 %5$s 条%6$s · 探测域名 %3$s · 完成于 %4$s')
+	var meta = _('候选 %1$s 个 · 达标 %2$s 个 · 榜单 %5$s 条%6$s · 探测域名 %3$s · 完成于 %4$s%7$s%8$s')
 		.replace('%1$s', st.pool != null ? st.pool : '—')
 		.replace('%2$s', st.qualified != null ? st.qualified : (st.items || []).length)
 		.replace('%5$s', st.usable != null ? st.usable : (st.items || []).length)
 		.replace('%6$s', countsText(st.counts))
 		.replace('%3$s', st.domains || '—')
-		.replace('%4$s', st.finished || st.started || '—');
+		.replace('%4$s', fmtTime(st.finished || st.started))
+		.replace('%7$s', staleText(st))
+		.replace('%8$s', cfgText(st));
 
 	return E('div', { class: 'cbi-section', id: 'cf-ipcheck-result' }, [
 		E('div', { class: 'cbi-section-node' }, [
@@ -332,8 +464,8 @@ function renderTable(st) {
 			E('div', { class: 'table cbi-section-table' }, [
 				E('thead', {}, [
 					E('tr', { class: 'tr table-titles' },
-						head.map(function (t) {
-							return E('th', { class: 'th' }, t);
+						head.map(function (t, c) {
+							return E('th', { class: 'th ' + (colCls[c] || 'left') }, t);
 						}))
 				]),
 				tbody
@@ -369,6 +501,12 @@ function refreshResult() {
 		if (old && old.parentNode)
 			old.parentNode.replaceChild(next, old);
 		nodes.table = next;
+		/* 状态行也得跟着改：以前只换表格，点了「立即测速」之后表格里写着
+		 * 「正在测速」，上面那行还停在「空闲」，两处互相打脸。 */
+		if (nodes.status)
+			nodes.status.textContent = stateLabel(st) +
+				(st.intercepted == 1 ? ' · ' + _('出口被接管，数字不可信') : '') +
+				scheduleText(st);
 		return { node: next, state: st.state, intercepted: st.intercepted };
 	}, function () {
 		inflight = null;
@@ -525,6 +663,12 @@ return view.extend({
 			type: 'button'
 		}, _('刷新'));
 
+		var btnCopy = E('button', {
+			id: 'cf-ipcheck-copy',
+			class: 'cbi-button',
+			type: 'button'
+		}, _('复制榜单 IP'));
+
 		var btnCheck = E('button', {
 			id: 'cf-ipcheck-check-sources',
 			class: 'cbi-button',
@@ -569,24 +713,45 @@ return view.extend({
 			return false;
 		};
 
+		btnCopy.onclick = function () {
+			var ips = [];
+			for (var i = 0; i < lastItems.length; i++) {
+				if (lastItems[i].ip)
+					ips.push(String(lastItems[i].ip));
+			}
+			if (!ips.length) {
+				notify(_('没有可复制的 IP'), _('当前榜单是空的；先跑一轮，或放宽 TTFB / 总耗时门槛。'), 'warning');
+				return false;
+			}
+			copyText(ips.join('\n')).then(function (ok) {
+				if (ok)
+					notify(_('已复制 %s 个 IP').format(String(ips.length)), _('一行一个，可直接粘进客户端。'), 'info');
+				else
+					notify(_('复制失败'), _('浏览器不让写剪贴板；榜单里的 IP 请手工复制。'), 'warning');
+			});
+			return false;
+		};
+
 		btnCheck.onclick = function () {
 			checkSources(this);
 			return false;
 		};
 
 		/* ---- 顶部操作条 ---- */
+		nodes.status = E('em', {}, stateLabel(st) +
+			(st.intercepted == 1 ? ' · ' + _('出口被接管，数字不可信') : '') +
+			scheduleText(st));
+
 		var bar = E('div', { class: 'cbi-section', id: 'cf-ipcheck-actions' }, [
 			E('div', { class: 'cbi-section-node' }, [
 				E('div', { class: 'cbi-value' }, [
 					E('label', { class: 'cbi-value-title' }, _('状态')),
-					E('div', { class: 'cbi-value-field' },
-						E('em', {}, stateLabel(st) +
-							(st.intercepted == 1 ? ' · ' + _('出口被接管，数字不可信') : '')))
+					E('div', { class: 'cbi-value-field' }, nodes.status)
 				]),
 				E('div', { class: 'cbi-value' }, [
 					E('label', { class: 'cbi-value-title' }, _('操作')),
 					E('div', { class: 'cbi-value-field' }, [
-						btnRun, ' ', btnStop, ' ', btnRefresh
+						btnRun, ' ', btnStop, ' ', btnRefresh, ' ', btnCopy
 					])
 				])
 			])
@@ -871,6 +1036,7 @@ return view.extend({
 
 		return m.render().then(function (mapnode) {
 			applyHelp(mapnode);
+			attachValueTips(mapnode);
 			page.push(mapnode);
 			if (st.state === 'running')
 				startPoll();
