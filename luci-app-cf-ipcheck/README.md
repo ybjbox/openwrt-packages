@@ -271,9 +271,9 @@ ssh root@10.0.0.1 'apk add --allow-untrusted /tmp/luci-app-cf-ipcheck-*.apk'
     `unreachable`/`parse_error`/`error+reason` 三种失败各有各的文案、`counts` 进 meta、
     `null` 吞吐显示 `—`，16 条全绿。它只验渲染逻辑，**不验**设备自带 form/rpc 的组合。
   - `tests/lint.sh` 新增 [7/7]「引擎 ↔ 页面 JSON 契约」：三张键表正反双向核对 + 禁止
-    已废弃的 `speed_mbps`。反向样例验过（只改页面那一侧的 `speed_mibs` 会出两条 FAIL、
-    退出码 1），不是只会在绿灯时好看的检查。
-  - **还没做**：新版引擎在真机 busybox 上跑一轮（锁/自愈/MiB/s 列/多域名列）、
+    废弃键名（现在钉的是 `speed_mbps` 与 `speed_mibs`，当前键名是 `speed_mbytes`）。
+    反向样例验过（只改页面那一侧的吞吐键会出两条 FAIL、退出码 1），不是只会在绿灯时好看的检查。
+  - **还没做**：新版引擎在真机 busybox 上跑一轮（锁/自愈/吞吐列/多域名列）、
     apk 重新构建（按 Ryan 的话：等他说了再构建）。
 - 2026-09-27 第二批（网段缓存 / JSON 消毒 / 配置夹取 / 域名与源清洗 / 切片睡眠 / ACL 收最小授权）：
   `selftest` 82 项全绿，并且**故意拿脏配置在真 curl 下跑了一轮** —— `probe_domains` 里塞
@@ -283,6 +283,22 @@ ssh root@10.0.0.1 'apk add --allow-untrusted /tmp/luci-app-cf-ipcheck-*.apk'
   `cf-ipcheck pool` 就只吐 `203.0.113.102 / 192.0.2.102`，证明它确实不再打官方接口。
   这一批里唯一由测试暴露出来的新缺陷是缓存写失败：写重定向失败属于 shell 级错误、会把整轮带走，
   所以那段写盘挪进了子 shell。
+- 2026-09-27 第三批（吞吐单位改回**十进制 MB/s**，Ryan 指定）+ 真机通道摸底：
+  - 单位从 MiB/s（÷1048576）改成 ÷1000000，JSON 键 `speed_mibs` → `speed_mbytes`，
+    列头/注释/`{speed}` 说明同步；`speed_fmt()` 加了除数钉子断言（`1000000B/s` 必须 `1.00`）。
+    lint 的废弃名单同时钉住 `speed_mbps` 与 `speed_mibs`，防止再漂回去。
+  - 真机（雅典娜，经公网反代登录 LuCI）实测到的事实：**rpcd 只放开 `/usr/bin/cf-ipcheck` 的
+    exec** —— `/usr/bin/apk`、`/sbin/uci` 都是 `PERMISSION_DENIED(6)`，`/etc/config` 的
+    `file.read` 取不到内容，所以页面上没有安装/任意执行通道（软件包页的「上传软件包…」是
+    唯一正路）。设备上装的还是**很早期**的一版（`usage` 里没有 `pool`/`canary`/`check-sources`，
+    `selftest` 只有 12 条断言）。那一版在他的 busybox 上 `selftest` 12/12、150ms，
+    `colo 104.16.133.229` → `LAX` 480ms，`status` 是 `never_run`。
+  - **整页第一次在真实浏览器里渲染成功**（可见视口 1383×673 + 截图）：状态条、操作三键、
+    meta 行、表格与空态文案、CBI 表单 20 个输入项与保存/重置、侧栏菜单项全部正常，
+    没有 `[object` 残留，控制台无 JS 报错。顺带量到一个**上游**缺陷：5 个 `form.Flag` 行的
+    `<label for>` 指向 `widget.cbid.cf_ipcheck.global.<opt>`，而 CBI 给 checkbox 实际生成的
+    id 是随机的（`cb962b8400`）→ 标签点不到控件。所有带 Flag 的 LuCI 页面都中招，
+    不是本视图写的 label；要治就得在 `render()` 里把 `htmlFor` 改成实际 id。
 
 未覆盖：肉眼在普通浏览器里看整页排版。验证用的内嵌页签 `document.hidden=true` 且
 `requestAnimationFrame` 不触发，LuCI 的视图引导和 CBI `Map.render()` 在这种页签里根本不会
@@ -383,7 +399,7 @@ cf-ipcheck selftest   # 离线自检，不联网
 | `/tmp/cf-ipcheck/cf-ipcheck.log` | 运行日志（`logread -e cf-ipcheck` 亦可） |
 
 `colored.tsv` 的列序是 `ip code connect tls ttfb total colo speed domain`（吞吐单位
-MiB/s，未测是 `-`），第 8、9 列分别进 `result.json` 的 `speed_mibs` 与 `domain`。
+十进制 MB/s，未测是 `-`），第 8、9 列分别进 `result.json` 的 `speed_mbytes` 与 `domain`。
 
 ### 一轮的收尾与自愈
 
@@ -433,8 +449,10 @@ MiB/s，未测是 `-`），第 8、9 列分别进 `result.json` 的 `speed_mibs`
 真机实测：三个 `total` 只差十几毫秒的 IP，拉 10MB 的吞吐是
 **10.6 / 3.57 / 0.19 MB/s**（差的这三个 total 都在同一量级里），差 50 倍；
 另一个 IP 连接就要 1.2 秒、10MB 直接拉不完。所以吞吐是独立的信号，值得测。
-（这几个数是当时按 MB/s 记的原始记录；引擎现在统一按 **MiB/s** 报，除以 1.048576 即可换算，
-比例关系不变。）
+（单位口径：**十进制 MB/s，÷1000000**，与测速网站/浏览器同一口径 —— 2026-09-27 Ryan 定的。
+中途一度改成 MiB/s（÷1048576），已回退；`speed_fmt()` 里有断言把除数钉死：
+`1000000B/s` 必须正好显示 `1.00`，改成 ÷1048576 或 ×8 都会红。
+上面这几个数本来就是按 MB/s 记录的原始值，不需要换算。）
 
 但姿势有讲究：
 
@@ -449,7 +467,7 @@ MiB/s，未测是 `-`），第 8、9 列分别进 `result.json` 的 `speed_mibs`
 
 测的是 `speed.cloudflare.com/__down?bytes=N`，同样用 `--resolve` 钉在候选 IP 上访问，
 所以量到的是那个 IP 的吞吐；换成你自己域名下的大文件也可以（`speed_domain`）。
-结果落在 `colored.tsv` 第 8 列、`result.json` 的 `speed_mibs`（没测到是 `null`，
+结果落在 `colored.tsv` 第 8 列、`result.json` 的 `speed_mbytes`（没测到是 `null`，
 界面上是 `—`），以及 `best-ip.txt` 的 `{speed}` 占位符（没测到是 `-`）。
 **测不出来时是 `-` 而不是 `0.00`**：0.00 会被读成「这个 IP 很慢」，而实情是压根没连上，
 两者处置完全不同；curl 非 0 退出（半路超时也是）一律记 `-`，哪怕它照样吐了个 `speed_download`。
@@ -466,7 +484,7 @@ uci 分不清“显式留空”和“没这一项”（实测 `uci -q get` 对�
 | :--- | :--- | :--- |
 | `{colo}` | 入围 IP 请求 `https://<探测域名>/cdn-cgi/trace` 返回的 `colo=`；取不到就用 `colo_domain`（默认 `www.cloudflare.com`）再试一次 | 落地机房代码（LAX / NRT / FRA…）。同一批入围里哪些其实落到不同机房，一眼看得出来。EDT / Worker 类节点域名通常把 `/cdn-cgi/trace` 拦成 403，所以这层兜底是必须的，否则整列都是 `n/a`；关掉 `colo_probe` 也会是 `n/a` |
 | `{total}` | curl 的 `%{time_total}`（毫秒，保留一位小数，也就是排序用的那个数） | 把“当初测到多少”记在文件里，换线路或过几天再测时能对比出差异；此刻达标不代表下次还达标 |
-| `{speed}` | `speed_of()` 拉 `speed_domain` 的 `__down?bytes=speed_bytes` 得到的 `%{speed_download}`，换算成 MiB/s（两位小数） | 吞吐。**只对榜单前 `speed_count` 个 IP 有值**，其余（关掉吞吐测试、或本轮出口被接管时）是 `-` |
+| `{speed}` | `speed_of()` 拉 `speed_domain` 的 `__down?bytes=speed_bytes` 得到的 `%{speed_download}`，换算成十进制 MB/s（两位小数） | 吞吐。**只对榜单前 `speed_count` 个 IP 有值**，其余（关掉吞吐测试、或本轮出口被接管时）是 `-` |
 
 默认模板 `cf-ipcheck | {colo} | {total}ms` 渲染出来：
 

@@ -211,7 +211,8 @@ fi
 
 # === [7/7] RED LINE 6: 引擎 JSON 与页面读数字段必须对得上 ====================
 # 引擎改字段名、页面忘了改，不会有任何报错：那一列永远显示 —，或者整块信息
-# 静默消失。吞吐列就叫过 speed_mbps -> speed_mibs，靠真机才看得出来，
+# 静默消失。吞吐列的键名已经改过两轮（speed_mbps -> speed_mibs -> speed_mbytes，
+# 单位从"看着像 megabits"到 MiB 再回到 Ryan 要的十进制 MB/s），靠真机才看得出来，
 # 所以这条契约检查放在 CI 里，两边任一侧单方面改名都会红。
 echo "=== [7/7] Red line 6: engine <-> view JSON field contract ==="
 ENGINE=luci-app-cf-ipcheck/root/usr/bin/cf-ipcheck
@@ -228,7 +229,7 @@ else
     # 为什么不直接正则扫引擎全文：Gist 载荷、Cloudflare /ips 的响应、自检里的
     # 样例 JSON 也都是 "key": 形状，扫全文会把它们误当契约（files/content/result）。
     STATUS_KEYS="state started finished pool qualified usable intercepted counts domains items reason"
-    ITEM_KEYS="ip code connect_ms tls_ms ttfb_ms total_ms colo speed_mibs domain"
+    ITEM_KEYS="ip code connect_ms tls_ms ttfb_ms total_ms colo speed_mbytes domain"
     SOURCE_KEYS="url http rc ips cf_in"
 
     # 先把反斜杠去掉：顶层 JSON 写 "key":，items 那串写 \"key\":，去斜杠后同形。
@@ -268,9 +269,9 @@ else
         fi
     done
     # 已经踩过的旧名：出现即红，防止从别处粘回来
-    for stale in speed_mbps; do
+    for stale in speed_mbps speed_mibs; do
         if grep -q "$stale" "$ENGINE" "$VIEW"; then
-            echo "[FAIL] contract: $stale 是废弃字段名（吞吐单位是 MiB/s，键名 speed_mibs）"
+            echo "[FAIL] contract: $stale 是废弃字段名（吞吐是十进制 MB/s，键名 speed_mbytes）"
             rl6=1
         fi
     done

@@ -72,9 +72,9 @@ config global 'global'
 	option colo_domain 'www.cloudflare.com'
 
 	# 下载速度实测：延迟榜出来后，只对榜单前 speed_count 个 IP **串行**拉
-	# speed_domain 的 __down?bytes=speed_bytes，量 MiB/s（并发一起拉会互抢带宽，
-	# 数字全废）。要单独一个超时：跨境拉 10MB 常在几秒到几十秒，复用 probe_timeout
-	# 会把所有测量都截断成 0。代价是流量：默认 10 × 10MB = 每轮约 100MB。
+	# speed_domain 的 __down?bytes=speed_bytes，量十进制 MB/s（1 MB = 1000 KB，与测速网站同口径）。
+	# 必须串行：并发一起拉会互抢带宽，数字全废。要单独一个超时：跨境拉 10MB 常在几秒到几十秒，
+	# 复用 probe_timeout 会把所有测量都截断成 0。代价是流量：默认 10 × 10MB = 每轮约 100MB。
 	# 出口被接管（canary 报警）或 probe_user 没绕开代理时整列不测，直接记 -。
 	option speed_probe '1'
 	option speed_count '10'
@@ -95,7 +95,7 @@ config global 'global'
 	option probe_user 'nobody'
 
 	# ip.txt 注释模板，三个占位符：{colo}=落地机房代码（cdn-cgi/trace 的 colo=），
-	# {total}=总耗时毫秒（排序用的那个数），{speed}=实测下载 MiB/s（没测到是 -）。
+	# {total}=总耗时毫秒（排序用的那个数），{speed}=实测下载十进制 MB/s（没测到是 -）。
 	# 渲染结果会去掉首尾空格，所以只想输出「IP:端口」就把这里填成一个空格；
 	# 整个留空会回到默认模板（uci 分不清“显式留空”和“没这一项”）。
 	option annotate 'cf-ipcheck | {colo} | {total}ms'

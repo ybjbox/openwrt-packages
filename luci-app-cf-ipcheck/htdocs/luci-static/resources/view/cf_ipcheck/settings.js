@@ -164,7 +164,7 @@ function renderInterceptNotice() {
 			'%s 豁免这个组，改完下一轮生效。真的绕不开时，就把结果上传到 Gist（见「Gist 上传」一节），' +
 			'或把 %s 拷到没被接管的机器上跑一轮。')
 			.format('nobody', 'meta skgid 65534 return', 'cf-ipcheck')),
-		E('p', {}, _('接管期间引擎会自动跳过「落地机房」和「下载 MiB/s」两列：那两个数取的是代理自己的表现，' +
+		E('p', {}, _('接管期间引擎会自动跳过「落地机房」和「下载 MB/s」两列：那两个数取的是代理自己的表现，' +
 			'测了也是一整列相同的假数据。'))
 	]);
 }
@@ -177,7 +177,7 @@ function fmtMs(v) {
 
 /* 吞吐列：没测/测失败时引擎给 null 或 "-"，显示成 —（不是 0.00，
  * 0.00 会被读成「这个 IP 很慢」，而实情是压根没连上） */
-function fmtMibs(v) {
+function fmtMBps(v) {
 	if (v == null || v === '' || v === '-' || isNaN(v))
 		return '—';
 	return Number(v).toFixed(2);
@@ -211,7 +211,7 @@ function renderTable(st) {
 	var withDom = domainKinds(st.items) > 1;
 	var head = [
 		'#', _('IP 地址'), _('状态码'),
-		_('TCP 握手'), _('TLS 握手'), _('TTFB'), _('总计'), _('落地机房'), _('下载 MiB/s')
+		_('TCP 握手'), _('TLS 握手'), _('TTFB'), _('总计'), _('落地机房'), _('下载 MB/s')
 	];
 	if (withDom)
 		head.push(_('胜出域名'));
@@ -234,7 +234,7 @@ function renderTable(st) {
 				E('td', { class: 'left' }, fmtMs(it.ttfb_ms)),
 				E('td', { class: 'left' }, fmtMs(it.total_ms)),
 				E('td', { class: 'left' }, it.colo || '—'),
-				E('td', { class: 'left' }, fmtMibs(it.speed_mibs))
+				E('td', { class: 'left' }, fmtMBps(it.speed_mbytes))
 			];
 			if (withDom)
 				cols.push(E('td', { class: 'left mono' }, it.domain || '—'));
@@ -271,7 +271,7 @@ function renderTable(st) {
 				  '所以 ICMP ping 再低也不说明代理能用 —— 只看这几段、且只看带真实 SNI 的 HTTPS 能否走通。' +
 				  '排序按总计升序、同值再看 TTFB；total_limit 与 ttfb_limit 两道门槛都过才算达标。' +
 				  '多域名时每个 IP 只留表现最好那次（连带那个域名），所以达标数不会超过候选池。' +
-				  '「下载 MiB/s」是榜单出来后只对前若干个 IP 串行拉一次大文件测出来的吞吐 —— ' +
+				  '「下载 MB/s」是榜单出来后只对前若干个 IP 串行拉一次大文件测出来的吞吐（十进制 MB/s，1 MB = 1000 KB）—— ' +
 				  '延迟接近的 IP 吞吐可以差几十倍，但单次测量抖动大，所以只拿来参考、不参与排序；没测或测失败显示 —。')
 			])
 		])
@@ -614,8 +614,8 @@ return view.extend({
 		o.default = '10';
 
 		o = thr.option(form.Flag, 'speed_probe', _('入围后再测下载速度'),
-			_('延迟榜出来后，只对榜单前 speed_count 个 IP 串行拉一次大文件测 MiB/s。' +
-			  '值得测：真机里三个 total 接近的 IP 吞吐差到 50 倍（10.1 / 3.4 / 0.18 MiB/s）。' +
+			_('延迟榜出来后，只对榜单前 speed_count 个 IP 串行拉一次大文件测 MB/s（十进制，1 MB = 1000 KB，与测速网站同口径）。' +
+			  '值得测：真机里三个 total 接近的 IP 吞吐差到 50 倍（10.6 / 3.57 / 0.19 MB/s）。' +
 			  '代价是流量，默认 10 × 10MB ≈ 每轮 100MB；不测就关掉，那一列显示 —。' +
 			  '出口被接管那一轮会自动不测（测的是代理自己的速度）。'));
 		o.rmempty = false;
@@ -627,7 +627,7 @@ return view.extend({
 
 		o = thr.option(form.Value, 'speed_bytes', _('单次下载字节数'),
 			_('默认 10MB（10485760 字节）。别调太小：1MB 样本主要落在 TCP 慢启动上，' +
-			  '真机同一个 IP 两次测出 0.54 与 0.19 MiB/s，差 2.8 倍，排名会乱跳。'));
+			  '真机同一个 IP 两次测出 0.56 与 0.20 MB/s，差 2.8 倍，排名会乱跳。'));
 		o.datatype = 'and(uinteger,min(131072),max(104857600))';
 		o.default = '10485760';
 
@@ -658,7 +658,7 @@ return view.extend({
 			  '保留地址全球不可路由，正常只会超时；一旦它返回任何 HTTP 状态码，就说明本机 443 被 ' +
 			  'OpenClash 这类透明代理接管、由代理自己重新拨号，此时 --resolve 钉的候选 IP 没参与选路，' +
 			  '榜单只是「本机 → 代理 → CF」的耗时。开启后本轮结果会被打标：页面红条提示，' +
-			  '并且跳过「落地机房」与「下载 MiB/s」两列。每轮最多额外占用 2 次探测超时（默认 4 秒）。'));
+			  '并且跳过「落地机房」与「下载 MB/s」两列。每轮最多额外占用 2 次探测超时（默认 4 秒）。'));
 		o.rmempty = false;
 
 		o = thr.option(form.Value, 'probe_user', _('探测发起身份'),
@@ -680,7 +680,7 @@ return view.extend({
 			  '两处都取不到、或者本轮出口被接管才是 n/a。' +
 			  '{total} = 这个 IP 的总耗时毫秒，就是排序用的那个数（保留一位小数）；' +
 			  '把它记在文件里，是为了过几天换线路再测时能对比出差异 —— 此刻达标不代表下次还达标。' +
-			  '{speed} = 实测下载速度 MiB/s（只对榜单前若干个 IP 测，没测到或关掉速度实测时是 -）。' +
+			  '{speed} = 实测下载速度 MB/s（十进制；只对榜单前若干个 IP 测，没测到或关掉速度实测时是 -）。' +
 			  '其余字符（含 & 和中文）原样输出，同一占位符可以写多次。' +
 			  '默认模板渲染出来是：104.16.202.102:443 cf-ipcheck | LAX | 887.4ms')
 			.format('/etc/cf-ipcheck/best-ip.txt'));

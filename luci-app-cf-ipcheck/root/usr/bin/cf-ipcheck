@@ -754,14 +754,16 @@ render_annotate() { # $1=模板 $2=colo $3=total $4=speed
 # 分别是 10.6 / 3.57 / 0.19 MB/s —— 差 50 倍，而它们的 total 挤在同一量级里。
 # 反过来 1MB 样本抖得没法用（同一 IP 两次差 2.8 倍，那基本是在测 TCP 慢启动），
 # 所以默认拉 10MB；并且只串行测 —— 并发一起拉会互抢带宽，测出来全是被压平的假数。
-speed_fmt() { # $1=curl 的 speed_download（字节/秒）-> MiB/s 两位小数；测不出来 = '-'
+# 单位是**十进制 MB/s**（÷1000000），与浏览器/测速站同一口径（Ryan 2026-09-27 定的）。
+# 不是 MiB/s（÷1048576），也不是 Mbps（还要 ×8）—— 换错口径页面数字就跟 speedtest 对不上。
+speed_fmt() { # $1=curl 的 speed_download（字节/秒）-> MB/s 两位小数；测不出来 = '-'
 	case "${1:-}" in
 		''|*[!0-9.]*) printf '%s' '-' ;;
-		*) printf '%s' "$1" | awk '{ printf "%.2f", ($1 + 0) / 1048576 }' ;;
+		*) printf '%s' "$1" | awk '{ printf "%.2f", ($1 + 0) / 1000000 }' ;;
 	esac
 }
 
-speed_of() { # $1=IP -> "12.34"（MiB/s）或 '-'
+speed_of() { # $1=IP -> "12.34"（MB/s）或 '-'
 	valid_ip4 "$1" || { printf '%s' '-'; return 0; }
 	out=$(run_probe "curl -4 -o $NULL_DEV -sS --connect-timeout $C_TIMEOUT --max-time $C_SPEEDTO --resolve $C_SPEEDDOM:$C_PORT:$1 https://$C_SPEEDDOM/__down?bytes=$C_SPEEDKB -w '%{speed_download}'" 2>/dev/null)
 	rc=$?
@@ -786,7 +788,7 @@ write_outputs() {
 	# best-ip.txt 与 result.json 都从 colored.tsv 生成，避免两个输出内容不一致
 	# （页面上的「落地机房」列读的就是 result.json 的 colo 字段）。
 	#
-	# 第 7 列 colo、第 8 列吞吐（MiB/s，'-' 表示未测）、第 9 列胜出时用的域名。
+	# 第 7 列 colo、第 8 列吞吐（十进制 MB/s，'-' 表示未测）、第 9 列胜出时用的域名。
 	colored=$RUN_DIR/colored.tsv
 	: >"$colored"
 	while IFS="$(printf '\t')" read -r ip code c tls ttfb tot err dom; do
@@ -814,13 +816,13 @@ write_outputs() {
 			if [ "$k" -lt "$C_SPEEDN" ] && [ ! -f "$STOP" ]; then
 				spd=$(speed_of "$ip")
 				k=$((k + 1))
-				sum="$sum $ip=${spd}MiB/s"
+				sum="$sum $ip=${spd}MB/s"
 			fi
 			printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
 				"$ip" "$code" "$c" "$tls" "$ttfb" "$tot" "$colo" "$spd" "$dom" >>"$sp_tmp"
 		done <"$colored"
 		mv "$sp_tmp" "$colored"
-		[ "$k" = 0 ] || log "吞吐实测 $k 个（每个 $C_SPEEDKB 字节，单位 MiB/s）:$sum"
+		[ "$k" = 0 ] || log "吞吐实测 $k 个（每个 $C_SPEEDKB 字节，单位十进制 MB/s）:$sum"
 	fi
 
 	: >"$tmp"
@@ -845,7 +847,7 @@ write_outputs() {
 			NF >= 9 {
 				if (n++) printf ","
 				sp = ($8 == "" || $8 == "-") ? "null" : $8
-				printf "{\"ip\":\"%s\",\"code\":%s,\"connect_ms\":%s,\"tls_ms\":%s,\"ttfb_ms\":%s,\"total_ms\":%s,\"colo\":\"%s\",\"speed_mibs\":%s,\"domain\":\"%s\"}",
+				printf "{\"ip\":\"%s\",\"code\":%s,\"connect_ms\":%s,\"tls_ms\":%s,\"ttfb_ms\":%s,\"total_ms\":%s,\"colo\":\"%s\",\"speed_mbytes\":%s,\"domain\":\"%s\"}",
 					$1, $2, $3, $4, $5, $6, $7, sp, $9
 			}' "$colored"
 		printf ']}\n'
@@ -1207,12 +1209,15 @@ selftest() {
 	check '模板支持 {speed} 占位符' "$got" 'a 10.60 b'
 	got=$(sh "$0" _annot 'a {speed} b' 'LAX' '1' 2>/dev/null)
 	check '没测速度时 {speed} 渲染成 -' "$got" 'a - b'
-	# 字节/s -> MiB/s；10485760B/s 应是 10.00。测不出来时是 '-' 而不是 0.00 ——
-	# 0.00 会被读成“这个 IP 很慢”，而实际是压根没连上，两者处置完全不同。
+	# 字节/s -> **十进制** MB/s（÷1e6，Ryan 定的口径）。1000000 必须正好是 1.00 ——
+	# 这条就是除数钉子：谁改回 ÷1048576（MiB）或乘 8（Mbps），这里立刻红。
+	# 测不出来时是 '-' 而不是 0.00：0.00 会被读成“这个 IP 很慢”，实情是压根没连上。
+	got=$(sh "$0" _speedfmt 1000000 2>/dev/null)
+	check '除数是 1e6（1000000B/s 正好 1.00 MB/s）' "$got" '1.00'
 	got=$(sh "$0" _speedfmt 10485760 2>/dev/null)
-	check '吞吐单位换算成 MiB/s（两位小数）' "$got" '10.00'
+	check '10MiB 的实测值换算成十进制是 10.49 MB/s' "$got" '10.49'
 	got=$(sh "$0" _speedfmt 1048576 2>/dev/null)
-	check '1 MiB/s 的换算' "$got" '1.00'
+	check '1MiB 的实测值换算成十进制是 1.05 MB/s' "$got" '1.05'
 	got=$(sh "$0" _speedfmt '' 2>/dev/null)
 	check '没测到吞吐时是 - 而不是 0.00' "$got" '-'
 	got=$(sh "$0" _speedfmt 'abc' 2>/dev/null)
