@@ -24,7 +24,7 @@ var callExec = rpc.declare({
 });
 
 /* 模块级句柄：结果块每次刷新都会整块换掉新节点，定时器不能挂在它身上 */
-var nodes = { table: null, srcHost: null, status: null };
+var nodes = { table: null, srcHost: null, srcBlock: null, status: null, notice: null };
 var poll = null;
 var inflight = null;
 /* 最近一次渲染榜单用的 items：「复制榜单 IP」是事件回调里读的，
@@ -425,6 +425,87 @@ function countsText(counts) {
 	return parts.length ? ' · ' + _('失败分类') + '：' + parts.join(' · ') : '';
 }
 
+/* 源检测块挂回结果卡片末尾。结果块每轮刷新都被整体换掉，所以这个挂载要能重复调。 */
+function mountSrcBlock() {
+	if (!nodes.srcBlock || !nodes.table || !nodes.table.querySelector)
+		return;
+	var host = nodes.table.querySelector('.cbi-section-node');
+	if (host && nodes.srcBlock.parentNode !== host)
+		host.appendChild(nodes.srcBlock);
+}
+
+/* LuCI 的密码框带一个灰底实心的「∗」按钮（真机量过 32×40，rgb(136,152,170) 底 +
+ * 白字），在一整片浅色表单里像个误触发的控件。功能留着（点它是显示/隐藏令牌），
+ * 只把它压回普通文字按钮的分量。 */
+function quietPasswordToggles(root) {
+	if (!root || !root.querySelectorAll)
+		return;
+	var btns = root.querySelectorAll('input[type="password"] ~ button, input[type="password"] + * button');
+	Array.prototype.forEach.call(btns, function (b) {
+		b.style.background = 'transparent';
+		b.style.borderColor = 'transparent';
+		b.style.color = 'inherit';
+		b.style.opacity = '.55';
+		b.style.minWidth = '1.9em';
+		b.style.padding = '0 .35em';
+		b.setAttribute('title', _('显示 / 隐藏令牌'));
+	});
+}
+
+/* 这一版 LuCI 的 form.js 里根本没有 collapsible（真机 grep 过，0 命中），
+ * 所以节折叠只能在视图里自己做：给每个 section 的 h3 加一个折叠头，
+ * 点标题就收起/展开它后面那块 .cbi-section-node。
+ * 折叠状态按节名记在 localStorage：不记的话每次进页都要重新点开他常改的那几节。 */
+var FOLD_KEY = 'cf-ipcheck.fold.';
+
+function makeSectionsCollapsible(root, defaults) {
+	if (!root || !root.querySelectorAll)
+		return;
+	Array.prototype.forEach.call(root.querySelectorAll('.cbi-section > h3'), function (h3) {
+		if (h3.querySelector('.cf-fold'))
+			return;
+		var body = h3.nextElementSibling;
+		if (!body || String(body.className).indexOf('cbi-section-node') < 0)
+			return;
+		var name = (h3.firstChild ? h3.firstChild.textContent : h3.textContent).trim();
+		var stored = null;
+		try {
+			stored = window.localStorage.getItem(FOLD_KEY + name);
+		} catch (e) {
+			stored = null;
+		}
+		var open = stored != null ? stored === '1' : !(defaults && defaults[name]);
+		var mark = E('span', {
+			class: 'cf-fold',
+			tabindex: '0',
+			role: 'button',
+			style: 'float:right;cursor:pointer;opacity:.5;font-weight:400;padding:0 .2em',
+			title: _('展开 / 收起这一节')
+		}, '▾');
+
+		function set(v) {
+			open = v;
+			body.style.display = open ? '' : 'none';
+			mark.textContent = open ? '▾' : '▸';
+			h3.setAttribute('aria-expanded', open ? 'true' : 'false');
+			try {
+				window.localStorage.setItem(FOLD_KEY + name, open ? '1' : '0');
+			} catch (e) {}
+		}
+
+		h3.style.cursor = 'pointer';
+		h3.addEventListener('click', function () { set(!open); });
+		mark.addEventListener('keydown', function (ev) {
+			if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') {
+				ev.preventDefault();
+				set(!open);
+			}
+		});
+		h3.appendChild(mark);
+		set(open);
+	});
+}
+
 /* 结果表：单独抽出来，按钮触发后只重画这一块，不整页闪 */
 function renderTable(st) {
 	var withDom = domainKinds(st.items) > 1;
@@ -433,14 +514,19 @@ function renderTable(st) {
 		_('TCP 握手'), _('TLS 握手'), _('TTFB'), _('总计'), _('落地机房'), _('下载 MB/s')
 	];
 	/* 数字列一律右对齐 + 等宽：左对齐时 56.9 / 807.4 / 12.67 的小数点各排在一条边上，
-	 * 比较一列要逐行看；右对齐后同列位数齐，大小一眼可比。文本列保持左对齐。 */
+	 * 比较一列要逐行看；右对齐后同列位数齐，大小一眼可比。
+	 * 机房列也右对齐：它左对齐时 SIN 贴着列首、数字贴着列尾，中间能空出 160px
+	 * （真机量过），读起来像断了两截。列宽用百分比定死，不让浏览器把富余全塞给
+	 * 某一列 —— 否则每列内部都会多出一条说不清的空白。 */
 	var colCls = [
 		'right', 'left mono', 'right', 'right mono', 'right mono',
-		'right mono', 'right mono', 'left', 'right mono'
+		'right mono', 'right mono', 'right', 'right mono'
 	];
+	var colW = [ '4%', '22%', '8%', '12%', '12%', '12%', '12%', '9%', '9%' ];
 	if (withDom) {
 		head.push(_('胜出域名'));
 		colCls.push('left');
+		colW = [ '4%', '18%', '7%', '11%', '11%', '11%', '11%', '8%', '8%', '11%' ];
 	}
 	lastItems = st.items || [];
 
@@ -486,11 +572,14 @@ function renderTable(st) {
 		E('div', { class: 'cbi-section-node' }, [
 			noticeFor(st),
 			E('p', { class: 'small' }, meta),
-			E('div', { class: 'table cbi-section-table' }, [
+			E('div', { class: 'table cbi-section-table', style: 'width:100%;table-layout:fixed' }, [
 				E('thead', {}, [
 					E('tr', { class: 'tr table-titles' },
 						head.map(function (t, c) {
-							return E('th', { class: 'th ' + (colCls[c] || 'left') }, t);
+							return E('th', {
+								class: 'th ' + (colCls[c] || 'left'),
+								style: 'width:' + (colW[c] || 'auto')
+							}, t);
 						}))
 				]),
 				tbody
@@ -526,6 +615,7 @@ function refreshResult() {
 		if (old && old.parentNode)
 			old.parentNode.replaceChild(next, old);
 		nodes.table = next;
+		mountSrcBlock();
 		/* 状态行也得跟着改：以前只换表格，点了「立即测速」之后表格里写着
 		 * 「正在测速」，上面那行还停在「空闲」，两处互相打脸。 */
 		if (nodes.status)
@@ -1056,21 +1146,33 @@ return view.extend({
 				  '段内占比掉到 90% 以下通常说明源改内容了（例如开始提供别人自己的中转 IP），' +
 				  '拉不到的那条会标黄，引擎本轮会跳过它并记日志。')));
 
-		var srccard = E('div', { class: 'cbi-section', id: 'cf-ipcheck-sources-card' }, [
-			E('div', { class: 'cbi-section-node' }, [
-				E('div', { class: 'cbi-value' }, [
-					E('label', { class: 'cbi-value-title' }, _('源可用性检测')),
-					E('div', { class: 'cbi-value-field' }, btnCheck)
-				]),
-				nodes.srcHost
-			])
+		/* 源检测块并进结果卡片：以前它是独立一张卡，跟榜单之间隔一条空隙加一层
+		 * 卡片描边，读起来像两件不相干的事 —— 但它俩说的都是"这一轮的结果可信吗"。
+		 * 节点常驻，结果块每次重画后重新挂回去。 */
+		nodes.srcBlock = E('div', {
+			id: 'cf-ipcheck-sources-block',
+			style: 'border-top:1px solid rgba(0,0,0,.07);margin-top:.9em;padding-top:.7em'
+		}, [
+			E('div', { style: 'margin-bottom:.25em' }, [
+				E('strong', {}, _('源可用性检测')), ' ', btnCheck
+			]),
+			nodes.srcHost
 		]);
 
-		var page = [bar, nodes.table, srccard];
+		var page = [bar, nodes.table];
 
 		return m.render().then(function (mapnode) {
 			applyHelp(mapnode);
 			attachValueTips(mapnode);
+			quietPasswordToggles(mapnode);
+			/* 默认收起这三节：字段最多、又不是每次进来都要改的；基本设置留着展开。
+			 * 键是节标题原文（_(x) 对同一条目是恒等，所以跟 DOM 里的文字对得上）。 */
+			makeSectionsCollapsible(mapnode, {
+				'候选池来源': 1,
+				'测速与判定': 1,
+				'Gist 上传': 1
+			});
+			mountSrcBlock();
 			page.push(mapnode);
 			if (st.state === 'running')
 				startPoll();
