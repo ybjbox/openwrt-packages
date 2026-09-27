@@ -173,13 +173,15 @@ one_host() {
 }
 
 # uci_list_parse：stdin = `uci show <某个 list 选项>` 的原始输出，stdout = 每行一个值。
-# 为什么要单独一步：list 在不同 uci 版本里至少有三种打印形状 ——
-#   pkg.sec.opt='a'          pkg.sec.opt[0]='a'          pkg.sec.opt=( 'a','b' )
-# 原先的实现只认第一种（sed 锚定 `\.opt='...'` 整行），真机上撞出来的后果是
-# 页面里 13 条社区源、引擎一条都读不到，候选池空、报错还看不出原因。
-# 这里不猜形状：等号前面整段丢掉，方括号/圆括号/引号一律剥掉，再按逗号切。
+# 为什么要单独一步：list 在不同 uci 版本里至少有四种打印形状 ——
+#   pkg.sec.opt='a'      pkg.sec.opt='a' 'b'      pkg.sec.opt[0]='a'      pkg.sec.opt=( 'a','b' )
+# 真机（LibWrt 25.12 的 uci）用的是第二种：**一行、空格分隔的多个引号值**。
+# 旧实现把整份 uci show 用一条锚死 `\.opt='…'$` 的 sed 挑行，撞上第二种时贪婪匹配
+# 出 `a' 'b' 'c` 这种垃圾串，再被 https 过滤器判死 → 页面里 13 条源、引擎 0 条，
+# 候选池空、日志一切正常。这里不猜形状：等号左边整段丢掉，方括号/圆括号/引号剥掉，
+# 然后逗号与空白都当分隔符。
 uci_list_parse() {
-	sed -e 's/^[^=]*=//' -e 's/[][()]//g' | tr -d "'" | tr ',' '\n' | \
+	sed -e 's/^[^=]*=//' -e 's/[][()]//g' | tr -d "'" | tr ', \t' '\n\n\n' | \
 		sed -e 's/^[ \t]*//' -e 's/[ \t]*$//' | grep . || true
 }
 
@@ -1126,6 +1128,12 @@ selftest() {
 	got=$(printf "cf_ipcheck.global.community_sources=( 'a.com','b.com' )\n" | \
 		sh "$0" _ucilist | tr '\n' ' ')
 	check 'uci list 形状三：数组式' "$got" 'a.com b.com '
+	got=$(printf "cf_ipcheck.global.community_sources='a.com' 'b.com' 'c.com'\n" | \
+		sh "$0" _ucilist | tr '\n' ' ')
+	check 'uci list 形状四：一行空格分隔（真机 LibWrt 25.12 就是这种）' "$got" 'a.com b.com c.com '
+	got=$(printf "cf_ipcheck.global.community_sources='https://a.com/x' 'http://b.com/y'\n" | \
+		sh "$0" _ucilist | grep -c '^https://' || true)
+	check '形状四拆出来的每条能单独过 https 过滤' "$got" '1'
 	got=$(printf "cf_ipcheck.global.enabled='0'\n" | sh "$0" _ucilist | tr -d '\n')
 	check 'uci 单值选项也能原样取出' "$got" '0'
 	got=$(printf '' | sh "$0" _ucilist | grep -c . || true)
