@@ -16,6 +16,152 @@
  */
 var CMD = '/usr/bin/cf-ipcheck';
 
+/* ---- 设计令牌与组件样式 ---------------------------------------------------
+ * 为什么用 JS 注入而不是新建一个 .css：这份视图是 LuCI 按需加载的，
+ * 多一个 CSS 文件就要自己管加载时序（还可能被主题自己的缓存挡在后面），
+ * 而注入的 <style> 跟视图同生共死，也不会多出一条安装路径。整段只写一遍。
+ *
+ * 配色的取舍：全页只有一处强调色 —— Cloudflare 橙 #f6821f，只给三样东西：
+ * 「立即测速」主按钮、进行中的状态胶囊、榜单第一名左侧那道竖条。其余一律用
+ * 中性低透明度叠加 rgba(128,128,128,…)：这种灰在深浅两种主题上都能读，
+ * 不必去猜主题自己的暗色钩子（Argon 是 @media (prefers-color-scheme: dark)
+ * 切的，所以状态文字色也照这个开关各给一套）。
+ *
+ * 不引任何 webfont：路由器上不该有外部字体请求。数字对齐靠 tabular-nums，
+ * IP 用系统等宽栈 —— 这两条就能把榜单的量感做出来，不需要额外字体。
+ * 字阶 / 间距 / 圆角 / 动效全部走变量，组件里不许再出现裸数值。
+ */
+var CSS = [
+	':root{',
+	'  --cf-accent:#f6821f; --cf-accent-soft:rgba(246,130,31,.12); --cf-accent-line:rgba(246,130,31,.45);',
+	'  --cf-accent-txt:#b8500b;',
+	'  --cf-ok-txt:#2f7d32; --cf-ok-soft:rgba(47,125,50,.12);',
+	'  --cf-warn-txt:#9a5b00; --cf-warn-soft:rgba(154,91,0,.12);',
+	'  --cf-bad-txt:#c0281f; --cf-bad-soft:rgba(192,40,31,.10);',
+	'  --cf-info-txt:#1a5f9c; --cf-info-soft:rgba(26,95,156,.10);',
+	'  --cf-soft:rgba(128,128,128,.11); --cf-line:rgba(128,128,128,.17);',
+	'  --cf-s1:4px; --cf-s2:8px; --cf-s3:12px; --cf-s4:16px; --cf-s5:24px; --cf-s6:32px;',
+	'  --cf-r1:4px; --cf-r2:8px; --cf-r3:14px;',
+	'  --cf-xs:12px; --cf-sm:13px; --cf-md:14px; --cf-lg:16px; --cf-xl:20px;',
+	'  --cf-sh1:0 1px 2px rgba(0,0,0,.06); --cf-sh2:0 4px 14px rgba(0,0,0,.09);',
+	'  --cf-dur-fast:160ms; --cf-dur:320ms; --cf-ease:cubic-bezier(.16,1,.3,1);',
+	'}',
+	'@media (prefers-color-scheme: dark){',
+	'  :root{',
+	'    --cf-accent:#fb9d4a; --cf-accent-txt:#ffb877;',
+	'    --cf-ok-txt:#69c47f; --cf-warn-txt:#e2a33c;',
+	'    --cf-bad-txt:#f07a72; --cf-info-txt:#79b8ee;',
+	'    --cf-soft:rgba(255,255,255,.10); --cf-line:rgba(255,255,255,.16);',
+	'  }',
+	'}',
+	/* 卡片头：状态胶囊在左、操作在右，窄屏自动改成上下两行 */
+	'.cf-head{display:flex;flex-wrap:wrap;align-items:center;gap:var(--cf-s3) var(--cf-s4);justify-content:space-between}',
+	'.cf-head-l{display:flex;align-items:center;gap:var(--cf-s2);flex-wrap:wrap;min-width:0}',
+	'.cf-head-r{display:flex;align-items:center;gap:var(--cf-s2);flex-wrap:wrap}',
+	'.cf-t{font-size:var(--cf-md);font-weight:600;letter-spacing:.01em}',
+	'.cf-sub{font-size:var(--cf-xs);opacity:.72;font-style:normal}',
+	/* 状态胶囊：色点 + 文案。进行态的色点会呼吸。 */
+	'.cf-pill{display:inline-flex;align-items:center;gap:.45em;padding:.28em .7em;border-radius:999px;',
+	'  font-size:var(--cf-xs);line-height:1.4;border:1px solid var(--cf-line);background:var(--cf-soft);white-space:nowrap}',
+	'.cf-dot{width:.5em;height:.5em;border-radius:50%;background:currentColor;flex:0 0 auto}',
+	'.cf-tone-idle{color:inherit;opacity:.75}',
+	'.cf-tone-run{color:var(--cf-accent-txt);background:var(--cf-accent-soft);border-color:var(--cf-accent-line)}',
+	'.cf-tone-ok{color:var(--cf-ok-txt);background:var(--cf-ok-soft)}',
+	'.cf-tone-warn{color:var(--cf-warn-txt);background:var(--cf-warn-soft)}',
+	'.cf-tone-bad{color:var(--cf-bad-txt);background:var(--cf-bad-soft)}',
+	'.cf-tone-info{color:var(--cf-info-txt);background:var(--cf-info-soft)}',
+	'@media (prefers-reduced-motion: no-preference){',
+	'  .cf-tone-run .cf-dot{animation:cf-pulse 1.4s var(--cf-ease) infinite}',
+	'  @keyframes cf-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.7)}}',
+	'}',
+	/* 按钮：主操作用强调色，次要按钮保持主题原样；图标是同一个几何风格 */
+	'.cf-btn-row{display:flex;align-items:center;gap:var(--cf-s2);flex-wrap:wrap}',
+	'.cbi-button.cf-main{background:var(--cf-accent);border-color:var(--cf-accent);color:#fff;',
+	'  font-weight:600;box-shadow:var(--cf-sh1)}',
+	'.cbi-button.cf-main:hover{filter:brightness(1.06)}',
+	'.cbi-button[disabled]{opacity:.45;cursor:not-allowed}',
+	'.cf-ico{display:inline-block;width:1em;text-align:center;font-style:normal;opacity:.8;margin-right:.35em}',
+	'.cbi-button.cf-main .cf-ico{opacity:1}',
+	'.cbi-button.cf-busy{position:relative;pointer-events:none;opacity:.7}',
+	/* 页内提示条：没有 toast 的那版 LuCI 全靠这一条，所以做成能看见的横幅 */
+	'.cf-notice{display:flex;align-items:flex-start;gap:.5em;margin-top:var(--cf-s2);padding:.5em .75em;',
+	'  border-radius:var(--cf-r2);font-size:var(--cf-sm);border:1px solid var(--cf-line);background:var(--cf-soft)}',
+	'.cf-notice.danger{color:var(--cf-bad-txt);background:var(--cf-bad-soft);border-color:currentColor}',
+	'.cf-notice.warning{color:var(--cf-warn-txt);background:var(--cf-warn-soft);border-color:currentColor}',
+	'.cf-notice.info{color:var(--cf-info-txt);background:var(--cf-info-soft);border-color:currentColor}',
+	/* meta chips：原来八段信息挤在一个 <p> 里，拆成能扫读的一排 */
+	'.cf-meta{display:flex;flex-wrap:wrap;gap:var(--cf-s2);margin:var(--cf-s3) 0}',
+	'.cf-chip{display:inline-flex;align-items:baseline;gap:.3em;padding:.25em .6em;border-radius:var(--cf-r1);',
+	'  font-size:var(--cf-xs);background:var(--cf-soft);border:1px solid var(--cf-line);white-space:nowrap}',
+	'.cf-chip-k{opacity:.7}',
+	'.cf-chip-v{font-weight:600;font-variant-numeric:tabular-nums}',
+	'.cf-chip.warn{color:var(--cf-warn-txt);background:var(--cf-warn-soft)}',
+	/* 数字：表格里所有数字列都要能竖着比，等宽数字是必须的 */
+	'.cf-tablewrap{overflow-x:auto;max-width:100%;-webkit-overflow-scrolling:touch}',
+	'.cf-nums{font-variant-numeric:tabular-nums}',
+	'.cf-row-top > .td:first-child,.cf-row-top > td:first-child{box-shadow:inset 3px 0 0 var(--cf-accent)}',
+	/* 空态：一句话说清为什么空，再给一个能立刻点下去的按钮 */
+	'.cf-empty{display:flex;align-items:flex-start;gap:var(--cf-s3);padding:var(--cf-s5) var(--cf-s4);',
+	'  border:1px dashed var(--cf-line);border-radius:var(--cf-r3);background:var(--cf-soft);margin:var(--cf-s3) 0}',
+	'.cf-empty-ico{flex:0 0 auto;width:22px;height:22px;border-radius:50%;border:2px solid var(--cf-line);',
+	'  border-top-color:var(--cf-accent);margin-top:.15em}',
+	'@media (prefers-reduced-motion: no-preference){',
+	'  .cf-empty.is-spin .cf-empty-ico{animation:cf-spin 1.1s linear infinite}',
+	'  @keyframes cf-spin{to{transform:rotate(360deg)}}',
+	'}',
+	'.cf-empty-txt{flex:1 1 auto;min-width:0;font-size:var(--cf-sm);line-height:1.65}',
+	'.cf-empty-act{flex:0 0 auto}',
+	/* 帮助标记 / 折叠头：图标一律 CSS 画，避免 ⓘ ▾ 这些字形在各平台不一样 */
+	'.cf-help-mark{display:inline-flex;align-items:center;justify-content:center;width:1.25em;height:1.25em;',
+	'  margin-left:.35em;border-radius:50%;font-size:.85em;font-style:italic;font-weight:700;cursor:pointer;',
+	'  border:1px solid var(--cf-line);background:var(--cf-soft);opacity:.7;transition:opacity var(--cf-dur-fast)}',
+	'.cf-help-mark:hover,.cf-help-mark:focus-visible{opacity:1;outline:none;box-shadow:0 0 0 2px var(--cf-accent-soft)}',
+	'.cf-help-body{display:block;margin-top:var(--cf-s2);padding:.5em .7em;border-radius:var(--cf-r2);',
+	'  background:var(--cf-soft);border:1px solid var(--cf-line);font-size:var(--cf-xs);line-height:1.7;opacity:.92}',
+	'.cf-fold{float:right;display:inline-flex;align-items:center;justify-content:center;',
+	'  width:1.6em;height:1.6em;margin-left:.4em;border-radius:var(--cf-r1);opacity:.55}',
+	'.cf-fold:hover{opacity:1;background:var(--cf-soft)}',
+	'.cf-chev{display:inline-block;width:.36em;height:.36em;border-right:1.6px solid currentColor;',
+	'  border-bottom:1.6px solid currentColor;transform:rotate(45deg);transform-origin:60% 60%;',
+	'  transition:transform var(--cf-dur-fast) var(--cf-ease)}',
+	'.cf-fold-closed .cf-chev{transform:rotate(-45deg)}',
+	'.cf-foldbar{display:flex;align-items:center;gap:var(--cf-s2);margin:0 0 var(--cf-s2);font-size:var(--cf-xs)}',
+	'.cf-link{cursor:pointer;color:var(--cf-info-txt);border:0;background:none;padding:.2em .35em;',
+	'  border-radius:var(--cf-r1);font-size:var(--cf-xs)}',
+	'.cf-link:hover{background:var(--cf-soft)}',
+	'.cf-pw-toggle{background:transparent;border-color:transparent;color:inherit;opacity:.55;min-width:1.9em;padding:0 .35em}',
+	'.cf-foot{font-size:var(--cf-xs);opacity:.75;line-height:1.7;margin-top:var(--cf-s2)}',
+	'.cf-src-head{display:flex;align-items:center;gap:var(--cf-s2);flex-wrap:wrap;margin-bottom:var(--cf-s2)}',
+	/* 窄屏：按钮撑到 44px 好按，卡片头改成上下两行 */
+	'@media (max-width:720px){',
+	'  .cf-head{flex-direction:column;align-items:stretch}',
+	'  .cf-head-r{justify-content:flex-start}',
+	'  .cbi-button{min-height:44px;padding:.5em .9em}',
+	'  .cf-empty{flex-direction:column;align-items:stretch}',
+	'  .cf-meta{gap:6px}',
+	'}',
+	'@media (prefers-reduced-motion: reduce){',
+	'  .cf-chev,.cf-help-mark{transition:none}',
+	'  .cf-tone-run .cf-dot,.cf-empty.is-spin .cf-empty-ico{animation:none}',
+	'}'
+].join('\n');
+
+/* 注入样式：stub 环境里没有真正的 document，直接吃掉异常别把视图带崩 */
+function injectStyle() {
+	try {
+		if (!document || !document.createElement || !document.head)
+			return;
+		if (document.getElementById('cf-ipcheck-style'))
+			return;
+		var el = document.createElement('style');
+		el.id = 'cf-ipcheck-style';
+		el.textContent = CSS;
+		document.head.appendChild(el);
+	} catch (e) {
+		/* 注入失败最多是没样式，功能照走 */
+	}
+}
+
 var callExec = rpc.declare({
 	object: 'file',
 	method: 'exec',
@@ -24,7 +170,8 @@ var callExec = rpc.declare({
 });
 
 /* 模块级句柄：结果块每次刷新都会整块换掉新节点，定时器不能挂在它身上 */
-var nodes = { table: null, srcHost: null, srcBlock: null, status: null, notice: null };
+var nodes = { table: null, srcHost: null, srcBlock: null, status: null, notice: null,
+	pill: null, pillText: null, btnRun: null, btnStop: null };
 var poll = null;
 var inflight = null;
 /* 最近一次渲染榜单用的 items：「复制榜单 IP」是事件回调里读的，
@@ -68,24 +215,20 @@ function attachMark(el, full) {
 		role: 'button',
 		'aria-expanded': 'false',
 		title: full,
-		style: 'margin-left:.35em;opacity:.55;cursor:pointer'
-	}, 'ⓘ');
+		'aria-label': _('展开完整说明')
+	}, 'i');
 	var body = null;
 
 	function toggle(ev) {
 		ev.preventDefault();
 		ev.stopPropagation();
 		if (!body) {
-			body = E('div', {
-				class: 'cf-help-body',
-				style: 'display:block;margin-top:.3em;padding:.35em .55em;' +
-					'background:rgba(128,128,128,.13);border-radius:.25em;opacity:.9'
-			}, full);
+			body = E('div', { class: 'cf-help-body' }, full);
 			el.appendChild(body);
 		}
 		else {
 			var open = body.style.display !== 'none';
-			body.style.display = open ? 'none' : 'block';
+			body.style.display = open ? 'none' : '';
 		}
 		mark.setAttribute('aria-expanded', body.style.display === 'none' ? 'false' : 'true');
 	}
@@ -425,13 +568,22 @@ function countsText(counts) {
 	return parts.length ? ' · ' + _('失败分类') + '：' + parts.join(' · ') : '';
 }
 
-/* 源检测块挂回结果卡片末尾。结果块每轮刷新都被整体换掉，所以这个挂载要能重复调。 */
-function mountSrcBlock() {
-	if (!nodes.srcBlock || !nodes.table || !nodes.table.querySelector)
-		return;
-	var host = nodes.table.querySelector('.cbi-section-node');
-	if (host && nodes.srcBlock.parentNode !== host)
-		host.appendChild(nodes.srcBlock);
+/* 胶囊文字 / 副行 / 按钮启停，三处都由这一个函数刷。
+ * 以前只改 <em> 那一行文字，胶囊和按钮没人管，于是「停止本轮」在空闲时照样能点、
+ * 点了也没任何反馈（引擎那边其实什么都没停）。按钮能不能点，必须由状态来决定。 */
+function syncStatus(st) {
+	var label = stateLabel(st) +
+		(st.intercepted == 1 ? ' · ' + _('出口被接管，数字不可信') : '');
+	if (nodes.pill) {
+		nodes.pill.className = 'cf-pill cf-tone-' + stateTone(st);
+		nodes.pillText.textContent = label;
+	}
+	if (nodes.status)
+		nodes.status.textContent = String(scheduleText(st)).replace(/^\s*·\s*/, '');
+	if (nodes.btnStop)
+		nodes.btnStop.disabled = st.state !== 'running';
+	if (nodes.btnRun)
+		nodes.btnRun.disabled = st.state === 'running';
 }
 
 /* LuCI 的密码框带一个灰底实心的「∗」按钮（真机量过 32×40，rgb(136,152,170) 底 +
@@ -442,12 +594,9 @@ function quietPasswordToggles(root) {
 		return;
 	var btns = root.querySelectorAll('input[type="password"] ~ button, input[type="password"] + * button');
 	Array.prototype.forEach.call(btns, function (b) {
-		b.style.background = 'transparent';
-		b.style.borderColor = 'transparent';
-		b.style.color = 'inherit';
-		b.style.opacity = '.55';
-		b.style.minWidth = '1.9em';
-		b.style.padding = '0 .35em';
+		/* 样式收进 .cf-pw-toggle，不再逐条写 inline：inline 会盖过主题自己的
+		 * 按钮样式，深色主题下那条 inherit 不一定是对的。 */
+		b.className = String(b.className) + ' cf-pw-toggle';
 		b.setAttribute('title', _('显示 / 隐藏令牌'));
 	});
 }
@@ -457,10 +606,13 @@ function quietPasswordToggles(root) {
  * 点标题就收起/展开它后面那块 .cbi-section-node。
  * 折叠状态按节名记在 localStorage：不记的话每次进页都要重新点开他常改的那几节。 */
 var FOLD_KEY = 'cf-ipcheck.fold.';
+/* 每一节的开合函数存一份，给顶部那条「全部展开 / 全部收起」用 */
+var folders = [];
 
 function makeSectionsCollapsible(root, defaults) {
 	if (!root || !root.querySelectorAll)
 		return;
+	folders = [];
 	Array.prototype.forEach.call(root.querySelectorAll('.cbi-section > h3'), function (h3) {
 		if (h3.querySelector('.cf-fold'))
 			return;
@@ -479,21 +631,27 @@ function makeSectionsCollapsible(root, defaults) {
 			class: 'cf-fold',
 			tabindex: '0',
 			role: 'button',
-			style: 'float:right;cursor:pointer;opacity:.5;font-weight:400;padding:0 .2em',
-			title: _('展开 / 收起这一节')
-		}, '▾');
+		class: 'cf-fold',
+		tabindex: '0',
+		role: 'button',
+		title: _('展开 / 收起这一节')
+	}, E('i', { class: 'cf-chev' }));
 
-		function set(v) {
-			open = v;
-			body.style.display = open ? '' : 'none';
-			mark.textContent = open ? '▾' : '▸';
-			h3.setAttribute('aria-expanded', open ? 'true' : 'false');
-			try {
-				window.localStorage.setItem(FOLD_KEY + name, open ? '1' : '0');
-			} catch (e) {}
-		}
+	function set(v) {
+		open = v;
+		body.style.display = open ? '' : 'none';
+		/* 箭头交给 CSS 画（.cf-chev + .cf-fold-closed 转 45°），不用 ▾ / ▸
+		 * 这两个字符：不同字体下它们的基线和高低全不一样，看着像没对齐。 */
+		h3.className = String(h3.className).replace(/ ?cf-fold-closed/g, '') +
+			(open ? '' : ' cf-fold-closed');
+		h3.setAttribute('aria-expanded', open ? 'true' : 'false');
+		try {
+			window.localStorage.setItem(FOLD_KEY + name, open ? '1' : '0');
+		} catch (e) {}
+	}
 
-		h3.style.cursor = 'pointer';
+	folders.push(set);
+	h3.style.cursor = 'pointer';
 		h3.addEventListener('click', function () { set(!open); });
 		mark.addEventListener('keydown', function (ev) {
 			if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') {
@@ -504,6 +662,83 @@ function makeSectionsCollapsible(root, defaults) {
 		h3.appendChild(mark);
 		set(open);
 	});
+}
+
+/* 状态 → 配色，只在这一处映射。页面上不再出现第二处 if (state==…) 判颜色：
+ * 否则以后加一种状态，胶囊、按钮、提示条三处都要各改一遍，必漏一处。 */
+function stateTone(st) {
+	switch (st.state) {
+		case 'running':
+			return 'run';
+		case 'never_run':
+			return 'idle';
+		case 'error':
+		case 'unreachable':
+		case 'parse_error':
+			return 'bad';
+		default:
+			return st.intercepted == 1 ? 'warn' : 'ok';
+	}
+}
+
+/* meta 行：原来八段信息挤在一个 <p> 里，扫读全靠眼睛找中间那个「·」。
+ * 拆成一排 chip 之后间隔交给 CSS 的 gap —— 注意每一段的文字原样保留
+ * （含「上限 256」「timeout 9」这类连续片段），viewtest 是按子串匹配这段的。 */
+function metaChips(st) {
+	var out = [];
+	function chip(text, tone) {
+		var s = String(text).replace(/^\s*·\s*/, '');
+		var i = s.indexOf(' ');
+		var cls = 'cf-chip' + (tone ? ' ' + tone : '');
+		if (i < 0) {
+			out.push(E('span', { class: cls }, s));
+			return;
+		}
+		out.push(E('span', { class: cls }, [
+			E('span', { class: 'cf-chip-k' }, s.slice(0, i + 1)),
+			E('span', { class: 'cf-chip-v cf-nums' }, s.slice(i + 1))
+		]));
+	}
+	chip(_('候选 %s 个').format(st.pool != null ? st.pool : '—'));
+	chip(_('达标 %s 个').format(st.qualified != null ? st.qualified : (st.items || []).length));
+	chip(_('榜单 %s 条').format(st.usable != null ? st.usable : (st.items || []).length));
+	if (countsText(st.counts))
+		chip(countsText(st.counts), 'warn');
+	chip(_('探测域名 %s').format(st.domains || '—'));
+	chip(_('完成于 %s').format(fmtTime(st.finished || st.started)));
+	if (staleText(st))
+		chip(staleText(st), 'warn');
+	if (cfgText(st))
+		chip(cfgText(st));
+	return out;
+}
+
+/* 空态：原来空表只有一行字，既没说清「为什么空」也没给下一步。
+ * 这里补一句原因 + 一个能直接点下去的按钮。按钮是现建的，不复用操作条上那几个
+ * 节点 —— DOM 节点挂到第二个位置会从第一个位置上被摘走。 */
+function renderEmpty(st) {
+	var act = null;
+	if (st.state === 'running') {
+		act = null;
+	}
+	else if (st.state === 'error' && st.reason === 'empty_pool') {
+		act = E('button', { class: 'cbi-button', type: 'button' }, _('检测源可用性'));
+		act.onclick = function () { doCheck(this); return false; };
+	}
+	else if (st.state === 'unreachable' || st.state === 'parse_error') {
+		act = E('button', { class: 'cbi-button', type: 'button' }, _('重新拉取状态'));
+		act.onclick = function () { doRefresh(this); return false; };
+	}
+	else {
+		act = E('button', { class: 'cbi-button cbi-button-positive cf-main', type: 'button' }, _('立即测速'));
+		act.onclick = function () { doRun(this); return false; };
+	}
+
+	return E('div', { class: 'cf-empty' + (st.state === 'running' ? ' is-spin' : '') }, [
+		E('i', { class: 'cf-empty-ico' }),
+		E('div', { class: 'cf-empty-txt' }, emptyRowText(st)),
+		act ? E('div', { class: 'cf-empty-act' }, act) : ''
+	]);
 }
 
 /* 结果表：单独抽出来，按钮触发后只重画这一块，不整页闪 */
@@ -528,13 +763,14 @@ function renderTable(st) {
 	}
 	lastItems = st.items || [];
 
-	var tbody = E('tbody', {});
-
+	/* 空表不再画一张只有表头的空壳 —— 那看着像「加载失败」。
+	 * 改成一个说清原因、并给下一步的空态块。 */
+	var body;
 	if (!st.items.length) {
-		tbody.appendChild(E('tr', {}, [
-			E('td', { colspan: String(head.length), class: 'center' }, emptyRowText(st))
-		]));
-	} else {
+		body = [renderEmpty(st)];
+	}
+	else {
+		var tbody = E('tbody', {});
 		for (var i = 0; i < st.items.length; i++) {
 			var it = st.items[i];
 			var vals = [
@@ -550,7 +786,9 @@ function renderTable(st) {
 			];
 			if (withDom)
 				vals.push(it.domain || '—');
-			tbody.appendChild(E('tr', {}, vals.map(function (v, c) {
+			/* 第一名左侧那道竖条：榜单按总耗时升序排，第一行就是「现在该用哪个」，
+			 * 值得单独标出来，不必让人每次都从数字里比。 */
+			tbody.appendChild(E('tr', { class: i === 0 ? 'cf-row-top' : '' }, vals.map(function (v, c) {
 				return E('td', {
 					class: colCls[c] || 'left',
 					/* 与表头同一左右内边距：都是右对齐，边距不一致时表头数字和
@@ -559,23 +797,12 @@ function renderTable(st) {
 				}, v);
 			})));
 		}
-	}
-
-	var meta = _('候选 %1$s 个 · 达标 %2$s 个 · 榜单 %5$s 条%6$s · 探测域名 %3$s · 完成于 %4$s%7$s%8$s')
-		.replace('%1$s', st.pool != null ? st.pool : '—')
-		.replace('%2$s', st.qualified != null ? st.qualified : (st.items || []).length)
-		.replace('%5$s', st.usable != null ? st.usable : (st.items || []).length)
-		.replace('%6$s', countsText(st.counts))
-		.replace('%3$s', st.domains || '—')
-		.replace('%4$s', fmtTime(st.finished || st.started))
-		.replace('%7$s', staleText(st))
-		.replace('%8$s', cfgText(st));
-
-	return E('div', { class: 'cbi-section', id: 'cf-ipcheck-result' }, [
-		E('div', { class: 'cbi-section-node' }, [
-			noticeFor(st),
-			E('p', { class: 'small' }, meta),
-			E('div', { class: 'table cbi-section-table', style: 'width:auto;max-width:100%' }, [
+		/* 外层 .cf-tablewrap 只负责窄屏横向滚动；表格本身按内容收缩。
+		 * 收缩必须写 max-content 而不是 auto：真机 A/B 量过，display:table 的
+		 * width:auto 在 Chrome 里是「铺满可用宽」，铺满就会把多出来的宽度摊到
+		 * 每一列上，列与列之间裂出 173px 的断层（r15 就是踩的这个）。 */
+		body = [E('div', { class: 'cf-tablewrap' }, [
+			E('div', { class: 'table cbi-section-table cf-nums', style: 'width:max-content;max-width:100%' }, [
 				E('thead', {}, [
 					E('tr', { class: 'tr table-titles' },
 						head.map(function (t, c) {
@@ -586,9 +813,12 @@ function renderTable(st) {
 						}))
 				]),
 				tbody
-			]),
-			attachMark(E('p', { class: 'small' }, [
-				E('abbr', { title: _('Time To First Byte，首字节时间') }, _('TTFB')),
+			])
+		])];
+	}
+
+	var foot = attachMark(E('p', { class: 'cf-foot' }, [
+		E('abbr', { title: _('Time To First Byte，首字节时间') }, _('TTFB')),
 				_(' 列 = 首字节耗时，排序看「总计」，两道门槛都过才算达标；' +
 				  '「下载 MB/s」只对榜单前若干个 IP 实测、只作参考不参与排序。')
 			]), _('TCP 握手 = 与对端完成三次连接；TLS 握手 = 从连上到 TLS 协商完成（含证书校验）；' +
@@ -598,8 +828,15 @@ function renderTable(st) {
 				  '排序按总计升序、同值再看 TTFB；total_limit 与 ttfb_limit 两道门槛都过才算达标。' +
 				  '多域名时每个 IP 只留表现最好那次（连带那个域名），所以达标数不会超过候选池。' +
 				  '「下载 MB/s」是榜单出来后只对前若干个 IP 串行拉一次大文件测出来的吞吐（十进制 MB/s，1 MB = 1000 KB）—— ' +
-				  '延迟接近的 IP 吞吐可以差几十倍，但单次测量抖动大，所以只拿来参考、不参与排序；没测或测失败显示 —。'))
-		])
+				  '延迟接近的 IP 吞吐可以差几十倍，但单次测量抖动大，所以只拿来参考、不参与排序；没测或测失败显示 —。'));
+
+	/* 拼的时候用 concat 摊平：LuCI 的 E() 只遍历一层子节点，塞个数组进去
+	 * 会直接拿数组去 appendChild 抛异常。 */
+	return E('div', { class: 'cbi-section', id: 'cf-ipcheck-result' }, [
+		E('div', { class: 'cbi-section-node' }, [
+			noticeFor(st),
+			E('div', { class: 'cf-meta' }, metaChips(st))
+		].concat(body).concat([foot]))
 	]);
 }
 
@@ -618,13 +855,9 @@ function refreshResult() {
 		if (old && old.parentNode)
 			old.parentNode.replaceChild(next, old);
 		nodes.table = next;
-		mountSrcBlock();
 		/* 状态行也得跟着改：以前只换表格，点了「立即测速」之后表格里写着
 		 * 「正在测速」，上面那行还停在「空闲」，两处互相打脸。 */
-		if (nodes.status)
-			nodes.status.textContent = stateLabel(st) +
-				(st.intercepted == 1 ? ' · ' + _('出口被接管，数字不可信') : '') +
-				scheduleText(st);
+		syncStatus(st);
 		return { node: next, state: st.state, intercepted: st.intercepted };
 	}, function () {
 		inflight = null;
@@ -659,6 +892,73 @@ function startPoll() {
 	}, 5000);
 }
 
+/* 按钮动作单独成函数：操作条上的按钮和空态里的按钮要调同一段逻辑，
+ * 而 DOM 节点塞进第二个位置就会从第一个位置上被摘走，所以不能复用同一个节点，
+ * 只能复用同一段代码。 */
+function busy(btn, on) {
+	if (!btn)
+		return;
+	btn.disabled = !!on;
+	btn.className = String(btn.className).replace(/ ?cf-busy/g, '') + (on ? ' cf-busy' : '');
+}
+
+function doRun(btn) {
+	busy(btn, true);
+	return execCfIpcheck(['run-now']).then(function (out) {
+		busy(btn, false);
+		if (out === null) {
+			notify(_('无法启动'), _('执行 %s 失败：包没装好，或 rpcd 的 ACL 没放开 exec。').format(CMD), 'error');
+			return;
+		}
+		notify(_('已启动一轮测速'), out);
+		/* 无条件开始轮询，不看这一次读到的 state：run-now 只是把后台进程
+		 * 甩出去，那一轮要几毫秒后才把 "running" 写进 status.json，
+		 * 这里抢跑一次就可能读到上一轮的 "done"，于是永远没人启动轮询。 */
+		refreshResult().then(function () { startPoll(); });
+	}, function () {
+		busy(btn, false);
+	});
+}
+
+function doStop(btn) {
+	busy(btn, true);
+	return execCfIpcheck(['stop']).then(function (out) {
+		busy(btn, false);
+		if (out === null)
+			notify(_('无法请求停止'), _('执行 %s 失败。').format(CMD), 'error');
+		else
+			notify(_('已请求停止'), _('当前这轮收尾后不再继续探测'), 'warning');
+		refreshResult();
+	}, function () {
+		busy(btn, false);
+		notify(_('无法请求停止'), _('执行 %s 失败。').format(CMD), 'error');
+	});
+}
+
+function doRefresh(btn) {
+	busy(btn, true);
+	return refreshResult().then(function () { busy(btn, false); },
+		function () { busy(btn, false); });
+}
+
+function doCopy() {
+	var ips = [];
+	for (var i = 0; i < lastItems.length; i++) {
+		if (lastItems[i].ip)
+			ips.push(String(lastItems[i].ip));
+	}
+	if (!ips.length) {
+		notify(_('没有可复制的 IP'), _('当前榜单是空的；先跑一轮，或放宽 TTFB / 总耗时门槛。'), 'warning');
+		return;
+	}
+	copyText(ips.join('\n')).then(function (ok) {
+		if (ok)
+			notify(_('已复制 %s 个 IP').format(String(ips.length)), _('一行一个，可直接粘进客户端。'), 'info');
+		else
+			notify(_('复制失败'), _('浏览器不让写剪贴板；榜单里的 IP 请手工复制。'), 'warning');
+	});
+}
+
 /* 源可用性检测：逐条 URL 看 HTTP 状态、提取到多少 IPv4、其中多少落在 CF 官方段内。
  * 后两列是收录标准 —— 段内占比掉下来就说明源换内容了（比如开始吐中转 IP）。 */
 function renderSources(rows, why) {
@@ -691,21 +991,31 @@ function renderSources(rows, why) {
 		]));
 	}
 
-	return E('div', { class: 'table cbi-section-table' }, [
-		E('thead', {}, [E('tr', { class: 'tr table-titles' },
-			head.map(function (t) { return E('th', { class: 'th' }, t); }))]),
-		tbody
+	/* 源 URL 很长，窄屏必然溢出：外层给一个横向滚动容器，别把整页撑宽。 */
+	return E('div', { class: 'cf-tablewrap' }, [
+		E('div', { class: 'table cbi-section-table cf-nums' }, [
+			E('thead', {}, [E('tr', { class: 'tr table-titles' },
+				head.map(function (t) { return E('th', { class: 'th' }, t); }))]),
+			tbody
+		])
 	]);
 }
 
-function checkSources(btn) {
+function doCheck(btn) {
 	var host = nodes.srcHost;
-	if (btn) {
-		btn.disabled = true;
-		btn.textContent = _('检测中…');
+	if (btn)
+		busy(btn, true);
+	/* 加载态用节点而不是 innerHTML：原来那段是把文案拼进 HTML 字符串，
+	 * 源 URL 里万一有 & 之类的字符就得自己转义；而且它跟空态、错误态长得
+	 * 完全不一样，三种状态在页面上像是三个组件拼出来的。 */
+	if (host) {
+		host.innerHTML = '';
+		host.appendChild(E('div', { class: 'cf-empty is-spin' }, [
+			E('i', { class: 'cf-empty-ico' }),
+			E('div', { class: 'cf-empty-txt' },
+				_('正在逐个拉取源并比对 Cloudflare 官方网段（最多十几秒）…'))
+		]));
 	}
-	if (host)
-		host.innerHTML = '<em>' + _('正在逐个拉取源并比对 Cloudflare 官方网段（最多十几秒）…') + '</em>';
 
 	function done(out) {
 		var kids = [];
@@ -739,7 +1049,7 @@ function checkSources(btn) {
 				host.appendChild(kids[i]);
 		}
 		if (btn) {
-			btn.disabled = false;
+			busy(btn, false);
 			btn.textContent = _('重新检测');
 		}
 	}
@@ -762,131 +1072,89 @@ return view.extend({
 		/* ---- 按钮：先建节点、直接挂事件，再拼进操作条 ----
 		 * 不走 getElementById + 重试那一套：这个视图的节点是 render() 返回之后
 		 * 才进 DOM 的，靠 id 找就得赌时机（原先是 40 次 × 50ms）。拿着节点引用
-		 * 绑事件跟 DOM 挂载时机彻底解耦，结果块重画也影响不到它们。 */
+		 * 绑事件跟 DOM 挂载时机彻底解耦，结果块重画也影响不到它们。
+		 *
+		 * 图标是同一套几何字符（▶ ■ ↻ ⧉），走 .cf-ico 统一宽高与透明度 ——
+		 * 不引图标库，LuCI 自己也没有图标体系，加了反而跟主题不搭。 */
 		var btnRun = E('button', {
 			id: 'cf-ipcheck-run',
-			class: 'cbi-button cbi-button-positive',
+			class: 'cbi-button cbi-button-positive cf-main',
 			type: 'button'
-		}, _('立即测速'));
+		}, [E('i', { class: 'cf-ico' }, '▶'), _('立即测速')]);
 
 		var btnStop = E('button', {
 			id: 'cf-ipcheck-stop',
 			class: 'cbi-button',
 			type: 'button'
-		}, _('停止本轮'));
+		}, [E('i', { class: 'cf-ico' }, '■'), _('停止本轮')]);
 
 		var btnRefresh = E('button', {
 			id: 'cf-ipcheck-refresh',
 			class: 'cbi-button',
 			type: 'button'
-		}, _('刷新'));
+		}, [E('i', { class: 'cf-ico' }, '↻'), _('刷新')]);
 
 		var btnCopy = E('button', {
 			id: 'cf-ipcheck-copy',
 			class: 'cbi-button',
 			type: 'button'
-		}, _('复制榜单 IP'));
+		}, [E('i', { class: 'cf-ico' }, '⧉'), _('复制榜单 IP')]);
 
 		var btnCheck = E('button', {
 			id: 'cf-ipcheck-check-sources',
 			class: 'cbi-button',
 			type: 'button'
-		}, _('检测源可用性'));
+		}, [E('i', { class: 'cf-ico' }, '⌕'), _('检测源可用性')]);
 
-		btnRun.onclick = function () {
-			var self = this;
-			self.disabled = true;
-			execCfIpcheck(['run-now']).then(function (out) {
-				self.disabled = false;
-				if (out === null) {
-					notify(_('无法启动'), _('执行 %s 失败：包没装好，或 rpcd 的 ACL 没放开 exec。').format(CMD), 'error');
-					return;
-				}
-				notify(_('已启动一轮测速'), out);
-				/* 无条件开始轮询，不看这一次读到的 state：run-now 只是把后台进程
-				 * 甩出去，那一轮要几毫秒后才把 "running" 写进 status.json，
-				 * 这里抢跑一次就可能读到上一轮的 "done"，于是永远没人启动轮询。 */
-				refreshResult().then(function () { startPoll(); });
-			}, function () {
-				self.disabled = false;
-			});
-			return false;
-		};
+		nodes.btnRun = btnRun;
+		nodes.btnStop = btnStop;
 
-		btnStop.onclick = function () {
-			execCfIpcheck(['stop']).then(function (out) {
-				if (out === null)
-					notify(_('无法请求停止'), _('执行 %s 失败。').format(CMD), 'error');
-				else
-					notify(_('已请求停止'), _('当前这轮收尾后不再继续探测'), 'warning');
-				refreshResult();
-			}, function () {
-				notify(_('无法请求停止'), _('执行 %s 失败。').format(CMD), 'error');
-			});
-			return false;
-		};
+		btnRun.onclick = function () { doRun(this); return false; };
+		btnStop.onclick = function () { doStop(this); return false; };
+		btnRefresh.onclick = function () { doRefresh(this); return false; };
+		btnCopy.onclick = function () { doCopy(); return false; };
+		btnCheck.onclick = function () { doCheck(this); return false; };
 
-		btnRefresh.onclick = function () {
-			refreshResult();
-			return false;
-		};
-
-		btnCopy.onclick = function () {
-			var ips = [];
-			for (var i = 0; i < lastItems.length; i++) {
-				if (lastItems[i].ip)
-					ips.push(String(lastItems[i].ip));
-			}
-			if (!ips.length) {
-				notify(_('没有可复制的 IP'), _('当前榜单是空的；先跑一轮，或放宽 TTFB / 总耗时门槛。'), 'warning');
-				return false;
-			}
-			copyText(ips.join('\n')).then(function (ok) {
-				if (ok)
-					notify(_('已复制 %s 个 IP').format(String(ips.length)), _('一行一个，可直接粘进客户端。'), 'info');
-				else
-					notify(_('复制失败'), _('浏览器不让写剪贴板；榜单里的 IP 请手工复制。'), 'warning');
-			});
-			return false;
-		};
-
-		btnCheck.onclick = function () {
-			checkSources(this);
-			return false;
-		};
-
-		/* ---- 顶部操作条 ---- */
-		nodes.status = E('em', {}, stateLabel(st) +
-			(st.intercepted == 1 ? ' · ' + _('出口被接管，数字不可信') : '') +
-			scheduleText(st));
+		/* ---- 顶部状态卡 ----
+		 * 原来是「状态 / 操作 / 提示」三行 cbi-value，拿表单行伪装成工具栏：
+		 * 三个标签占了左边一整列宽，纵向还平白多出两行；「提示」那行为了不跳版
+		 * 只能常驻一个空占位。改成一行：左边状态胶囊 + 副信息，右边按钮组，
+		 * 提示条按需出现（没有 toast 的那版 LuCI 全靠它）。 */
+		nodes.pillText = E('span', {}, stateLabel(st) +
+			(st.intercepted == 1 ? ' · ' + _('出口被接管，数字不可信') : ''));
+		nodes.pill = E('span', { class: 'cf-pill cf-tone-' + stateTone(st) }, [
+			E('i', { class: 'cf-dot' }), nodes.pillText
+		]);
+		nodes.status = E('em', { class: 'cf-sub' },
+			String(scheduleText(st)).replace(/^\s*·\s*/, ''));
 		nodes.notice = E('div', {
 			class: 'cf-notice small',
-			style: 'display:none;margin-top:.15em'
+			style: 'display:none'
 		});
 
 		var bar = E('div', { class: 'cbi-section', id: 'cf-ipcheck-actions' }, [
 			E('div', { class: 'cbi-section-node' }, [
-				E('div', { class: 'cbi-value' }, [
-					E('label', { class: 'cbi-value-title' }, _('状态')),
-					E('div', { class: 'cbi-value-field' }, nodes.status)
-				]),
-				E('div', { class: 'cbi-value' }, [
-					E('label', { class: 'cbi-value-title' }, _('操作')),
-					E('div', { class: 'cbi-value-field' }, [
-						btnRun, ' ', btnStop, ' ', btnRefresh, ' ', btnCopy
+				E('div', { class: 'cf-head' }, [
+					E('div', { class: 'cf-head-l' }, [
+						E('span', { class: 'cf-t' }, _('Cloudflare 优选 IP 实测')),
+						nodes.pill,
+						nodes.status
+					]),
+					E('div', { class: 'cf-head-r cf-btn-row' }, [
+						btnRun, btnStop, btnRefresh, btnCopy
 					])
 				]),
-				/* 这台机器上的 LuCI 没有 toast，所有 notify() 最终落到这一行 */
-				E('div', { class: 'cbi-value' }, [
-					E('label', { class: 'cbi-value-title' }, _('提示')),
-					E('div', { class: 'cbi-value-field' }, nodes.notice)
-				])
+				nodes.notice
 			])
 		]);
 
-		/* ---- 配置表单 ---- */
+		syncStatus(st);
+
+		/* ---- 配置表单 ----
+		 * Map 标题只写「配置」：页面身份（Cloudflare 优选 IP 实测）已经在最上面
+		 * 那张状态卡里了，这里再写一遍全名，一页里同名标题出现两次。 */
 		var m = new form.Map('cf_ipcheck',
-			_('Cloudflare 优选 IP 实测'),
+			_('配置'),
 			_('用带真实 SNI 的 HTTPS 探测实测，判定口径见下方榜单说明。'));
 
 		var s = m.section(form.TypedSection, 'global', _('基本设置'));
@@ -1135,7 +1403,7 @@ return view.extend({
 				  '两处都填时以上面的 gist_token 为准。')));
 		o.default = '/etc/cf-ipcheck.token';
 
-		/* ---- 拼页面：操作条 + 结果表 + 源体检 + 表单 ---- *
+		/* ---- 拼页面：状态卡 + 结果卡 + 源体检卡 + 表单 ---- *
 		 * m.render() 给的是 Promise，不是节点：不能直接塞进返回数组里。
 		 * 先把 Map 节点 resolve 出来，再拼成纯节点数组返回。
 		 */
@@ -1143,28 +1411,47 @@ return view.extend({
 
 		/* 源可用性检测：不自动跑（十来个源逐个拉太慢），点按钮才检测 */
 		nodes.srcHost = E('div', { id: 'cf-ipcheck-sources-host' },
-			attachMark(E('p', { class: 'small' },
+			attachMark(E('p', { class: 'cf-foot' },
 				_('逐条实拉，列出 HTTP 状态、提取到的 IPv4 数与落在 CF 官方段内的比例。')),
 				_('逐条 URL 实拉一次，列出 HTTP 状态、提取到的 IPv4 数量，以及其中落在 Cloudflare 官方网段内的比例。' +
 				  '段内占比掉到 90% 以下通常说明源改内容了（例如开始提供别人自己的中转 IP），' +
 				  '拉不到的那条会标黄，引擎本轮会跳过它并记日志。')));
 
-		/* 源检测块并进结果卡片：以前它是独立一张卡，跟榜单之间隔一条空隙加一层
-		 * 卡片描边，读起来像两件不相干的事 —— 但它俩说的都是"这一轮的结果可信吗"。
-		 * 节点常驻，结果块每次重画后重新挂回去。 */
-		nodes.srcBlock = E('div', {
-			id: 'cf-ipcheck-sources-block',
-			style: 'border-top:1px solid rgba(0,0,0,.07);margin-top:.9em;padding-top:.7em'
-		}, [
-			E('div', { style: 'margin-bottom:.25em' }, [
-				E('strong', {}, _('源可用性检测')), ' ', btnCheck
-			]),
-			nodes.srcHost
+		/* 源检测独立成一张卡。以前它挂在结果卡底部，被榜单和那段脚注压在下面 ——
+		 * 而候选池为空（empty_pool）时，引擎给的唯一一条下一步就是「去检测源」，
+		 * 得让人能在页面上找到它。现在结果卡上方那排按钮是操作、下方这张是体检，
+		 * 各自的空态 / 加载态 / 错误态也都归自己。 */
+		nodes.srcBlock = E('div', { class: 'cbi-section', id: 'cf-ipcheck-sources' }, [
+			E('div', { class: 'cbi-section-node' }, [
+				E('div', { class: 'cf-src-head' }, [
+					E('span', { class: 'cf-t' }, _('源可用性检测')),
+					btnCheck
+				]),
+				nodes.srcHost
+			])
 		]);
 
-		var page = [bar, nodes.table];
+		/* 表单顶部那条「全部展开 / 全部收起」：四节里有三节默认收着，
+		 * 要改「测速与判定」里的阈值就得先找到是哪一节、再点开它。
+		 * 开合函数由 makeSectionsCollapsible 收集在 folders 里。 */
+		var btnAll = E('button', { class: 'cf-link', type: 'button' }, _('全部展开'));
+		var btnNone = E('button', { class: 'cf-link', type: 'button' }, _('全部收起'));
+		btnAll.onclick = function () {
+			folders.forEach(function (f) { f(true); });
+			return false;
+		};
+		btnNone.onclick = function () {
+			folders.forEach(function (f) { f(false); });
+			return false;
+		};
+		var foldbar = E('div', { class: 'cf-foldbar' }, [
+			btnAll, E('span', { style: 'opacity:.4' }, '·'), btnNone
+		]);
+
+		var page = [bar, nodes.table, nodes.srcBlock];
 
 		return m.render().then(function (mapnode) {
+			injectStyle();
 			applyHelp(mapnode);
 			attachValueTips(mapnode);
 			quietPasswordToggles(mapnode);
@@ -1175,7 +1462,7 @@ return view.extend({
 				'测速与判定': 1,
 				'Gist 上传': 1
 			});
-			mountSrcBlock();
+			page.push(foldbar);
 			page.push(mapnode);
 			if (st.state === 'running')
 				startPoll();

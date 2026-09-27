@@ -175,8 +175,12 @@ const thW = tags(tags(n, 'tr')[0], 'th').map(td => td.attrs.style || '');
 eq('表头不换行且带左右边距', thW.filter(s => /white-space:nowrap/.test(s) && /padding-left/.test(s)).length, 9);
 const tds = tags(tags(n, 'tr')[1], 'td').map(td => td.attrs.style || '');
 eq('单元格与表头同一边距（右对齐才不会错缝）', tds.filter(s => s === thW[2]).length >= 8, true);
+// 收缩必须写 max-content：display:table 的 width:auto 在 Chrome 里是「铺满可用宽」，
+// 铺满就会把多出来的宽度摊到每列，列与列之间裂出断层（真机 A/B 量过 173px vs 47px）。
 const tbl = tags(n, 'div').find(d => String(d.attrs.class || '').includes('cbi-section-table'));
-eq('表格按内容收缩，不铺满卡片', /width:auto/.test(tbl.attrs.style || ''), true);
+eq('表格按内容收缩，不铺满卡片', /width:max-content/.test(tbl.attrs.style || ''), true);
+const wrap = tags(n, 'div').find(d => String(d.attrs.class || '').includes('cf-tablewrap'));
+eq('表格外层有横向滚动容器（窄屏不撑宽整页）', !!wrap, true);
 const thCls = tags(tags(n, 'tr')[0], 'th').map(td => td.attrs['class'] || '');
 eq('表头与列同向对齐', thCls[6].includes('right'), true);
 
