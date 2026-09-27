@@ -33,6 +33,11 @@ BEST=$ETC_DIR/best-ip.txt
 # 整轮结果往 /etc 也放一份：/tmp 是易失的，设备重启后 status.json 就没了，
 # 页面会退化成"从未运行过"，而 best-ip.txt（同样在 /etc）明明还在。
 RESULT_KEEP=$ETC_DIR/result.json
+# Cloudflare 官方网段的缓存（第 1 行 `#<写入秒>`，第 2 行是空格分隔的 CIDR）。
+# 候选池和「源可用性检测」都要这份段表，而它半天变不了一次 —— 每次都现场拉，
+# 最坏耗时就会顶穿 rpcd 对 file.exec 的超时（页面表现是"检测失败"）。
+CFNETS=$ETC_DIR/cf-nets.txt
+CFNETS_TTL=21600
 LOG=$RUN_DIR/cf-ipcheck.log
 LOCK=$RUN_DIR/lock
 STOP=$RUN_DIR/STOP
@@ -90,6 +95,63 @@ cfg_num() {
 	esac
 }
 
+# cfg_range <option> <default> <min> <max>：数值项 + 范围夹取。
+# 上限不是洁癖：speed_bytes 手填成 5GB 就是每轮几十 GB 流量，candidate_budget 填十万
+# 就是一轮几万次探测。页面的 datatype 挡得住从页面改，挡不住 uci 手改、
+# 也挡不住 sysupgrade 带回来的旧值 —— 所以引擎侧必须自己再夹一遍。
+cfg_range() {
+	v=$(cfg_num "$1" "$2")
+	if [ "$v" -lt "$3" ] 2>/dev/null; then
+		log "配置项 $1=$v 低于下限 $3，按 $3 处理"
+		v=$3
+	fi
+	if [ "$v" -gt "$4" ] 2>/dev/null; then
+		log "配置项 $1=$v 超过上限 $4，按 $4 处理"
+		v=$4
+	fi
+	printf '%s' "$v"
+}
+
+# ---------------- 进 JSON / 落盘之前的消毒 -----------------------------------
+# colo 是从远端响应里 sed 出来的（在跑透明代理的机器上它甚至是代理给的），
+# 域名与源 URL 是用户手填的。一个引号就能把整份 result.json 打成前端的
+# parse_error —— 表现是"明明测过了，页面读不出结果"，比测不出来更难查。
+json_word() { # 只留 [A-Za-z0-9._-]，其余丢掉（机房代码与主机名都在这个集合里）
+	printf '%s' "${1:-}" | tr -cd 'A-Za-z0-9._-'
+}
+
+json_str() { # 任意字符串 -> JSON 字符串内容（不含外层引号）
+	# 一条 sed 同时处理反斜杠与引号（\& = 反斜杠 + 命中文本）。分两次 s/// 会把
+	# 刚加上的反斜杠再转一遍。GNU 与 BusyBox sed 对这个写法语义一致（同 json_escape_file）。
+	printf '%s' "${1:-}" | sed -e 's/[\\"]/\\&/g'
+}
+
+# normalize_hosts <逗号分隔> -> stdout: 合法主机名，逗号分隔、去重、保序（统一小写）。
+# 单独一步是因为探测里是 `tr ',' ' '` 之后交给 for 循环的：写成 "a. com" 或
+# "https://a.com" 的条目会被切成看似合法的假域名，白烧一轮、还看起来像线路故障。
+# 这里只按逗号切，并按整体校验主机名字符集（不允许空格、斜杠、协议前缀）。
+normalize_hosts() {
+	printf '%s' "${1:-}" | tr ',' '\n' | awk '
+	{
+		gsub(/^[ \t\r]+|[ \t\r]+$/, "")
+		sub(/\.$/, "")                     # 允许人写成 FQDN 末尾那个点
+		$0 = tolower($0)                   # DNS 主机名不分大小写，不去重就会重复探一遍
+		if ($0 == "") next
+		if ($0 ~ /^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$/)
+			if (!seen[$0]++) out[++n] = $0
+	}
+	END {
+		for (i = 1; i <= n; i++) printf "%s%s", (i > 1 ? "," : ""), out[i]
+	}'
+}
+
+# one_host <值> <默认>：单个主机名（多余的逗号段丢掉），非法就退回默认。
+one_host() {
+	h=$(normalize_hosts "$(printf '%s' "${1:-}" | cut -d, -f1)")
+	[ -n "$h" ] || h=$2
+	printf '%s' "$h"
+}
+
 # cfg_list <option> -> 每行一个元素
 cfg_list() {
 	if [ "$HAS_UCI" = 1 ]; then
@@ -102,26 +164,35 @@ cfg_list() {
 }
 
 load_config() {
-	C_DOMAINS=$(cfg probe_domains 'www.cloudflare.com')
-	C_PORT=$(cfg_num probe_port 443)
-	C_BUDGET=$(cfg_num candidate_budget 256)
-	C_CONC=$(cfg_num concurrency 8)
-	C_TIMEOUT=$(cfg_num probe_timeout 5)
-	C_KEEP=$(cfg_num keep_count 10)
-	C_TTFB=$(cfg_num ttfb_limit 3000)
-	C_TOTAL=$(cfg_num total_limit 5000)
+	# 域名列表先按字符集校验再用：非法条目丢掉并记日志（见 normalize_hosts）。
+	dom_raw=$(cfg probe_domains 'www.cloudflare.com')
+	C_DOMAINS=$(normalize_hosts "$dom_raw")
+	if [ -z "$C_DOMAINS" ]; then
+		log "探测域名一项都不合法（<$(printf '%s' "$dom_raw" | cut -c1-48)>），退回 www.cloudflare.com"
+		C_DOMAINS=www.cloudflare.com
+	elif [ "$C_DOMAINS" != "$(printf '%s' "$dom_raw" | tr -d ' \t')" ]; then
+		log "探测域名已整理：<$(printf '%s' "$dom_raw" | cut -c1-48)> 里丢掉了非法或重复的条目，实际用 $C_DOMAINS"
+	fi
+	C_PORT=$(cfg_range probe_port 443 1 65535)
+	C_BUDGET=$(cfg_range candidate_budget 256 8 4096)
+	C_CONC=$(cfg_range concurrency 8 1 64)
+	C_TIMEOUT=$(cfg_range probe_timeout 5 1 30)
+	C_KEEP=$(cfg_range keep_count 10 1 100)
+	C_TTFB=$(cfg_range ttfb_limit 3000 100 600000)
+	C_TOTAL=$(cfg_range total_limit 5000 200 600000)
 	# 官方网段默认关：15 个前缀展开成 /24 采样是近六千个地址，
 	# 而社区优选源已经是别人实测过的好 IP，命中率高的多。想做大范围扫面再打开。
 	C_OFFICIAL=$(cfg use_official_ranges 0)
 	C_REUSE=$(cfg reuse_last 1)
 	C_COLOR=$(cfg colo_probe 1)
-	C_COLODOMAIN=$(cfg colo_domain 'www.cloudflare.com')
+	C_COLODOMAIN=$(one_host "$(cfg colo_domain 'www.cloudflare.com')" www.cloudflare.com)
 	C_CANARY=$(cfg canary_check 1)
 	C_SPEED=$(cfg speed_probe 1)
-	C_SPEEDN=$(cfg_num speed_count 10)
-	C_SPEEDKB=$(cfg_num speed_bytes 10485760)
-	C_SPEEDTO=$(cfg_num speed_timeout 25)
-	C_SPEEDDOM=$(cfg speed_domain 'speed.cloudflare.com')
+	C_SPEEDN=$(cfg_range speed_count 10 0 100)
+	# 上限 100MB：这一项直接乘在每轮流量上（speed_count × speed_bytes）。
+	C_SPEEDKB=$(cfg_range speed_bytes 10485760 131072 104857600)
+	C_SPEEDTO=$(cfg_range speed_timeout 25 5 120)
+	C_SPEEDDOM=$(one_host "$(cfg speed_domain 'speed.cloudflare.com')" speed.cloudflare.com)
 	# probe_user 填 none 是“故意用 root 直发”的哨兵值：uci 分不清“显式留空”
 	# 和“没有这一项”（空值 get 回来 rc=1），只能靠哨兵表达。
 	C_PUSER=$(cfg probe_user nobody)
@@ -131,9 +202,17 @@ load_config() {
 	C_GISTFILE=$(cfg gist_file 'cf-ip.txt')
 	C_TOKEN=$(cfg token_file '/etc/cf-ipcheck.token')
 	C_GISTTOK=$(cfg gist_token '')
-	C_INTERVAL=$(cfg_num interval_hours 6)
+	C_INTERVAL=$(cfg_range interval_hours 6 1 168)
 	C_UPLOAD=$(cfg upload_gist 0)
-	SOURCES=$(cfg_list community_sources)
+	src_raw=$(cfg_list community_sources)
+	# 只吃 https://：这份清单的全部作用就是告诉你的代理"往这些地址连"，
+	# 走 http 的话它在链路上就能被人改包。混进来的其它行丢掉并说清丢了几条。
+	SOURCES=$(printf '%s\n' "$src_raw" | grep -E '^https://[^[:space:]]+$' || true)
+	n_raw=$(printf '%s\n' "$src_raw" | grep -c . || true)
+	n_ok=$(printf '%s\n' "$SOURCES" | grep -c . || true)
+	if [ "${n_raw:-0}" != "${n_ok:-0}" ]; then
+		log "社区源里有 $((n_raw - n_ok)) 条不是 https 地址，本轮已忽略"
+	fi
 	# /dev/null 坏了（变成普通文件、或落在很小的 tmpfs）会让大响应的探测集体报 rc=23，
 	# 现象是“域名越正常越测不通”，所以要吭一声。
 	[ -c /dev/null ] || log "本机 /dev/null 不是字符设备，改用 $NULL_DEV 丢弃响应体"
@@ -239,19 +318,52 @@ official_cidrs() {
 	printf '%s\n' "$data" | sed -n 's|.*"ipv4_prefixes":\[\([^]]*\)\].*|\1|p' | tr ',' '\n' | tr -d '" '
 }
 
+# 官方网段带 6 小时缓存。两个消费方（候选池、源体检）都要它，而 api.cloudflare.com
+# 这份段表半天变不了一次；不缓存的话每次点「检测源可用性」都要先阻塞等它，
+# 加上后面 13 个源分批实拉，最坏耗时会顶穿 rpcd 对 file.exec 的超时
+# —— 页面表现是"检测失败"，而实际是结果被掐在半路。
+net_cache_fresh() { # $1=写入秒 $2=现在秒 -> 0=还能用
+	case "${1:-}" in
+		''|*[!0-9]*) return 1 ;;
+	esac
+	case "${2:-}" in
+		''|*[!0-9]*) return 1 ;;
+	esac
+	[ "$(($2 - $1))" -lt "$CFNETS_TTL" ] 2>/dev/null
+}
+
+# cf_nets -> stdout: 空格分隔的 CIDR（一条都没有时输出空）
+cf_nets() {
+	now=$(date +%s)
+	if net_cache_fresh "$(head -n 1 "$CFNETS" 2>/dev/null | tr -cd '0-9')" "$now"; then
+		sed -n '2p' "$CFNETS" 2>/dev/null | sed -e 's/[ \t]*$//'
+		return 0
+	fi
+	nets=$(curl -4 -fsS --max-time 8 https://api.cloudflare.com/client/v4/ips 2>/dev/null | \
+		official_cidrs | tr '\n' ' ' | sed -e 's/[ \t]*$//')
+	if [ -n "$nets" ]; then
+		# 缓存写不下去绝不能拖死这一轮：写重定向失败是 shell 级错误，所以放进
+		# 子 shell 里执行 —— 子 shell 自己退出，父进程照常把段表交给调用方。
+		mkdir -p "$ETC_DIR" 2>/dev/null || true
+		( printf '#%s\n%s\n' "$now" "$nets" >"$CFNETS" ) 2>/dev/null || true
+		printf '%s\n' "$nets"
+		return 0
+	fi
+	# 拉不到就退回过期缓存：段内占比比"整列都是 —"有用，但要在日志里说清用的是旧的
+	old=$(sed -n '2p' "$CFNETS" 2>/dev/null | sed -e 's/[ \t]*$//')
+	[ -n "$old" ] && log '官方网段拉取失败，本轮用过期缓存里的段表'
+	printf '%s\n' "$old"
+}
+
 # 官方网段：把每个前缀展开成它覆盖的 /24，每个 /24 取一个代表地址
 pool_official() {
 	[ "$C_OFFICIAL" = 1 ] || return 0
-	j=$(curl -4 -fsS --max-time 20 https://api.cloudflare.com/client/v4/ips 2>/dev/null) || {
-		log '官方网段拉取失败，跳过'
-		return 0
-	}
-	got=$(printf '%s' "$j" | official_cidrs | expand_prefixes)
-	if [ -z "$got" ]; then
-		log '官方网段解析结果为空：接口字段可能已变更（现在认 ipv4_cidrs / ipv4_prefixes）'
+	nets=$(cf_nets)
+	if [ -z "$nets" ]; then
+		log '官方网段为空：接口字段可能已变更（现在认 ipv4_cidrs / ipv4_prefixes），或拉取失败且没有缓存'
 		return 0
 	fi
-	printf '%s\n' "$got"
+	printf '%s\n' "$nets" | tr ' ' '\n' | grep . | expand_prefixes
 }
 # $1 = 每个源最多贡献多少个候选（缺省不限量）。
 # 逐源定额而不是合并后再抽稀：一份 6000 条的前缀清单不该把一份 10 条的
@@ -423,7 +535,8 @@ colo_of() {
 	[ -n "$ip" ] || return 0
 	c=$(trace_colo "$(printf '%s' "$C_DOMAINS" | cut -d, -f1 | tr -d ' ')" "$ip")
 	[ -n "$c" ] || c=$(trace_colo "$C_COLODOMAIN" "$ip")
-	printf '%s' "$c"
+	# colo= 后面那段是远端给的，直接进 JSON 会被人用一个引号打断整份结果
+	printf '%s' "$(json_word "$c")"
 }
 
 # ---------------- 过滤 + 排序（纯文本处理，可离线自测）--------------------
@@ -554,7 +667,7 @@ check_one_source() { # $1=url $2=序号 —— 结果写进 $RUN_DIR/cs.out.<序
 		incf=$(printf '%s\n' "$ips" | cf_count_in "$CF_NETS")
 	fi
 	printf '{"url":"%s","http":"%s","rc":%s,"ips":%s,"cf_in":%s}' \
-		"$(printf '%s' "$1" | sed 's/"/\\"/g')" "${code:-000}" "${rc:-0}" "$n" "$incf" \
+		"$(json_str "$1")" "${code:-000}" "${rc:-0}" "$n" "$incf" \
 		>"$RUN_DIR/cs.out.$2"
 }
 
@@ -564,10 +677,9 @@ check_sources() {
 	load_config
 	i=0
 	n=0
-	CF_NETS=$(curl -4 -fsS --max-time 20 https://api.cloudflare.com/client/v4/ips 2>/dev/null | \
-		official_cidrs | tr '\n' ' ')
+	CF_NETS=$(cf_nets)
 	export CF_NETS
-	[ -n "$CF_NETS" ] || log '拿不到官方网段，段内占比一律记 -1'
+	[ -n "$CF_NETS" ] || log '拿不到官方网段（也没有缓存），段内占比一律记 -1'
 	for s in $SOURCES; do
 		[ -n "$s" ] || continue
 		n=$((n + 1))
@@ -891,6 +1003,51 @@ selftest() {
 	export CFIP_CANDIDATE_BUDGET_DIRTY=''
 	check '空值走默认值' "$(cfg_num candidate_budget_dirty 256)" '256'
 	unset CFIP_CANDIDATE_BUDGET_DIRTY
+	# 数值项的范围夹取：页面的 datatype 挡不住 uci 手改，也挡不住 sysupgrade 带回来的
+	# 旧值。speed_bytes 填成 5GB 就是每轮几十 GB 流量，这一层是最后一道闸。
+	export CFIP_SPEED_BYTES_X='5000000000'
+	check '超上限的数值被夹到上限' "$(cfg_range speed_bytes_x 10485760 131072 104857600)" '104857600'
+	export CFIP_SPEED_BYTES_X='1'
+	check '低于下限的被夹到下限' "$(cfg_range speed_bytes_x 10485760 131072 104857600)" '131072'
+	export CFIP_SPEED_BYTES_X='2097152'
+	check '范围内的值原样通过' "$(cfg_range speed_bytes_x 10485760 131072 104857600)" '2097152'
+	unset CFIP_SPEED_BYTES_X
+	# 探测域名：只按逗号切，整条校验字符集。"a. com" 必须整条丢掉 —— 按空格切会
+	# 得到 "a." 和 "com" 两个"看着合法"的假域名，白烧一轮还像线路故障。
+	got=$(normalize_hosts 'a.com, https://b.com ,c.d')
+	check '带协议/带空格的域名条目被丢掉' "$got" 'a.com,c.d'
+	got=$(normalize_hosts 'a. com,b.com')
+	check '"a. com" 不会被切成两个假域名' "$got" 'b.com'
+	got=$(normalize_hosts 'A.com, a.com, b.co.uk.')
+	check '域名统一小写并去重、允许 FQDN 末尾的点' "$got" 'a.com,b.co.uk'
+	got=$(one_host ' x.y.z/abc ' 'fallback.com')
+	check '单个域名非法时退回默认值' "$got" 'fallback.com'
+	got=$(one_host 'a.com, b.com' 'fallback.com')
+	check '单个域名只取第一段' "$got" 'a.com'
+	# 消毒：colo 是远端响应里 sed 出来的，一个引号就能让整份 result.json 变成
+	# 前端读不出的 parse_error。
+	got=$(json_word 'a","b":"c')
+	check 'colo 里的引号/冒号/逗号被丢掉，破坏不了 JSON' "$got" 'abc'
+	got=$(json_word 'LAX')
+	check '正常机房代码原样通过' "$got" 'LAX'
+	got=$(json_str 'a"b\c')
+	check 'URL 一类自由文本里引号与反斜杠都被转义' "$got" 'a\"b\\c'
+	got=$(printf 'https://a.com/x\nhttp://b.com\n\njavascript:alert\n' | \
+		grep -E '^https://[^[:space:]]+$' | grep -c . || true)
+	check '社区源只吃 https 单行地址（http 清单在链路上能被改包）' "$got" '1'
+	# 官方网段缓存：新鲜命中时**不许**联网（CI 里联网就会拿到真段表，断言就会漂）。
+	now=$(date +%s)
+	check '刚写入的缓存算新鲜' "$(net_cache_fresh "$now" "$now" && echo f || echo s)" 'f'
+	check '超过 TTL 算过期' "$(net_cache_fresh 1 "$now" && echo f || echo s)" 's'
+	check '时间戳读不出数字算过期（宁可不缓存也别拿坏文件当段表）' \
+		"$(net_cache_fresh 'x' "$now" && echo f || echo s)" 's'
+	printf '#%s\n1.2.3.0/24 4.5.6.0/24 \n' "$now" >"$CFNETS"
+	got=$(cf_nets)
+	check '缓存新鲜时直接命中，不产生任何网络请求' "$got" '1.2.3.0/24 4.5.6.0/24'
+	printf '#1\n9.9.9.0/24 \n' >"$CFNETS"
+	check '过期缓存不会直接当结果用（要走重新拉取这条路）' \
+		"$(net_cache_fresh "$(head -n 1 "$CFNETS" | tr -cd '0-9')" "$now" && echo f || echo s)" 's'
+	rm -f "$CFNETS"
 	# CIDR 展开：绝不能吐出网络地址（.0），否则整片超时
 	got=$(printf '173.245.48.0/20\n' | sh "$0" _expand 2>/dev/null | head -1)
 	check '/20 展开为首个 /24 的 .102' "$got" '173.245.48.102'
@@ -1119,9 +1276,20 @@ case "${1:-}" in
 				 load_config
 				 if [ "$(cfg enabled 0)" = 1 ]; then
 					 do_run || log '本轮异常结束'
-					 secs=$((C_INTERVAL))
-					 [ "$secs" -gt 0 ] 2>/dev/null || secs=6
-					 sleep $((secs * 3600))
+					 # 按 60 秒一片睡，每片重读配置。一次性 sleep 6 小时的话，改了
+					 # interval_hours 或把总开关关掉，都要等这一觉睡完才生效 ——
+					 # 而 uci 的 reload 触发会不会把 procd 实例拉起来，不该拿它当保证。
+					 secs=$((C_INTERVAL * 3600))
+					 [ "$secs" -gt 0 ] 2>/dev/null || secs=21600
+					 slept=0
+					 while [ "$slept" -lt "$secs" ]; do
+						 sleep 60
+						 slept=$((slept + 60))
+						 load_config
+						 [ "$(cfg enabled 0)" = 1 ] || break
+						 # 周期被改短了就提前结束这一觉，下一轮按新周期重算
+						 [ "$slept" -lt "$((C_INTERVAL * 3600))" ] 2>/dev/null || break
+					 done
 				 else
 					 # 关掉时空转短睡，LuCI 里打开开关一分钟内就开始测，
 					 # 不必等上一个 6 小时周期，也不需要重启服务。

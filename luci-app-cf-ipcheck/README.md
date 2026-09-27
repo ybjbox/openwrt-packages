@@ -275,6 +275,14 @@ ssh root@10.0.0.1 'apk add --allow-untrusted /tmp/luci-app-cf-ipcheck-*.apk'
     退出码 1），不是只会在绿灯时好看的检查。
   - **还没做**：新版引擎在真机 busybox 上跑一轮（锁/自愈/MiB/s 列/多域名列）、
     apk 重新构建（按 Ryan 的话：等他说了再构建）。
+- 2026-09-27 第二批（网段缓存 / JSON 消毒 / 配置夹取 / 域名与源清洗 / 切片睡眠 / ACL 收最小授权）：
+  `selftest` 82 项全绿，并且**故意拿脏配置在真 curl 下跑了一轮** —— `probe_domains` 里塞
+  `https://bad.example` 与 `oops .com`、源列表里塞一条 `http://`、`candidate_budget=6`、
+  `interval_hours=999`：日志逐条说明了"丢掉几条、夹到几"，结果 JSON 仍合法（`node` 解析过），
+  `domains` 字段是清洗后的值。缓存命中用诱饵验过 —— 把 `cf-nets.txt` 换成两个 TEST-NET 段后
+  `cf-ipcheck pool` 就只吐 `203.0.113.102 / 192.0.2.102`，证明它确实不再打官方接口。
+  这一批里唯一由测试暴露出来的新缺陷是缓存写失败：写重定向失败属于 shell 级错误、会把整轮带走，
+  所以那段写盘挪进了子 shell。
 
 未覆盖：肉眼在普通浏览器里看整页排版。验证用的内嵌页签 `document.hidden=true` 且
 `requestAnimationFrame` 不触发，LuCI 的视图引导和 CBI `Map.render()` 在这种页签里根本不会
@@ -367,6 +375,7 @@ cf-ipcheck selftest   # 离线自检，不联网
 | `/tmp/cf-ipcheck/status.json` | 运行时状态：`running` / `done` / `error`（带 `reason`）/ `never_run` |
 | `/tmp/cf-ipcheck/{probed,aggregated,qualified,ranked,colored}.tsv` | 本轮原始（ip×域名）/ 按 IP 合并后 / 达标 / 排序 / 加了 colo+吞吐的结果，排查“为什么某条没上榜”时看这里 |
 | `/tmp/cf-ipcheck/lock` | 运行锁，内容是 `<pid> <启动秒>`（判活用 `kill -0`，超过 6 小时无条件回收） |
+| `/etc/cf-ipcheck/cf-nets.txt` | Cloudflare 官方网段的 6 小时缓存：第 1 行 `#<写入秒>`，第 2 行空格分隔的 CIDR |
 | `/tmp/cf-ipcheck/cf-ipcheck.log` | 运行日志（`logread -e cf-ipcheck` 亦可） |
 
 `colored.tsv` 的列序是 `ip code connect tls ttfb total colo speed domain`（吞吐单位
@@ -390,8 +399,27 @@ MiB/s，未测是 `-`），第 8、9 列分别进 `result.json` 的 `speed_mibs`
   `/etc` 里的结果）；`/tmp` 被清 → 从 `/etc/cf-ipcheck/result.json` 恢复，不会谎称“从未运行过”。
 - **本轮不可信时不查机房、不测吞吐**：`intercepted=1` 时那两列取的是代理自己的表现，
   花两轮请求也只会得到一整列相同的假数。
-- **数值配置带脏值不再拖死整轮**：`cfg_num` 认不出「一整串都是数字」就退回默认值并记日志 ——
-  脏值会让后面的 `$(( ))` 在非交互 shell 里**直接把进程打死**，表现为“按了没反应”。
+- **数值配置走 `cfg_num` + `cfg_range`**：认不出「一整串都是数字」就退回默认值，超出范围就夹住，
+  两种都记一行日志。脏值会让后面的 `$(( ))` 在非交互 shell 里**直接把进程打死**（表现为“按了
+  没反应”），而 `speed_bytes`/`candidate_budget` 这类项一旦填飞就是几十 GB 流量或几万次探测 ——
+  页面的 `datatype` 挡得住从页面改，挡不住 `uci set` 手改和 sysupgrade 带回来的旧值，
+  所以引擎侧必须自己再夹一遍（上限与页面 datatype 一致）。
+- **进 JSON 的字符串先消毒**：`colo` 是从远端响应里 `sed` 出来的（在有透明代理的机器上它
+  甚至是代理给的），域名与源 URL 是用户手填的 —— 一个引号就能把整份 `result.json` 打成
+  前端读不出的 `parse_error`。`json_word()`（机房代码/主机名，只留 `[A-Za-z0-9._-]`）与
+  `json_str()`（自由文本，反斜杠与引号一起转，转义写法同 `json_escape_file`）。
+- **探测域名与源列表先清洗再用**：`normalize_hosts()` 只按逗号切、整条校验主机名（统一小写、
+  去重、允许 FQDN 末尾的点），所以 `"a. com"` 会整条丢掉 —— 早先 `tr ',' ' '` 会把它切成
+  `"a."` 与 `"com"` 两个"看着合法"的假域名，白烧一轮还像线路故障。社区源同理只吃
+  `https://` 的单行地址（http 清单在链路上就能被人改包），丢了几条记进日志。
+- **官方网段缓存 6 小时**（`/etc/cf-ipcheck/cf-nets.txt`）：候选池与「源可用性检测」都要这份
+  段表而它半天变不了一次；不缓存时"点一下检测"最坏要阻塞 20+16 秒，会顶穿 rpcd 对
+  `file.exec` 的超时（页面表现成"检测失败"，而实际是结果被掐在半路）。拉不到就退回过期缓存
+  并记日志；缓存写不下去也不会拖死本轮（写重定向失败是 shell 级错误，故放子 shell 里做）。
+- **`daemon` 按 60 秒一片睡**：每片重读配置，改 `interval_hours` 或关总开关一分钟内生效，
+  不依赖 uci 的 reload 触发是否真把 procd 实例拉起来。
+- **ACL 只放开 `/usr/bin/cf-ipcheck` 的 `exec`**：早先还顺带授意了 4 条 `file.read`
+  （status/result/best-ip），而页面从头到尾只走 `file.exec` —— 白要权限。
 - **`/etc/config/cf_ipcheck` 里的注释会在页面上改任何一项后消失**：uci 写回时不保留注释。
   仓库里那份是文档（含每条源的出处与段内占比），改过配置想找回说明就看仓库版本。
 

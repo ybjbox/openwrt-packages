@@ -533,7 +533,7 @@ return view.extend({
 
 		o = s.option(form.Value, 'interval_hours', _('定时周期（小时）'),
 			_('一轮完整测速的间隔。候选池越大、超时越长，单轮耗时越久。'));
-		o.datatype = 'and(uinteger,min(1))';
+		o.datatype = 'and(uinteger,min(1),max(168))';
 		o.default = '6';
 
 		o = s.option(form.Value, 'probe_domains', _('探测域名'),
@@ -543,7 +543,9 @@ return view.extend({
 			  '域名必须架在 Cloudflare 后面（橙色云、CF 给它签了证书）；403 / 404 都算达标，' +
 			  '判定只看「带真实 SNI 的 HTTPS 能否走通并拿到 HTTP 响应」，不看内容。' +
 			  '探测时用 --resolve 把该域名钉到候选 IP 上，所以 SNI 与 Host 都是这个域名。' +
-			  '填多个域名时，每个 IP 只保留它表现最好的那一次，榜单仍是一 IP 一行。'));
+			  '填多个域名时，每个 IP 只保留它表现最好的那一次，榜单仍是一 IP 一行。' +
+			  '条目一律按逗号切并整条校验主机名：写成 https://xx 或中间带空格的会被引擎丢掉并记日志，' +
+			  '不会被切成假域名去探。'));
 		o.default = 'www.cloudflare.com';
 
 		o = s.option(form.Value, 'probe_port', _('探测端口'),
@@ -572,7 +574,8 @@ return view.extend({
 			  '像 bestcf.pages.dev/random-region/mix.txt 那种 306 条全在段外的清单其实是别人的中转/VPS，' +
 			  '不是 CF anycast，就没有收进来。这些列表只代表"别人线路上测出来不错"，' +
 			  '在你这儿算不算好仍由本页实测说了算。名额分配：上一轮入围全保 → 社区源占剩下一半且逐源均分 → ' +
-			  '官方网段抽稀填满其余。想看本轮实际会用哪些 IP，命令行跑 cf-ipcheck pool。'));
+			  '官方网段抽稀填满其余。想看本轮实际会用哪些 IP，命令行跑 cf-ipcheck pool。' +
+			  '只接受 https 的单条地址：http 清单在链路上就能被人改包，带空格或非 URL 的行会被忽略并记日志。'));
 
 		var thr = m.section(form.TypedSection, 'global', _('测速与判定'));
 		thr.anonymous = true;
@@ -597,12 +600,12 @@ return view.extend({
 			  '它比 ping 的 RTT 更贴近实际体感：ping 只测到 ICMP 应答，而 anycast 下那个点未必是你会话真正落地的机房，' +
 			  '也可能干脆不响应 ICMP；TTFB 则是这个 IP 上完整 TCP+TLS 走通之后，应用层第一次给出数据的时间。' +
 			  '首字节慢通常意味着被调度到了远机房或链路拥塞，超过这个值直接判为不达标。'));
-		o.datatype = 'and(uinteger,min(100))';
+		o.datatype = 'and(uinteger,min(100),max(600000))';
 		o.default = '3000';
 
 		o = thr.option(form.Value, 'total_limit', _('总耗时上限（毫秒）'),
 			_('第二个门槛，与 TTFB 同时满足才算可用。'));
-		o.datatype = 'and(uinteger,min(200))';
+		o.datatype = 'and(uinteger,min(200),max(600000))';
 		o.default = '5000';
 
 		o = thr.option(form.Value, 'keep_count', _('榜单保留条数'),
@@ -625,7 +628,7 @@ return view.extend({
 		o = thr.option(form.Value, 'speed_bytes', _('单次下载字节数'),
 			_('默认 10MB（10485760 字节）。别调太小：1MB 样本主要落在 TCP 慢启动上，' +
 			  '真机同一个 IP 两次测出 0.54 与 0.19 MiB/s，差 2.8 倍，排名会乱跳。'));
-		o.datatype = 'and(uinteger,min(131072))';
+		o.datatype = 'and(uinteger,min(131072),max(104857600))';
 		o.default = '10485760';
 
 		o = thr.option(form.Value, 'speed_timeout', _('单次吞吐测试超时（秒）'),
