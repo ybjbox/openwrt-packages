@@ -132,13 +132,39 @@ var CSS = [
 	'.cf-pw-toggle{background:transparent;border-color:transparent;color:inherit;opacity:.55;min-width:1.9em;padding:0 .35em}',
 	'.cf-foot{font-size:var(--cf-xs);opacity:.75;line-height:1.7;margin-top:var(--cf-s2)}',
 	'.cf-src-head{display:flex;align-items:center;gap:var(--cf-s2);flex-wrap:wrap;margin-bottom:var(--cf-s2)}',
-	/* 窄屏：按钮撑到 44px 好按，卡片头改成上下两行 */
+	/* 顶部标签栏：一页三段（榜单 / 源与检测 / 配置），点标签换面板而不是往下滚。
+	 * 下划线用强调色而不是给整个标签铺底色 —— 铺底会把一行里三个标签都染成
+	 * 大色块，反而看不出哪个是当前项；1px 底边 + 3px 高亮条最省地方也最清楚。 */
+	'.cf-tabs{display:flex;align-items:stretch;gap:var(--cf-s1);margin:0 0 var(--cf-s3);',
+	'  border-bottom:1px solid var(--cf-line);overflow-x:auto;-webkit-overflow-scrolling:touch}',
+	'.cf-tab{position:relative;flex:0 0 auto;display:inline-flex;align-items:center;gap:.45em;',
+	'  padding:.55em .9em;border:0;background:none;cursor:pointer;color:inherit;opacity:.62;',
+	'  font-size:var(--cf-md);font-weight:500;line-height:1.5;white-space:nowrap;',
+	'  border-bottom:2px solid transparent;margin-bottom:-1px;',
+	'  transition:opacity var(--cf-dur-fast) var(--cf-ease),border-color var(--cf-dur-fast) var(--cf-ease)}',
+	'.cf-tab:hover{opacity:.85;background:var(--cf-soft)}',
+	'.cf-tab:focus-visible{outline:none;box-shadow:inset 0 0 0 2px var(--cf-accent-soft)}',
+	'.cf-tab.is-on{opacity:1;font-weight:600;border-bottom-color:var(--cf-accent)}',
+	'.cf-tab-cnt{font-size:var(--cf-xs);font-weight:600;font-variant-numeric:tabular-nums;',
+	'  padding:.1em .45em;border-radius:999px;background:var(--cf-soft);border:1px solid var(--cf-line);opacity:.8}',
+	'.cf-tab.is-on .cf-tab-cnt{color:var(--cf-accent-txt);background:var(--cf-accent-soft);border-color:var(--cf-accent-line);opacity:1}',
+	/* 面板：切换只改 display，绝不重建节点 —— 结果块刷新走的是
+	 * nodes.table.parentNode.replaceChild()，节点一旦离开文档就再也换不回去。 */
+	'.cf-pane{display:none}',
+	'.cf-pane.is-on{display:block}',
+	/* 榜单很长时不让它把整页顶下去：超出行数上限就在卡片内部滚。
+	 * max-height 用 vh 而不是固定 px —— 小屏笔记本与 1080p 桌面才都合适。 */
+	'.cf-box{max-height:min(62vh,560px);overflow:auto}',
+	/* 窄屏：标签横排可滑，按钮撑到 44px 好按，卡片头改成上下两行 */
 	'@media (max-width:720px){',
 	'  .cf-head{flex-direction:column;align-items:stretch}',
 	'  .cf-head-r{justify-content:flex-start}',
 	'  .cbi-button{min-height:44px;padding:.5em .9em}',
 	'  .cf-empty{flex-direction:column;align-items:stretch}',
 	'  .cf-meta{gap:6px}',
+	'  .cf-tabs{gap:0}',
+	'  .cf-tab{padding:.55em .7em;font-size:var(--cf-sm)}',
+	'  .cf-box{max-height:none;overflow:visible}',
 	'}',
 	'@media (prefers-reduced-motion: reduce){',
 	'  .cf-chev,.cf-help-mark{transition:none}',
@@ -664,6 +690,112 @@ function makeSectionsCollapsible(root, defaults) {
 	});
 }
 
+/* ---- 顶部标签页 ---------------------------------------------------------
+ * 为什么做标签而不是继续往下堆卡片：这个页面天然是三件事 —— 看结果（榜单）、
+ * 查候选池为什么空（源检测）、改参数（配置）。串成一列时，想改个 TTFB 阈值
+ * 得先滚过整张榜单和那张源体检表；标签把三者变成同一层的平行入口。
+ *
+ * 选择会存 localStorage：改完配置再回来通常还想看结果，不该每次都被弹回第一页。
+ * 存的是标签 id（稳定），不是下标 —— 以后插一个标签，别人的旧记录也不会串位。
+ */
+var TAB_KEY = 'cf-ipcheck.tab';
+/* tabDefs 里的 pane 由 render 阶段回填；activate 时只切 display。
+ * tabs 存标签按钮节点，用来翻 aria-selected 与 .is-on 两处状态。 */
+var tabDefs = [];
+var tabs = [];
+
+function savedTab() {
+	var v = null;
+	try {
+		v = window.localStorage.getItem(TAB_KEY);
+	} catch (e) {
+		v = null;
+	}
+	for (var i = 0; i < tabDefs.length; i++) {
+		if (tabDefs[i].id === v)
+			return v;
+	}
+	return tabDefs.length ? tabDefs[0].id : '';
+}
+
+/* 切换标签。只碰 class / aria / display 三样，不插不删节点：
+ * 结果块每 5 秒会被 replaceChild 换一份新的，若这里把面板整个拆了重建，
+ * nodes.table 就会指向一个已经不在文档里的孤儿，之后 refreshResult()
+ * 拿着它 replaceChild 会因为 parentNode 为空而静默失败，页面再也不更新。 */
+function activateTab(id) {
+	var hit = null;
+	for (var i = 0; i < tabDefs.length; i++) {
+		var on = tabDefs[i].id === id;
+		if (on)
+			hit = tabDefs[i];
+		var btn = tabs[i];
+		if (btn) {
+			btn.className = 'cf-tab' + (on ? ' is-on' : '');
+			btn.setAttribute('aria-selected', on ? 'true' : 'false');
+			btn.setAttribute('tabindex', on ? '0' : '-1');
+		}
+		if (tabDefs[i].pane)
+			tabDefs[i].pane.className = 'cf-pane' + (on ? ' is-on' : '');
+	}
+	if (!hit)
+		return;
+	try {
+		window.localStorage.setItem(TAB_KEY, hit.id);
+	} catch (e) {}
+	/* 结果页的表格在 display:none 下经历过刷新的话，宽度是在量不到的情况下
+	 * 定的（max-content 拿不到容器宽），切回来补一次重画最稳。
+	 * 只在切到结果页且表格已存在时补，别的页不动，免得把 status 请求打多。 */
+	if (hit.id === 'result' && nodes.table)
+		refreshResult();
+}
+
+/* 建标签栏。count 是标签右侧那枚小计数（没有就不画），
+ * 用现成数据算，不额外请求；它的意义只是「这个标签里有东西可以看」。 */
+function renderTabs(defs) {
+	tabDefs = defs;
+	tabs = [];
+	var bar = E('div', { class: 'cf-tabs', role: 'tablist' });
+	defs.forEach(function (d) {
+		var kids = [ E('span', {}, d.label) ];
+		if (d.count != null && d.count !== '')
+			kids.push(E('span', { class: 'cf-tab-cnt cf-nums' }, String(d.count)));
+		var btn = E('button', {
+			class: 'cf-tab',
+			type: 'button',
+			role: 'tab',
+			'aria-selected': 'false',
+			tabindex: '-1'
+		}, kids);
+		btn.onclick = function () { activateTab(d.id); return false; };
+		/* 左右方向键在标签间走：不引键盘库，两条分支就够（tablist 的标准交互） */
+		btn.addEventListener('keydown', function (ev) {
+			var i = tabs.indexOf(btn);
+			if (ev.key === 'ArrowRight' || ev.key === 'ArrowLeft') {
+				ev.preventDefault();
+				var n = (i + (ev.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length;
+				activateTab(defs[n].id);
+				if (tabs[n] && tabs[n].focus)
+					tabs[n].focus();
+			}
+		});
+		tabs.push(btn);
+		bar.appendChild(btn);
+	});
+	return bar;
+}
+
+/* 每个标签外面包一层 .cf-pane，切换时只改这一层的 class。
+ * 包装节点在 render 阶段就全部建好并留在文档里（哪怕 display:none），
+ * 所以内部节点的 parentNode 永远成立。 */
+function paneOf(id, node) {
+	var pane = E('div', { class: 'cf-pane' }, node);
+	for (var i = 0; i < tabDefs.length; i++) {
+		if (tabDefs[i].id === id)
+			tabDefs[i].pane = pane;
+	}
+	return pane;
+}
+
 /* 状态 → 配色，只在这一处映射。页面上不再出现第二处 if (state==…) 判颜色：
  * 否则以后加一种状态，胶囊、按钮、提示条三处都要各改一遍，必漏一处。 */
 function stateTone(st) {
@@ -800,19 +932,23 @@ function renderTable(st) {
 		/* 外层 .cf-tablewrap 只负责窄屏横向滚动；表格本身按内容收缩。
 		 * 收缩必须写 max-content 而不是 auto：真机 A/B 量过，display:table 的
 		 * width:auto 在 Chrome 里是「铺满可用宽」，铺满就会把多出来的宽度摊到
-		 * 每一列上，列与列之间裂出 173px 的断层（r15 就是踩的这个）。 */
-		body = [E('div', { class: 'cf-tablewrap' }, [
-			E('div', { class: 'table cbi-section-table cf-nums', style: 'width:max-content;max-width:100%' }, [
-				E('thead', {}, [
-					E('tr', { class: 'tr table-titles' },
-						head.map(function (t, c) {
-							return E('th', {
-								class: 'th ' + (colCls[c] || 'left'),
-								style: 'white-space:nowrap;padding-left:.7em;padding-right:.7em'
-							}, t);
-						}))
-				]),
-				tbody
+		 * 每一列上，列与列之间裂出 173px 的断层（r15 就是踩的这个）。
+		 * 再套一层 .cf-box 管高度：榜单满 10 行时表头 + 脚注还能留在屏幕上，
+		 * 不必为了看第 10 行把脚注推出去 —— 超出的行在卡片内部滚。 */
+		body = [E('div', { class: 'cf-box' }, [
+			E('div', { class: 'cf-tablewrap' }, [
+				E('div', { class: 'table cbi-section-table cf-nums', style: 'width:max-content;max-width:100%' }, [
+					E('thead', {}, [
+						E('tr', { class: 'tr table-titles' },
+							head.map(function (t, c) {
+								return E('th', {
+									class: 'th ' + (colCls[c] || 'left'),
+									style: 'white-space:nowrap;padding-left:.7em;padding-right:.7em'
+								}, t);
+							}))
+					]),
+					tbody
+				])
 			])
 		])];
 	}
@@ -1002,6 +1138,9 @@ function renderSources(rows, why) {
 }
 
 function doCheck(btn) {
+	/* 检测结果画在「源与检测」标签里：从榜单空态点过来时得先把人送过去，
+	 * 否则点了按钮什么也看不见（结果落在另一个隐藏面板里）。 */
+	activateTab('sources');
 	var host = nodes.srcHost;
 	if (btn)
 		busy(btn, true);
@@ -1151,11 +1290,11 @@ return view.extend({
 		syncStatus(st);
 
 		/* ---- 配置表单 ----
-		 * Map 标题只写「配置」：页面身份（Cloudflare 优选 IP 实测）已经在最上面
-		 * 那张状态卡里了，这里再写一遍全名，一页里同名标题出现两次。 */
+		 * Map 标题在标签版里不该再写「配置」：标签栏上就是这两个字，
+		 * 一屏内同名标题出现两次。这里换成一句说明这一页是干什么的。 */
 		var m = new form.Map('cf_ipcheck',
-			_('配置'),
-			_('用带真实 SNI 的 HTTPS 探测实测，判定口径见下方榜单说明。'));
+			_('实测参数'),
+			_('改动保存后下一轮生效；判定口径见「榜单」页脚注。'));
 
 		var s = m.section(form.TypedSection, 'global', _('基本设置'));
 		s.anonymous = true;
@@ -1403,9 +1542,13 @@ return view.extend({
 				  '两处都填时以上面的 gist_token 为准。')));
 		o.default = '/etc/cf-ipcheck.token';
 
-		/* ---- 拼页面：状态卡 + 结果卡 + 源体检卡 + 表单 ---- *
+		/* ---- 拼页面：固定头部（状态卡）+ 标签栏 + 三个面板 ---- *
 		 * m.render() 给的是 Promise，不是节点：不能直接塞进返回数组里。
 		 * 先把 Map 节点 resolve 出来，再拼成纯节点数组返回。
+		 *
+		 * 状态卡与那排按钮留在标签栏之上、不参与切换：它们管的是「本轮测速」，
+		 * 而三个标签都可能要起测（源页发现池空、配置页改完参数想立刻验），
+		 * 把它们复制进每个面板既不必要又会撞 id。
 		 */
 		nodes.table = renderTable(st);
 
@@ -1417,14 +1560,15 @@ return view.extend({
 				  '段内占比掉到 90% 以下通常说明源改内容了（例如开始提供别人自己的中转 IP），' +
 				  '拉不到的那条会标黄，引擎本轮会跳过它并记日志。')));
 
-		/* 源检测独立成一张卡。以前它挂在结果卡底部，被榜单和那段脚注压在下面 ——
-		 * 而候选池为空（empty_pool）时，引擎给的唯一一条下一步就是「去检测源」，
-		 * 得让人能在页面上找到它。现在结果卡上方那排按钮是操作、下方这张是体检，
-		 * 各自的空态 / 加载态 / 错误态也都归自己。 */
+		/* 源检测独占一个标签：它是「榜单为什么空」的答案，而 empty_pool 时
+		 * 引擎给的唯一一条下一步就是「去检测源」。
+		 * 卡里不再写一遍「源可用性检测」—— 标签栏上已经写了；改成一句
+		 * 说清「点了会发生什么」的短句，比重复标题有用。 */
 		nodes.srcBlock = E('div', { class: 'cbi-section', id: 'cf-ipcheck-sources' }, [
 			E('div', { class: 'cbi-section-node' }, [
 				E('div', { class: 'cf-src-head' }, [
-					E('span', { class: 'cf-t' }, _('源可用性检测')),
+					E('span', { class: 'cf-sub' },
+						_('逐条实拉社区源，核对它们是否还在吐 Cloudflare 段内的地址。')),
 					btnCheck
 				]),
 				nodes.srcHost
@@ -1448,7 +1592,27 @@ return view.extend({
 			btnAll, E('span', { style: 'opacity:.4' }, '·'), btnNone
 		]);
 
-		var page = [bar, nodes.table, nodes.srcBlock];
+		/* 配置面板：说明行 + 全部展开/收起 + 表单本体。表单节点要等
+		 * m.render() 回来才知道，所以先占一个空壳，resolve 之后再塞进去。 */
+		var cfgHost = E('div', { class: 'cf-cfg-host' }, foldbar);
+
+		/* 标签定义。计数只挑「有内容才显示」的两处：榜单条数（看结果时最想知道
+		 * 的有几条）与配置节数（让人知道下面有东西可改）。源那块是手动触发的，
+		 * 没有天然计数，就不硬凑一个。 */
+		var usable = (st.usable != null ? st.usable : (st.items || []).length);
+		var tabsEl = renderTabs([
+			{ id: 'result', label: _('榜单'), count: usable ? usable : '' },
+			{ id: 'sources', label: _('源与检测'), count: '' },
+			{ id: 'config', label: _('配置'), count: 4 }
+		]);
+
+		var page = [
+			bar,
+			tabsEl,
+			paneOf('result', nodes.table),
+			paneOf('sources', nodes.srcBlock),
+			paneOf('config', cfgHost)
+		];
 
 		return m.render().then(function (mapnode) {
 			injectStyle();
@@ -1462,8 +1626,11 @@ return view.extend({
 				'测速与判定': 1,
 				'Gist 上传': 1
 			});
-			page.push(foldbar);
-			page.push(mapnode);
+			cfgHost.appendChild(mapnode);
+			/* 标签栏与面板都进 DOM 之后再点亮：activateTab 要改 .cf-tab 的
+			 * class 与 aria，节点还没挂上去时改虽然也生效，但那一下切回结果的
+			 * refreshResult() 会因为表格量不到宽度而不准。 */
+			activateTab(savedTab());
 			if (st.state === 'running')
 				startPoll();
 			return page;

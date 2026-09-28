@@ -23,7 +23,7 @@ const src0 = fs.readFileSync(viewPath, 'utf8');
 const marker = '\nreturn view.extend({';
 if (!src0.includes(marker)) { console.log('NO-MARKER'); process.exit(1); }
 // 在 return 之前插一个导出钩子，把私有函数拿出来单测
-const hook = "\nglobalThis.__cf_t = { renderTable, parseStatus, countsText, domainKinds, stateLabel, reasonText, fmtTime, cfgText, scheduleText, staleText, notify, nodes };\n";
+const hook = "\nglobalThis.__cf_t = { renderTable, parseStatus, countsText, domainKinds, stateLabel, reasonText, fmtTime, cfgText, scheduleText, staleText, notify, nodes, renderTabs, activateTab, savedTab, paneOf, getTabDefs: function () { return tabDefs; }, getTabs: function () { return tabs; } };\n";
 const src = src0.replace(marker, hook + 'return view.extend({');
 
 function collect(n, out) {
@@ -46,6 +46,14 @@ function E(tag, attrs, children) {
 	node.appendChild = function (c) { node.children.push(c); return c; };
 	node.addEventListener = function () {};
 	node.setAttribute = function (k, v) { node.attrs[k] = v; };
+	node.querySelector = function () { return null; };
+	node.querySelectorAll = function () { return []; };
+	/* activateTab / busy / 折叠那几处都是改写 .className 而不是 attrs.class，
+	 * stub 得跟真 DOM 一样把这个属性映射回 attrs，否则断言读到的是初始值。 */
+	Object.defineProperty(node, 'className', {
+		get() { return this.attrs.class || ''; },
+		set(v) { this.attrs.class = String(v); }
+	});
 	if (children != null) {
 		const kids = Array.isArray(children) ? children : [ children ];
 		kids.forEach(c => node.children.push(c));
@@ -225,6 +233,45 @@ eq('提示类型进 class', t.nodes.notice.className.includes('small'), true);
 t.nodes.notice = null;
 t.notify('没有提示节点也不能抛异常', 'x', 'info');
 eq('nodes.notice 为 null 时静默返回', true, true);
+
+// ---- 标签栏：三个面板 + 切换只改 class、不重建节点 ----
+// 切换若重建面板，结果块刷新用的 nodes.table 会指向脱离文档的孤儿，
+// 之后 replaceChild 静默失败、页面再也不更新 —— 这条断言就是钉住这一点。
+const tabsEl = t.renderTabs([
+	{ id: 'result', label: '榜单', count: 10 },
+	{ id: 'sources', label: '源与检测', count: '' },
+	{ id: 'config', label: '配置', count: 4 }
+]);
+const tabBtns = tags(tabsEl, 'button');
+eq('标签数是 3', tabBtns.length, 3);
+eq('标签栏是 tablist', String(tabsEl.attrs['role'] || ''), 'tablist');
+eq('未选中的标签 aria-selected=false', String(tabBtns[0].attrs['aria-selected']), 'false');
+hasText('第一个标签写榜单', tabBtns[0], '榜单');
+hasText('计数进标签', tabBtns[0], '10');
+const cnts = tags(tabsEl, 'span').filter(s => String(s.attrs.class || '').includes('cf-tab-cnt'));
+eq('只有带计数的标签画计数徽标', cnts.length, 2);
+
+// paneOf 把面板登记到 tabDefs，activateTab 只改 class / aria
+const paneR = t.paneOf('result', t.renderTable(done));
+const paneS = t.paneOf('sources', E('div', {}, 'src'));
+const paneC = t.paneOf('config', E('div', {}, 'cfg'));
+eq('面板初始是隐藏的', String(paneR.attrs.class), 'cf-pane');
+eq('tabDefs 里结果面板被回填', t.getTabDefs()[0].pane === paneR, true);
+
+t.activateTab('sources');
+eq('切到源：源面板点亮', String(paneS.attrs.class), 'cf-pane is-on');
+eq('切到源：结果面板收起', String(paneR.attrs.class), 'cf-pane');
+eq('切到源：标签 aria 跟着翻', String(tabBtns[1].attrs['aria-selected']), 'true');
+eq('切到源：旧标签 aria 归 false', String(tabBtns[0].attrs['aria-selected']), 'false');
+eq('切到源：标签按钮 class 带 is-on', String(tabBtns[1].attrs.class), 'cf-tab is-on');
+eq('切换不新建面板（节点同一性保持）', t.getTabDefs()[1].pane === paneS, true);
+
+// 面板容器本身必须一直在（display:none 而不是被摘掉），否则 replaceChild 会失败
+eq('隐藏面板的父容器仍在（不拆节点）', !!paneR.__el && !!t.getTabDefs()[0].pane, true);
+
+// savedTab：没有记录 / 记录是野值时都回落到第一个标签
+const savedSansStore = t.savedTab();
+eq('localStorage 不可用时 savedTab 回落第一个标签', savedSansStore, 'result');
 
 console.log(fails === 0 ? '=== view 渲染断言全部通过' : `=== view 渲染断言失败 ${fails} 项`);
 process.exit(fails === 0 ? 0 : 1);
