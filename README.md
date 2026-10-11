@@ -56,7 +56,7 @@ git clone https://github.com/ybjbox/openwrt-packages.git package/openwrt-package
 改完代码请跑一遍这几项（都在仓库根目录执行）：
 
 ```bash
-# 1) 静态红线（POSIX sh 语法 / 跨包重复路径 / 视图陷阱 / 执行位 / JSON 契约）
+# 1) 静态红线（POSIX sh 语法 / 跨包重复路径 / 视图陷阱 / 执行位 / JSON 契约 / 子命令名）
 sh tests/lint.sh
 
 # 2) cf-ipcheck 引擎离线回归（绝不联网）
@@ -65,7 +65,7 @@ sh tests/test_cf_ipcheck.sh
 # 3) 引擎自带自检（离线，当前 102 项）
 sh luci-app-cf-ipcheck/root/usr/bin/cf-ipcheck selftest
 
-# 4) LuCI 视图渲染桩测（需要 Node 22+，51 条断言）
+# 4) LuCI 视图渲染桩测（需要 Node 22+，236 条断言）
 node tests/viewtest.mjs
 ```
 

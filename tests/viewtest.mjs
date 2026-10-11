@@ -799,7 +799,7 @@ ok('忙碌态不再只靠降透明度', !/\.cfp button\.busy\{pointer-events:non
  * ================================================================== */
 eq('status 的等待上限是 8 秒', t.CMD_LIMIT.status, 8000);
 eq('run-now 的等待上限是 10 秒', t.CMD_LIMIT['run-now'], 10000);
-eq('sources 给到 120 秒（逐条联网实拉，慢是正常的）', t.CMD_LIMIT.sources, 120000);
+eq('check-sources 给到 120 秒（逐条联网实拉，慢是正常的）', t.CMD_LIMIT['check-sources'], 120000);
 
 eq('被拒不带 reason，文案仍是「读取失败」', t.stateWord(t.parseStatus(null)), '读取失败');
 eq('超时 → unreachable', t.parseStatus(t.HUNG).state, 'unreachable');

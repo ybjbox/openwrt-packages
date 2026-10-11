@@ -16,6 +16,9 @@
 #   7) RED LINE 6: the JSON keys cf-ipcheck writes and the keys the LuCI view
 #      reads must match in both directions (renaming one side silently blanks
 #      a table column instead of failing loudly)
+#   8) RED LINE 8: every subcommand name the view passes to file.exec must be a
+#      label in the engine's dispatch table (a typo there returns usage text and
+#      the page reports "not valid JSON", which reads like an engine bug)
 set -u
 
 fail=0
@@ -33,8 +36,8 @@ find . \
     \( -name .git -o -name node_modules -o -name scratch -o -name 'tmp_*' \) -prune -o \
     -type f -print > "$ALL_FILES"
 
-# === [1/7] shell syntax check (sh -n) ========================================
-echo "=== [1/7] Shell syntax check (sh -n) ==="
+# === [1/8] shell syntax check (sh -n) ========================================
+echo "=== [1/8] Shell syntax check (sh -n) ==="
 : > "$SHELL_LIST"
 
 # .sh files anywhere in the repo.
@@ -71,8 +74,8 @@ while IFS= read -r f; do
     fi
 done < "$SHELL_LIST"
 
-# === [2/7] RED LINE 1: no forbidden js shipped under root/www ================
-echo "=== [2/7] Red line 1: forbidden js under root/www/ ==="
+# === [2/8] RED LINE 1: no forbidden js shipped under root/www ================
+echo "=== [2/8] Red line 1: forbidden js under root/www/ ==="
 rl1=0
 while IFS= read -r f; do
     [ -z "$f" ] && continue
@@ -92,8 +95,8 @@ if [ "$rl1" = 0 ]; then
 fi
 [ "$rl1" = 0 ] || fail=1
 
-# === [3/7] RED LINE 3: no cross-package duplicate installed file =============
-echo "=== [3/7] Red line 3: cross-package duplicate file paths ==="
+# === [3/8] RED LINE 3: no cross-package duplicate installed file =============
+echo "=== [3/8] Red line 3: cross-package duplicate file paths ==="
 # Strip the package prefix up to and including /root/, then detect duplicates.
 while IFS= read -r f; do
     [ -z "$f" ] && continue
@@ -109,8 +112,8 @@ else
     echo "[PASS] red-line-3: no cross-package duplicate file paths"
 fi
 
-# === [4/7] RED LINE 2: bandix restart hint (info only, never fails) ==========
-echo "=== [4/7] Red line 2: bandix restart hint (info only) ==="
+# === [4/8] RED LINE 2: bandix restart hint (info only, never fails) ==========
+echo "=== [4/8] Red line 2: bandix restart hint (info only) ==="
 hint=0
 while IFS= read -r f; do
     [ -z "$f" ] && continue
@@ -129,10 +132,10 @@ if [ "$hint" = 0 ]; then
     echo "      script restarts bandix after rewriting hostname_bindings.txt"
 fi
 
-# === [5/7] RED LINE 4: LuCI view JS traps (found on real device) =============
+# === [5/8] RED LINE 4: LuCI view JS traps (found on real device) =============
 # 这两条都是 2026-09-26 在雅典娜真机上验出来的：第一条让页面永远停在
 # 「正在载入视图」，第二条让结果表永远显示「尚未运行过」。
-echo "=== [5/7] Red line 4: LuCI view JS traps ==="
+echo "=== [5/8] Red line 4: LuCI view JS traps ==="
 rl4=0
 while IFS= read -r f; do
     [ -z "$f" ] && continue
@@ -165,13 +168,13 @@ else
     fail=1
 fi
 
-# === [6/7] RED LINE 5: files procd/rpcd execute must carry the exec bit ======
+# === [6/8] RED LINE 5: files procd/rpcd execute must carry the exec bit ======
 # 2026-09-26 真机装 CI 产物时暴露：仓库里 root/etc/init.d/cf-ipcheck 与
 # root/usr/bin/cf-ipcheck 是 100644，装到设备上就变成 -rw-r--r--，
 # 于是 post-install 的 enable/start 报 Permission denied，页面点「立即测速」
 # 也起不来（rpcd 是直接 execv 那个路径的）。手工 chmod 会把问题藏起来，
 # 所以这条必须在 CI 里钉死。
-echo "=== [6/7] Red line 5: executable file modes ==="
+echo "=== [6/8] Red line 5: executable file modes ==="
 # 优先看 git index 里的 mode：Windows 的 checkout 会伪造执行位，[ -x ] 在那边
 # 恒为真，只有 index mode 才是构建时真正打进包里的东西。
 USE_GIT=0
@@ -209,12 +212,12 @@ if [ "$rl5" = 1 ]; then
     fail=1
 fi
 
-# === [7/7] RED LINE 6: 引擎 JSON 与页面读数字段必须对得上 ====================
+# === [7/8] RED LINE 6: 引擎 JSON 与页面读数字段必须对得上 ====================
 # 引擎改字段名、页面忘了改，不会有任何报错：那一列永远显示 —，或者整块信息
 # 静默消失。吞吐列的键名已经改过两轮（speed_mbps -> speed_mibs -> speed_mbytes，
 # 单位从"看着像 megabits"到 MiB 再回到 Ryan 要的十进制 MB/s），靠真机才看得出来，
 # 所以这条契约检查放在 CI 里，两边任一侧单方面改名都会红。
-echo "=== [7/7] Red line 6: engine <-> view JSON field contract ==="
+echo "=== [7/8] Red line 6: engine <-> view JSON field contract ==="
 ENGINE=luci-app-cf-ipcheck/root/usr/bin/cf-ipcheck
 VIEW=luci-app-cf-ipcheck/htdocs/luci-static/resources/view/cf_ipcheck/settings.js
 TMP_ENGINE="/tmp/lint_engine.$$"
@@ -347,6 +350,41 @@ if [ -f "$VIEW" ] && [ -f "$ENGINE" ]; then
         fail=1
     else
         echo "[PASS] red-line-7: form fields all use short description + hover detail"
+    fi
+fi
+
+# --- red-line-8: 页面递给 file.exec 的子命令必须在引擎的分派表里 --------------
+# 真机踩过：页面把源检测写成 runCmd(['sources'])，而引擎只有 check-sources，于是一点
+# 「检测源可用性」拿到的是 usage 文本，页面报「输出不是合法 JSON」。JSON 键有 red-line-6
+# 守着，命令名此前没人守 —— 这种单边改名，视图桩测和引擎自检都发现不了。
+echo "=== [8/8] Red line 8: view only calls subcommands the engine dispatches ==="
+if [ -f "$VIEW" ] && [ -f "$ENGINE" ]; then
+    rl8=0
+    TMP_LABELS="/tmp/lint_labels.$$"
+    TMP_CALLS="/tmp/lint_calls.$$"
+    # 只取主分派表里的标签，别把函数内部的 case 标签混进来当合法命令
+    sed -n '/^case "${1:-}" in$/,/^esac$/p' "$ENGINE" |
+        sed -n 's/^[[:space:]]*\([a-z][a-z_-]*\)).*/\1/p' | sort -u > "$TMP_LABELS"
+    grep -oE "runCmd\(\[ '[a-z-]+'" "$VIEW" |
+        sed -E "s/.*runCmd\(\[ '([a-z-]+)'.*/\1/" | sort -u > "$TMP_CALLS"
+    if [ ! -s "$TMP_LABELS" ]; then
+        echo "[FAIL] cmd: 从引擎里一条分派标签都没提出来，这条检查本身失效了"
+        rl8=1
+    fi
+    while read -r c; do
+        [ -n "$c" ] || continue
+        if grep -qx "$c" "$TMP_LABELS"; then
+            echo "[PASS] cmd: 页面调用 $c，引擎有这条分派"
+        else
+            echo "[FAIL] cmd: 页面调用 $c，引擎分派表里没有（会被当未知命令，回的是 usage 文本）"
+            rl8=1
+        fi
+    done < "$TMP_CALLS"
+    rm -f "$TMP_LABELS" "$TMP_CALLS"
+    if [ "$rl8" = 1 ]; then
+        fail=1
+    else
+        echo "[PASS] red-line-8: view only calls subcommands the engine dispatches"
     fi
 fi
 

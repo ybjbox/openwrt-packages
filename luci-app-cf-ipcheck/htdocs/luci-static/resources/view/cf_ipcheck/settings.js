@@ -618,7 +618,7 @@ var CMD_LIMIT = {
 	status: 8000,
 	'run-now': 10000,
 	stop: 8000,
-	sources: 120000
+	'check-sources': 120000
 };
 
 function runCmd(args, ms) {
@@ -1390,7 +1390,7 @@ function srcMessage(src) {
 		case 'unreachable':
 			return T('检测没跑成：无法执行 %s（包没装好、可执行位丢失，或 rpcd 的 ACL 没放开 exec）。').format(CMD);
 		case 'hung':
-			return T('检测没有回应：路由器在 %s 秒内没返回。逐条实拉本来就慢，若每次都这样，先确认这台电脑能正常打开路由器后台。').format(Math.round(CMD_LIMIT.sources / 1000));
+			return T('检测没有回应：路由器在 %s 秒内没返回。逐条实拉本来就慢，若每次都这样，先确认这台电脑能正常打开路由器后台。').format(Math.round(CMD_LIMIT['check-sources'] / 1000));
 		case 'parse_error':
 			return T('检测返回的内容不是合法 JSON。原文片段：%s').format(String(src.raw || '').slice(0, 160));
 		case 'empty':
@@ -1803,7 +1803,7 @@ function actCheck(btn) {
 		sources: { state: 'checking' },
 		busy: Object.assign({}, store.get().busy, { check: true })
 	});
-	runCmd([ 'sources' ]).then(function (out) {
+	runCmd([ 'check-sources' ]).then(function (out) {
 		store.set({
 			sources: parseSources(out),
 			busy: Object.assign({}, store.get().busy, { check: false })
