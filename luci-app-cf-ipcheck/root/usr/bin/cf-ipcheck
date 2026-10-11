@@ -338,6 +338,24 @@ lock_field() { # $1=列号（1=pid，2=启动秒）
 	head -n 1 "$LOCK" 2>/dev/null | awk -v f="$1" '{ print (NF >= f ? $f : "") }'
 }
 
+# 某个 pid 的启动时刻（epoch 秒）；读不到就回 -1，让调用方退回旧行为而不是误判。
+# /proc/<pid>/stat 第 22 列是「开机后到进程启动的 tick 数」，但 comm 那一栏可能带
+# 空格和括号，所以先砍到最后一个 ')' 再数字段 —— 砍完 starttime 正落在第 20 个。
+# tick 按 USER_HZ=100 折算，加上 /proc/stat 的 btime（开机的那一秒）。
+proc_start_epoch() {
+	[ -r "/proc/$1/stat" ] || { printf -- '-1'; return 0; }
+	bt=$(grep -m1 '^btime ' /proc/stat 2>/dev/null | awk '{ print $2 }')
+	st=$(sed 's/.*)[[:space:]]*//' "/proc/$1/stat" 2>/dev/null | awk '{ print (NF >= 20 ? $20 : "") }')
+	case "${bt:-}" in ''|*[!0-9]*) printf -- '-1'; return 0 ;; esac
+	case "${st:-}" in ''|*[!0-9]*) printf -- '-1'; return 0 ;; esac
+	v=$(( bt + st / 100 ))
+	# 进程不可能在「未来」启动。算出来比现在还晚（MSYS 那种假 /proc 就会这样，
+	# tick 与 btime 不同源）说明这份数据不可信，让调用方退回旧行为，宁可漏判
+	# 也别把活锁误判成死的 —— 误判死锁会让两轮同时探测，数字互相抢。
+	[ "$v" -le "$(( $(date +%s) + 60 ))" ] || { printf -- '-1'; return 0; }
+	printf '%s' "$v"
+}
+
 lock_live() {
 	[ -f "$LOCK" ] || return 1
 	pid=$(lock_field 1)
@@ -349,6 +367,12 @@ lock_live() {
 	ts=$(lock_field 2)
 	if [ -n "${ts:-}" ]; then
 		[ $(( $(date +%s) - ts )) -lt "$LOCK_MAX" ] 2>/dev/null || return 1
+		# 光看 kill -0 会被 pid 复用骗过去：进程被 OOM 杀掉后，那个 pid 可能被一个
+		# 刚启动的无关进程占上，于是死轮被当成还在跑，页面一直「测速中」、按钮全灰，
+		# 要等锁满 6 小时才自愈。写锁的进程一定比锁更早启动 —— 启动时间晚于锁的
+		# 进程不可能是锁主。读不到启动时间（非 Linux /proc）就退回旧行为，不误判。
+		st=$(proc_start_epoch "$pid")
+		[ "$st" = -1 ] || [ "$st" -le "$ts" ] || return 1
 	fi
 	return 0
 }
@@ -935,7 +959,6 @@ write_outputs() {
 			printf '%s:%s\n' "$ip" "$C_PORT" >>"$tmp"
 		fi
 	done <"$colored"
-	mv "$tmp" "$BEST"
 
 	{
 		printf '{"state":"done","started":"%s","finished":"%s","pool":%s,"qualified":%s,"usable":%s,"intercepted":%s,"counts":%s,"domains":"%s","budget":%s,"port":%s,"items":[' \
@@ -950,8 +973,15 @@ write_outputs() {
 			}' "$colored"
 		printf ']}\n'
 	} >"$RUN_DIR/result.tmp" && mv "$RUN_DIR/result.tmp" "$RESULT"
-	cp "$RESULT" "$STATUS" 2>/dev/null || true
-	cp "$RESULT" "$RESULT_KEEP" 2>/dev/null || true
+	# 状态的两个副本也走「先写临时、再 rename」：cp 被打断会留下半截 JSON，
+	# 而 RESULT_KEEP 是重启后页面唯一的恢复来源，它坏了就等于「从未运行过」。
+	cp "$RESULT" "$RUN_DIR/status.new" 2>/dev/null && mv -f "$RUN_DIR/status.new" "$STATUS" || rm -f "$RUN_DIR/status.new"
+	cp "$RESULT" "$ETC_DIR/result.keep.new" 2>/dev/null && mv -f "$ETC_DIR/result.keep.new" "$RESULT_KEEP" || rm -f "$ETC_DIR/result.keep.new"
+
+	# best-ip.txt 放在最后一笔：它一换新版，就说明这一轮的状态也已经落定了。
+	# 反过来（榜单先写）真机上撞过：轮次被杀在中间，文件已经是下一轮的、
+	# status 还停在上一轮，页面和文件各说一套。
+	mv "$tmp" "$BEST"
 }
 
 # ---------------- Gist 上传（可选；失败只记日志，不影响本地结果）----------
@@ -1458,6 +1488,22 @@ selftest() {
 	check 'pid 还活着但锁龄超过上限时回收（防 pid 复用）' "$(lock_live && echo alive || echo dead)" 'dead'
 	printf '%s\n' "$$" >"$LOCK"
 	check '旧格式（只有 pid）也能判活' "$(lock_live && echo alive || echo dead)" 'alive'
+	# pid 复用防线：锁里记的 pid 现在被一个「比锁更晚启动的进程」占着，它就不可能是锁主。
+	# 真机撞过这一种：轮次被杀后几秒 pid 被人接走，页面一直「测速中」，要等满 6 小时才自愈。
+	# 读不到可信的启动时间（非 Linux 的 /proc）时退回旧行为 —— 宁可漏判，别误杀活锁。
+	sleep 2 &
+	later=$!
+	printf '%s %s\n' "$later" "$(( $(date +%s) - 120 ))" >"$LOCK"
+	if [ "$(proc_start_epoch "$later")" = -1 ]; then
+		check '读不到启动时间时不把活锁误判成死锁' "$(lock_live && printf alive || printf dead)" alive
+	else
+		check '锁主 pid 被更晚启动的进程复用时判死' "$(lock_live && printf alive || printf dead)" dead
+	fi
+	kill "$later" 2>/dev/null
+	wait "$later" 2>/dev/null
+	printf '%s %s\n' "$$" "$(date +%s)" >"$LOCK"
+	check '锁主是本进程时新防线不误伤' "$(lock_live && printf alive || printf dead)" alive
+	rm -f "$LOCK"
 	printf 'garbage\n' >"$LOCK"
 	check '锁内容读不出 pid 时按陈旧处理，不卡死' "$(lock_live && echo alive || echo dead)" 'dead'
 	rm -f "$LOCK"

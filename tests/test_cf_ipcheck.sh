@@ -120,6 +120,16 @@ else
 fi
 rm -f "$RUN/lock"
 
+# 收尾改成了「先写状态，best-ip.txt 最后一笔」，而且每一笔都是临时文件 + rename。
+# 跑完整轮之后不该在任何地方留下 .tmp / .new —— 留了就说明某一步的 rename 没做到。
+left=$(ls "$RUN"/*.tmp "$RUN"/*.new "$ETC"/*.new 2>/dev/null | tr '\n' ' ')
+if [ -z "$left" ]; then
+	echo '[PASS] 产物收尾用「临时 + rename」，跑完不留残渣'
+else
+	echo "::error::留下临时文件: $left"
+	rc=1
+fi
+
 # status 必须回显"当前配置"的 enabled / interval：页面靠它写"定时实测开着，
 # 下一轮约几点"。这两个值不能取上一轮落盘时的旧值 —— 用户刚改完就想看到。
 printf '{"state":"done","items":[]}\n' >"$RUN/status.json"
