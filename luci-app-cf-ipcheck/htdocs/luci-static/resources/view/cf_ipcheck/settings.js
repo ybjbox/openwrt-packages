@@ -1479,14 +1479,24 @@ function LogsPane(lg, actions) {
 	})));
 
 	if (!lg) {
-		kids.push(EmptyBox({
-			title: T('还没读过日志'),
-			detail: T('这里显示引擎自己写的过程记录：逐条源取到什么、候选池多大、哪些 IP 达标、吞吐实测结果，以及每一轮的失败原因。日志写在路由器的 /tmp/cf-ipcheck/cf-ipcheck.log 里，那是内存盘，重启就清零。'),
-			action: Button({
-				kind: 'primary', label: T('读取日志'), icon: '\u21bb',
-				onClick: actions.refresh
-			})
-		}));
+		/* 页面一打开就自己发起了一次读取，所以这里绝大多数情况是「正在读」那一支；
+		 * 只有 rpc 一次都没成功过（或链路整个不通）才会停在引导态 */
+		if (busy) {
+			kids.push(EmptyBox({
+				spin: true,
+				title: T('正在读取日志'),
+				detail: T('引擎在 /tmp/cf-ipcheck/cf-ipcheck.log 里的过程记录，取最近这一段。')
+			}));
+		} else {
+			kids.push(EmptyBox({
+				title: T('还没读到日志'),
+				detail: T('这里显示引擎自己写的过程记录：逐条源取到什么、候选池多大、哪些 IP 达标、吞吐实测结果，以及每一轮的失败原因。日志写在路由器的 /tmp/cf-ipcheck/cf-ipcheck.log 里，那是内存盘，重启就清零。'),
+				action: Button({
+					kind: 'primary', label: T('读取日志'), icon: '\u21bb',
+					onClick: actions.refresh
+				})
+			}));
+		}
 		return el('div', {}, kids);
 	}
 
@@ -1823,6 +1833,8 @@ function startPoll() {
 		return;
 	stopPoll();
 	poller = setInterval(function () {
+		/* 测速期间把日志也一起带上：这一轮正在进行到哪一步，不该要人点一下才看到 */
+		logsRefresh();
 		refresh().then(function (st) {
 			if (!st || st.state !== 'running')
 				stopPoll();
@@ -1928,24 +1940,33 @@ function actCheck(btn) {
 	});
 }
 
+/* 取日志。主动展示：进页面取一次，测速期间跟着轮询一起更新，
+ * 不用人先点一下「读取日志」才看得到东西。 */
+function logsRefresh() {
+	var st = store.get();
+	if (st.busy && st.busy.logs)
+		return Promise.resolve(st.logs);   /* 已经有一次在飞，别叠 */
+	store.set({ busy: Object.assign({}, st.busy, { logs: true }) });
+	return runCmd([ 'logs' ]).then(function (out) {
+		var lg = parseLog(out);
+		store.set({
+			logs: lg,
+			busy: Object.assign({}, store.get().busy, { logs: false })
+		});
+		return lg;
+	}, function () {
+		store.set({ busy: Object.assign({}, store.get().busy, { logs: false }) });
+		return store.get().logs;
+	});
+}
+
 function actLogs(btn) {
 	/* 和源检测同一个道理：结果画在「日志」页里，从别的页点进来要先送过去，
 	 * 不然画在一个看不见的面板上，又是一次「点了没反应」。 */
 	gotoTab('logs');
 	setBusy(btn, true);
-	store.set({ busy: Object.assign({}, store.get().busy, { logs: true }) });
-	runCmd([ 'logs' ]).then(function (out) {
+	logsRefresh().then(function () {
 		setBusy(btn, false);
-		store.set({
-			logs: parseLog(out),
-			busy: Object.assign({}, store.get().busy, { logs: false })
-		});
-	}, function () {
-		setBusy(btn, false);
-		store.set({
-			logs: { state: 'unreachable' },
-			busy: Object.assign({}, store.get().busy, { logs: false })
-		});
 	});
 }
 
@@ -2154,21 +2175,40 @@ function buildPage(mapnode) {
 
 	/* ---- 面板 3：日志 ---- */
 	var logsPane = el('div', { class: 'pane' });
-	/* 日志不常变，而状态每 5 秒轮询一次就重画一次 —— 重画会把日志框内部的滚动
-	 * 位置顶回顶部，正看着的那几行就跳走了。所以只在「日志本身或忙碌标记」
-	 * 真的变了才重建（和标签栏同一套办法：先比普通，再动 DOM）。 */
-	var lastLogs = null;
+	/* 日志现在是主动刷新的（进页面取一次、测速中每轮询一次再取），所以两件事都得处理：
+	 *   1) 内容和忙碌标记都没变就别动 DOM，别每 5 秒白白重画一次；
+	 *   2) 真有新内容进来时保住阅读位置 —— 原本贴着底就跟着新行继续贴底（像 tail -f），
+	 *      在中间看着的就不弹回顶部。 */
+	var lastLogsKey = null;
 	var lastLogsBusy = null;
 	var logsDrawn = false;
+	function logsKeyOf(lg) {
+		if (!lg)
+			return 'none';
+		if (lg.state !== 'ok')
+			return lg.state;
+		return 'ok:' + lg.text.length + ':' + lg.text.slice(-60);
+	}
 	function drawLogs(state) {
 		var busyLogs = !!(state.busy && state.busy.logs);
-		if (logsDrawn && state.logs === lastLogs && busyLogs === lastLogsBusy)
+		var key = logsKeyOf(state.logs);
+		if (logsDrawn && key === lastLogsKey && busyLogs === lastLogsBusy)
 			return;
+		var box = logsPane.querySelector ? logsPane.querySelector('.logbox') : null;
+		var keepTop = 0;
+		var atBottom = false;
+		if (box) {
+			keepTop = box.scrollTop;
+			atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 4;
+		}
 		logsDrawn = true;
-		lastLogs = state.logs;
+		lastLogsKey = key;
 		lastLogsBusy = busyLogs;
 		clear(logsPane);
 		logsPane.appendChild(LogsPane(state.logs, { refresh: actLogs, copy: actCopyLogs }));
+		var fresh = logsPane.querySelector ? logsPane.querySelector('.logbox') : null;
+		if (fresh)
+			fresh.scrollTop = atBottom ? fresh.scrollHeight : keepTop;
 	}
 
 	/* ---- 面板 4：配置 ---- */
@@ -2458,6 +2498,10 @@ return view.extend({
 			/* 首帧若读到的是「正在跑」，直接把轮询接上 */
 			if (store.get().status.state === 'running')
 				startPoll();
+
+			/* 日志主动取一次：打开页面就能看到最近发生了什么，
+			 * 不必先到「日志」页点一下「读取日志」 */
+			logsRefresh();
 
 			return root;
 		});

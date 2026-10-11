@@ -41,6 +41,7 @@ const hook = "\nglobalThis.__cf_t = {\n" +
 	"\tCSS: CSS, el: el, get store() { return store; },\n" +
 	"\tget P() { return P; }, goto: goto, savedTab: savedTab,\n" +
 	"\tbuildPage: buildPage, runCmd: runCmd,\n" +
+	"\tlogsRefresh: logsRefresh,\n" +
 	"\tHUNG: HUNG, CMD_LIMIT: CMD_LIMIT, isRunningReply: isRunningReply\n" +
 	"};\n";
 const src = src0.replace(marker, hook + 'return view.extend({');
@@ -858,8 +859,15 @@ eq('日志行：截旧日志只是提醒', t.logTone('2026-10-12T00:00:00Z 日�
 eq('日志行：正常行不上色', t.logTone('2026-10-12T00:00:00Z 候选池 96 个'), '');
 
 let lp = t.LogsPane(null, { refresh: noop, copy: noop });
-has('日志页没读过时给引导', lp, '还没读过日志');
+has('日志页未读到时有引导', lp, '还没读到日志');
 has('引导说清日志在设备上哪', lp, '/tmp/cf-ipcheck/cf-ipcheck.log');
+ok('引导态给一个能点的读取按钮', byTag(lp, 'button').length >= 1);
+/* busy 是从 store 读的（LogsPane 没有第三个参数），所以先打补丁再画 */
+t.store.set({ busy: { logs: true } });
+lp = t.LogsPane(null, { refresh: noop, copy: noop });
+has('正在读取时给转圈文案', lp, '正在读取日志');
+hasNot('正在读取时不重复给引导按钮', lp, '还没读到日志');
+t.store.set({ busy: {} });
 
 lp = t.LogsPane({ state: 'empty' }, { refresh: noop, copy: noop });
 has('空文件说「还没有日志」', lp, '还没有日志');
@@ -885,6 +893,27 @@ eq('标签顺序：日志在配置之前', t.TAB_DEFS.map(d => d.id).join(','), 
 ok('store 默认带 logs（null = 还没读过）', t.store.get().logs === null);
 ok('日志上限这一项归进基本设置组',
 	t.GROUP_OPTIONS.basic.indexOf('log_max_kb') >= 0);
+
+/* ================================================================== *
+ * 15. 日志是主动取的：不用先点一下「读取日志」才看得到
+ * ================================================================== */
+let logCalls = 0;
+rpcImpl = async () => { logCalls++; return ''; };
+await t.logsRefresh();
+eq('主动取一次就把结果写进 store', t.store.get().logs.state, 'empty');
+eq('取完把忙碌标记清掉', String(t.store.get().busy.logs), 'false');
+eq('确实打到引擎一次', logCalls, 1);
+
+/* 并发去重：页面刚打开会连着触发几次（首帧 + 点按钮），不能叠成多个 rpc */
+logCalls = 0;
+let release = null;
+rpcImpl = () => new Promise(res => { logCalls++; release = () => res(''); });
+const pa = t.logsRefresh();
+const pb = t.logsRefresh();
+eq('同一时刻不叠日志请求', logCalls, 1);
+release();
+await Promise.all([pa, pb]);
+eq('去重的那次也拿到同一份结果', t.store.get().logs.state, 'empty');
 
 console.log(fails === 0 ? '=== view 渲染断言全部通过' : `=== view 渲染断言失败 ${fails} 项`);
 process.exit(fails === 0 ? 0 : 1);
