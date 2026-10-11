@@ -204,7 +204,10 @@ var CSS = [
 	'.cfp button.primary:hover:not(:disabled){filter:brightness(1.07);border-color:transparent}',
 	'.cfp button.ghost{background:transparent;border-color:transparent;color:var(--ink-2);padding:.42em .55em}',
 	'.cfp button.ghost:hover:not(:disabled){background:var(--panel-2);border-color:transparent;color:var(--ink)}',
-	'.cfp button.busy{pointer-events:none;opacity:.6}',
+	'.cfp button.busy{pointer-events:none;opacity:.78}',
+	/* 忙碌时把定宽的图标位换成转圈：不换文案、不改宽度，但一眼看得出这一下点下去了 */
+	'.cfp button.busy .bi{opacity:1;font-size:0;border:2px solid currentColor;border-top-color:transparent;',
+	'  border-radius:50%;width:.85em;height:.85em;animation:cfp-spin .8s linear infinite}',
 	'.cfp .bi{width:1em;text-align:center;font-style:normal;opacity:.75;flex:0 0 auto}',
 	'.cfp button.primary .bi{opacity:1}',
 	/* 纯文字链接式按钮（展开/收起、跳转） */
@@ -560,7 +563,7 @@ function stateWord(st) {
 		case 'never_run':
 			return T('尚未运行');
 		case 'unreachable':
-			return T('读取失败');
+			return st.reason === 'hung' ? T('没有回应') : T('读取失败');
 		case 'parse_error':
 			return T('输出异常');
 		case 'error':
@@ -594,8 +597,11 @@ function why(reason) {
  * 5. IPC —— 与引擎的唯一通道
  * ==========================================================================
  * expect:{stdout:''} 会让 rpc 把 stdout 直接解包成返回值，所以这里拿到的是字符串
- * 本身而不是 out.stdout。任何异常（ACL 没放开、可执行文件缺失、rpcd 超时）统一
- * 收敛成 null，交给上层按「执行不了」处理 —— 绝不和「跑完了没结果」混为一谈。
+ * 本身而不是 out.stdout。三种结果各说各的事，绝不混为一谈：
+ *   字符串 → 执行成功（空串是「跑完了但没结果」，上层按 never_run 处理）
+ *   null   → 执行被拒（ACL 没放开、可执行文件缺失）
+ *   HUNG   → 等太久没回（uhttpd/rpcd 挂住，或这台电脑到路由器的路被劫持）
+ * 挂住单独成一态而不是收敛成 null：照 null 去查「包没装好」是白费劲，真相是没回应。
  */
 var rpcExec = rpc.declare({
 	object: 'file',
@@ -604,23 +610,54 @@ var rpcExec = rpc.declare({
 	expect: { stdout: '' }
 });
 
-function runCmd(args) {
-	return rpcExec(CMD, args).then(function (out) {
+var HUNG = { hung: true };
+
+/* 等待上限按命令给：status 只读一个本地文件，8 秒嫌久；sources 要引擎逐条联网实拉，
+ * 十几个源 120 秒都不算多，别把它误判成挂住。 */
+var CMD_LIMIT = {
+	status: 8000,
+	'run-now': 10000,
+	stop: 8000,
+	sources: 120000
+};
+
+function runCmd(args, ms) {
+	var call = rpcExec(CMD, args).then(function (out) {
 		return (typeof out === 'string') ? out : null;
 	}, function () {
 		return null;
 	});
+	/* 没有定时器的环境（单测桩）不加超时，保持同步语义 */
+	if (typeof setTimeout !== 'function')
+		return call;
+	var limit = ms || CMD_LIMIT[args && args[0]] || 8000;
+	return new Promise(function (res) {
+		var timer = setTimeout(function () { res(HUNG); }, limit);
+		call.then(function (out) {
+			if (typeof clearTimeout === 'function')
+				clearTimeout(timer);
+			res(out);
+		});
+	});
+}
+
+/* 引擎在已有轮次时对 run-now 回 {"state":"running"}，不能一律说「已启动」 */
+function isRunningReply(out) {
+	return /"state"\s*:\s*"running"/.test(String(out));
 }
 
 /* 把引擎的一串输出解析成状态对象。
- * 三种失败必须分开表达，这是整页可信度的地基：
+ * 四种失败必须分开表达，这是整页可信度的地基：
  *   null  → 根本没执行成功     → unreachable
+ *   HUNG  → 等太久没回         → unreachable + reason=hung（文案完全不同）
  *   空串  → 执行成功但没结果   → never_run（还没跑过一轮）
  *   非JSON→ 输出了但读不懂     → parse_error（附原文片段，便于贴日志排查）
  */
 function parseStatus(raw) {
 	if (raw === null || raw === undefined)
 		return { state: 'unreachable', items: [] };
+	if (raw === HUNG)
+		return { state: 'unreachable', reason: 'hung', items: [] };
 	if (!raw)
 		return { state: 'never_run', items: [] };
 	try {
@@ -639,6 +676,8 @@ function parseStatus(raw) {
 function parseSources(raw) {
 	if (raw === null || raw === undefined)
 		return { state: 'unreachable' };
+	if (raw === HUNG)
+		return { state: 'hung' };
 	if (!raw)
 		return { state: 'empty' };
 	try {
@@ -870,20 +909,23 @@ function Button(p) {
 	else if (p.kind === 'lnk')
 		cls = 'lnk';
 	return el('button', {
-		class: cls,
+		class: cls + (p.busy ? ' busy' : ''),
 		type: 'button',
 		disabled: !!p.disabled,
+		'aria-busy': p.busy ? 'true' : null,
 		title: p.title || null,
 		on: p.onClick ? { click: function (ev) { ev.preventDefault(); p.onClick(this); } } : null
 	}, kids);
 }
 
-/* 忙碌态：按钮的 loading（禁用 + 降透明度，不换文案，避免宽度跳动） */
+/* 忙碌态：禁用 + 图标位转圈。不换文案（避免宽度跳动），但要让人看得出这一下点下去了 */
 function setBusy(btn, on) {
 	if (!btn)
 		return;
 	btn.disabled = !!on;
 	btn.className = String(btn.className).replace(/ ?busy/g, '') + (on ? ' busy' : '');
+	if (btn.setAttribute)
+		btn.setAttribute('aria-busy', on ? 'true' : 'false');
 }
 
 /* 空态 / 加载态：一句说清为什么空，再给一个能解决它的动作 */
@@ -938,18 +980,18 @@ function StatusRail(st, busy, actions) {
 
 	var btnRun = Button({
 		kind: 'primary', icon: '\u25b6', label: T('立即测速'),
-		disabled: running || busy.run,
+		disabled: running || busy.run, busy: busy.run,
 		onClick: actions.run
 	});
 	var btnStop = Button({
 		icon: '\u25a0', label: T('停止本轮'),
-		disabled: !running || busy.stop,
+		disabled: !running || busy.stop, busy: busy.stop,
 		title: running ? null : T('当前没有在跑的一轮'),
 		onClick: actions.stop
 	});
 	var btnRefresh = Button({
 		icon: '\u21bb', label: T('刷新'),
-		disabled: busy.refresh,
+		disabled: busy.refresh, busy: busy.refresh,
 		onClick: actions.refresh
 	});
 	var btnCopy = Button({
@@ -1179,11 +1221,15 @@ function BoardPane(st, actions) {
 
 	/* 三种「读不到」分开说，各自给对应的下一步 */
 	if (st.state === 'unreachable' || st.state === 'parse_error') {
+		var hung = st.reason === 'hung';
 		kids.push(EmptyBox({
-			title: st.state === 'unreachable' ? T('读不到引擎的输出') : T('引擎的输出读不懂'),
-			detail: st.state === 'unreachable'
-				? T('无法执行 %s。多半是包没装好，或 rpcd 的 ACL 没放开 exec。').format(CMD)
-				: T('拿到的不是合法 JSON，无法解析。原文片段：%s').format(String(st.raw || '').slice(0, 160)),
+			title: hung ? T('路由器没有回应')
+				: (st.state === 'unreachable' ? T('读不到引擎的输出') : T('引擎的输出读不懂')),
+			detail: hung
+				? T('等了一会儿没拿到 %s 的返回，这通常不是插件的问题。先确认这台电脑能打开路由器后台（本机代理/TUN 接管会把到 10.0.0.0/8 的流量吞掉），再看 LuCI 会话是不是已经过期。').format(CMD)
+				: (st.state === 'unreachable'
+					? T('无法执行 %s。多半是包没装好，或 rpcd 的 ACL 没放开 exec。').format(CMD)
+					: T('拿到的不是合法 JSON，无法解析。原文片段：%s').format(String(st.raw || '').slice(0, 160))),
 			action: Button({
 				label: T('重新读取'), icon: '\u21bb',
 				onClick: actions.refresh
@@ -1297,6 +1343,7 @@ function SourcesPane(src, actions) {
 	kids.push(Section(T('源清单'), Button({
 		label: T('重新检测'), icon: '\u2315',
 		disabled: store.get().busy && store.get().busy.check,
+		busy: store.get().busy && store.get().busy.check,
 		onClick: actions.check
 	})));
 
@@ -1341,7 +1388,9 @@ function SourcesPane(src, actions) {
 function srcMessage(src) {
 	switch (src.state) {
 		case 'unreachable':
-			return T('检测没跑成：无法执行 %s（包没装好、可执行位丢失，或 rpcd 的 file.exec 超时）。').format(CMD);
+			return T('检测没跑成：无法执行 %s（包没装好、可执行位丢失，或 rpcd 的 ACL 没放开 exec）。').format(CMD);
+		case 'hung':
+			return T('检测没有回应：路由器在 %s 秒内没返回。逐条实拉本来就慢，若每次都这样，先确认这台电脑能正常打开路由器后台。').format(Math.round(CMD_LIMIT.sources / 1000));
 		case 'parse_error':
 			return T('检测返回的内容不是合法 JSON。原文片段：%s').format(String(src.raw || '').slice(0, 160));
 		case 'empty':
@@ -1620,7 +1669,9 @@ var inflight = null;
 var poller = null;
 
 /* 刷新状态：同一时刻只留一个 status 请求在飞，后来的共享它的结果。
- * 两次刷新叠在一起本身不会出错（写 store 是幂等的），但会把 ubus 请求翻倍。 */
+ * 两次刷新叠在一起本身不会出错（写 store 是幂等的），但会把 ubus 请求翻倍。
+ * 共享的前提是 inflight 一定会复位 —— runCmd 现在保证 settle（成功/被拒/超时三态），
+ * 不会再出现一次 rpc 永不返回、之后所有刷新都拿到同一个死 promise 的情况。 */
 function refresh() {
 	if (inflight)
 		return inflight;
@@ -1629,6 +1680,8 @@ function refresh() {
 		inflight = null;
 		var st = parseStatus(out);
 		var busy = Object.assign({}, store.get().busy, { refresh: false });
+		if (out === HUNG)
+			flash(T('读取状态没有回应'), T('路由器在 %s 秒内没返回，页面先停在上一帧读数上。').format(Math.round(CMD_LIMIT.status / 1000)), 'bad');
 		store.set({ status: st, busy: busy });
 		if (st.state === 'running')
 			startPoll();
@@ -1671,17 +1724,29 @@ function actRun(btn) {
 	setBusy(btn, true);
 	store.set({ busy: Object.assign({}, store.get().busy, { run: true }) });
 	runCmd([ 'run-now' ]).then(function (out) {
+		setBusy(btn, false);
 		store.set({ busy: Object.assign({}, store.get().busy, { run: false }) });
+		if (out === HUNG) {
+			/* 挂住不等于没启动：run-now 是把后台进程甩出去，那一轮很可能已经在跑了，
+			 * 只是这条 CGI 连接没回来。所以照样开轮询，让页面自己追上真实状态。 */
+			flash(T('启动命令没有回应'), T('%s 秒内没等到返回。这一轮可能已经开始了，状态会自动跟进；一直不更新就先确认这台电脑能打开路由器后台。').format(Math.round(CMD_LIMIT['run-now'] / 1000)), 'warn');
+			refresh().then(function () { startPoll(); });
+			return;
+		}
 		if (out === null) {
 			flash(T('无法启动'), T('执行 %s 失败：包没装好，或 rpcd 的 ACL 没放开 exec。').format(CMD), 'bad');
 			return;
 		}
-		flash(T('已启动一轮测速'), String(out), 'ok');
+		if (isRunningReply(out))
+			flash(T('这一轮还在跑'), T('引擎说已经有一轮在测速，等它收尾；进度会自动刷新。'), 'warn');
+		else
+			flash(T('已启动一轮测速'), String(out), 'ok');
 		/* 无条件开始轮询 + 立刻拉一次：run-now 只是把后台进程甩出去，
 		 * 那一轮要几毫秒后才把 running 写进状态。这里抢跑一次就可能读到上一轮的
 		 * done，于是永远是「已完成」——所以先补一次 refresh 再开轮询。 */
 		refresh().then(function () { startPoll(); });
 	}, function () {
+		setBusy(btn, false);
 		store.set({ busy: Object.assign({}, store.get().busy, { run: false }) });
 	});
 }
@@ -1690,13 +1755,17 @@ function actStop(btn) {
 	setBusy(btn, true);
 	store.set({ busy: Object.assign({}, store.get().busy, { stop: true }) });
 	runCmd([ 'stop' ]).then(function (out) {
+		setBusy(btn, false);
 		store.set({ busy: Object.assign({}, store.get().busy, { stop: false }) });
-		if (out === null)
+		if (out === HUNG)
+			flash(T('停止命令没有回应'), T('%s 秒内没等到返回。停止信号可能已经写进去了，本轮收尾后自停。').format(Math.round(CMD_LIMIT.stop / 1000)), 'warn');
+		else if (out === null)
 			flash(T('无法请求停止'), T('执行 %s 失败。').format(CMD), 'bad');
 		else
 			flash(T('已请求停止'), T('当前这轮收尾后不再继续探测。'), 'warn');
 		refresh();
 	}, function () {
+		setBusy(btn, false);
 		store.set({ busy: Object.assign({}, store.get().busy, { stop: false }) });
 		flash(T('无法请求停止'), T('执行 %s 失败。').format(CMD), 'bad');
 	});

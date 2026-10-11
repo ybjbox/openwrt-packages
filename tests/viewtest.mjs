@@ -39,7 +39,8 @@ const hook = "\nglobalThis.__cf_t = {\n" +
 	"\tTAB_DEFS: TAB_DEFS, GROUPS: GROUPS, GROUP_OPTIONS: GROUP_OPTIONS,\n" +
 	"\tCSS: CSS, el: el, get store() { return store; },\n" +
 	"\tget P() { return P; }, goto: goto, savedTab: savedTab,\n" +
-	"\tbuildPage: buildPage, runCmd: runCmd\n" +
+	"\tbuildPage: buildPage, runCmd: runCmd,\n" +
+	"\tHUNG: HUNG, CMD_LIMIT: CMD_LIMIT, isRunningReply: isRunningReply\n" +
 	"};\n";
 const src = src0.replace(marker, hook + 'return view.extend({');
 
@@ -267,7 +268,9 @@ const windowStub = {
 };
 
 const _ = s => String(s);
-const rpcStub = { declare: () => async () => '' };
+/* rpc 走一个可替换的实现：默认照常回空串，要造「永不返回」时由测试改写 rpcImpl */
+let rpcImpl = async () => '';
+const rpcStub = { declare: () => (...a) => rpcImpl(a) };
 const viewStub = { extend: o => o };
 function MapStub() { this.sections = []; }
 MapStub.prototype.section = function () {
@@ -285,12 +288,22 @@ const formStub = {
 };
 
 const uiStub = { addToast: noop, toast: noop };
+/* 定时器做成登记表而不是 () => 0：默认依然永不触发（与旧桩行为一致，异步合帧的
+ * 订阅在测试里不会莫名跑起来），但「挂住到超时」这类分支能被测试亲手点亮。 */
+const timers = [];
+const stubSetTimeout = (fn, ms) => { timers.push({ fn: fn, ms: ms }); return timers.length; };
+const stubClearTimeout = (id) => { if (id) timers[id - 1] = null; };
+const liveTimers = () => timers.filter(x => x).length;
+function fireTimers(ms) {
+	timers.filter(x => x && x.ms === ms).forEach(x => { const f = x.fn; x.ms = -1; f(); });
+}
+
 const ctx = new Function('form', 'rpc', 'ui', 'view', 'E', '_', 'L', 'window', 'document',
-	'setTimeout', 'setInterval', 'clearInterval', 'navigator', 'globalThis', src);
+	'setTimeout', 'setInterval', 'clearInterval', 'clearTimeout', 'navigator', 'globalThis', src);
 ctx(formStub, rpcStub, uiStub, viewStub, () => makeNode('div'), _, {
 	addItem: noop, network: {}
 }, windowStub, documentStub,
-	() => 0, () => 0, () => 0,
+	stubSetTimeout, () => 0, () => 0, stubClearTimeout,
 	{ clipboard: undefined }, globalThis);
 
 const t = globalThis.__cf_t;
@@ -776,6 +789,57 @@ ok('CSS 数字用等宽 + tabular-nums', /tabular-nums/.test(css));
 ok('CSS 尊重减少动效偏好', /prefers-reduced-motion/.test(css));
 ok('CSS 有可见焦点环', /:focus-visible/.test(css));
 ok('CSS 里的 class 前缀统一', /\.cfp/.test(css) && /\.board/.test(css) && /\.tabs/.test(css));
+ok('忙碌态在图标位画转圈', /\.cfp button\.busy \.bi\{[^]*?animation:cfp-spin/.test(css));
+ok('忙碌态不再只靠降透明度', !/\.cfp button\.busy\{pointer-events:none;opacity:\.6\}/.test(css));
+
+/* ================================================================== *
+ * 13. RPC 三态：正常 / 被拒 / 挂住
+ * 挂住必须单独成一态：旧版把「rpc 永不返回」和「rpc 被拒」混成 null，于是一次挂住
+ * 之后 inflight 永不复位，整页刷新停摆而画面上一条提示都没有。
+ * ================================================================== */
+eq('status 的等待上限是 8 秒', t.CMD_LIMIT.status, 8000);
+eq('run-now 的等待上限是 10 秒', t.CMD_LIMIT['run-now'], 10000);
+eq('sources 给到 120 秒（逐条联网实拉，慢是正常的）', t.CMD_LIMIT.sources, 120000);
+
+eq('被拒不带 reason，文案仍是「读取失败」', t.stateWord(t.parseStatus(null)), '读取失败');
+eq('超时 → unreachable', t.parseStatus(t.HUNG).state, 'unreachable');
+eq('超时 → reason=hung', t.parseStatus(t.HUNG).reason, 'hung');
+eq('超时的状态词是「没有回应」', t.stateWord(t.parseStatus(t.HUNG)), '没有回应');
+
+pane = t.BoardPane(t.parseStatus(t.HUNG), noActions);
+has('超时空态说「路由器没有回应」', pane, '路由器没有回应');
+has('超时空态指向本机代理/TUN 这条真因', pane, 'TUN');
+hasNot('超时空态不谎报「包没装好」', pane, '包没装好');
+hasNot('被拒的空态不说「没有回应」', t.BoardPane(t.parseStatus(null), noActions), '没有回应');
+
+eq('源检测超时 → hung 态', t.parseSources(t.HUNG).state, 'hung');
+has('源检测 hung 文案说没有回应', t.srcMessage({ state: 'hung' }), '没有回应');
+has('源检测被拒文案说无法执行', t.srcMessage({ state: 'unreachable' }), '无法执行');
+
+ok('run-now 回 running 判为「还在跑」', t.isRunningReply('{"state":"running"}') === true);
+ok('run-now 回 done 不算还在跑', t.isRunningReply('{"state":"done"}') === false);
+ok('run-now 回脏值不算还在跑', t.isRunningReply('sh: out of memory') === false);
+
+/* 忙碌标记要跟着 store 的 busy 走，而不是只改被点那一下的 DOM：
+ * 读数条每次 store 变化都整体重画，若只靠 setBusy，重画后转圈就没了。 */
+rail = t.StatusRail({ state: 'done', items: [] }, { run: true }, noActions);
+ok('run 忙时按钮带 busy 类', byClass(rail, 'busy').length >= 1);
+eq('忙按钮标了 aria-busy', byClass(rail, 'busy')[0].attrs['aria-busy'], 'true');
+rail = t.StatusRail({ state: 'done', items: [] }, {}, noActions);
+eq('不忙时没有 busy 类', byClass(rail, 'busy').length, 0);
+
+/* rpc 永不返回 → 到点回 HUNG，绝不让调用方悬着 */
+rpcImpl = () => new Promise(() => {});
+const hungCall = t.runCmd([ 'status' ]);
+ok('挂住的调用注册了自己的超时', timers.some(x => x && x.ms === t.CMD_LIMIT.status));
+fireTimers(t.CMD_LIMIT.status);
+ok('到点即回 HUNG（不等 rpc）', (await hungCall) === t.HUNG);
+
+/* rpc 照常返回 → 结果原样给出，且把自己的定时器清掉（轮询不该把定时器堆起来） */
+rpcImpl = async () => '{"state":"done"}';
+const beforeTimers = liveTimers();
+eq('正常返回照常给出字符串', await t.runCmd([ 'status' ]), '{"state":"done"}');
+eq('正常返回后不留未触发的定时器', liveTimers(), beforeTimers);
 
 console.log(fails === 0 ? '=== view 渲染断言全部通过' : `=== view 渲染断言失败 ${fails} 项`);
 process.exit(fails === 0 ? 0 : 1);
