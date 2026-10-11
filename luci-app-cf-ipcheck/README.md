@@ -333,6 +333,7 @@ ssh root@10.0.0.1 'apk add --allow-untrusted /tmp/luci-app-cf-ipcheck-*.apk'
 | `canary_check` | `1` | 每轮先用保留地址自检出口有没有被透明代理接管，接管则打标 |
 | `probe_user` | `nobody` | 探测发起身份；nobody 的 gid 65534 正好被 OpenClash 的 mark 链豁免。要退回 root 直发就填 `none`（留空会被当成没设置，又落回 `nobody`） |
 | `annotate` | `cf-ipcheck \| {colo} \| {total}ms` | `best-ip.txt` 每行注释模板，见「产出文件」里的占位符说明 |
+| `log_max_kb` | `512` | 引擎日志的体积上限（KB）。日志在 `/tmp`（tmpfs=内存），超限只留最近一半并写一行说明；下限 16 KB，再小就装不下一轮的记录 |
 | `upload_gist` | `0` | 每轮后是否上传 Gist |
 | `gist_id` / `gist_file` | 空 / `cf-ip.txt` | Gist ID 与文件名 |
 | `gist_token` | 空 | 令牌直接写进 UCI（**本机默认走这条**）；填了它就优先用它 |
@@ -375,6 +376,8 @@ cf-ipcheck show       # 人类可读榜单
 cf-ipcheck pool       # 只打印本轮会用的候选 IP（联网取源、不测速）
 cf-ipcheck canary     # 只跑一次出口接管自检：{"intercepted":0|1}
 cf-ipcheck check-sources  # 逐个源体检：HTTP / 提取到的 IPv4 数 / 落在 CF 段内的数量
+cf-ipcheck logs      # 输出引擎日志的最近部分（最多约 60 KB，总是从整行开始）；
+                     # 顺手做一次封顶检查，所以这也是「页面读日志」走的那条路
 cf-ipcheck colo <IP>  # 单 IP 落地机房。参数必须是纯 IPv4：这个串会被拼进整条交给 `su -c`
                       # 的命令里，所以畸形输入（`1.1.1.1; id`、空串、带主机名）一律拒绝，
                       # 退出码 2 —— 探测池里的地址是 grep 提取的，天然干净，只有这个命令行
@@ -396,7 +399,7 @@ cf-ipcheck selftest   # 离线自检，不联网
 | `/tmp/cf-ipcheck/{probed,aggregated,qualified,ranked,colored}.tsv` | 本轮原始（ip×域名）/ 按 IP 合并后 / 达标 / 排序 / 加了 colo+吞吐的结果，排查“为什么某条没上榜”时看这里 |
 | `/tmp/cf-ipcheck/lock` | 运行锁，内容是 `<pid> <启动秒>`（判活用 `kill -0`，超过 6 小时无条件回收） |
 | `/etc/cf-ipcheck/cf-nets.txt` | Cloudflare 官方网段的 6 小时缓存：第 1 行 `#<写入秒>`，第 2 行空格分隔的 CIDR |
-| `/tmp/cf-ipcheck/cf-ipcheck.log` | 运行日志（`logread -e cf-ipcheck` 亦可） |
+| `/tmp/cf-ipcheck/cf-ipcheck.log` | 运行日志，按 `log_max_kb` 封顶（超限只留最近一半并写一行说明）；页面上的「日志」标签读的就是它，`cf-ipcheck logs` 是同一份 |
 
 `colored.tsv` 的列序是 `ip code connect tls ttfb total colo speed domain`（吞吐单位
 十进制 MB/s，未测是 `-`），第 8、9 列分别进 `result.json` 的 `speed_mbytes` 与 `domain`。

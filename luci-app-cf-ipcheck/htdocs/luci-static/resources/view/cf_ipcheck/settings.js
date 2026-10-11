@@ -298,6 +298,16 @@ var CSS = [
 	/* 说明文字块（脚注 / 字段全解） */
 	'.cfp .note{font-size:var(--t-xs);color:var(--ink-3);line-height:1.75;max-width:80ch}',
 	'.cfp .note b{color:var(--ink-2);font-weight:600}',
+	/* 引擎日志：等宽、框内自己滚，坏消息按关键词上色。
+	   行内容一律走 textContent —— 日志里混着外部源的 URL 和 curl 原文，
+	   那些不是可以交给 HTML 解析的输入。 */
+	'.cfp .logbox{font-family:var(--mono);font-size:var(--t-xs);line-height:1.55;',
+	'  max-height:min(58vh,540px);overflow:auto;background:var(--panel-2);',
+	'  border:1px solid var(--rule);border-radius:var(--r2);padding:.55em .7em;',
+	'  white-space:pre-wrap;word-break:break-all}',
+	'.cfp .lline{min-height:1.4em}',
+	'.cfp .lline.bad{color:var(--bad-fg)}',
+	'.cfp .lline.warn{color:var(--warn-fg)}',
 	'.cfp abbr{text-decoration:underline dotted;text-underline-offset:2px;cursor:help}',
 
 	/* 提示横幅（没有 toast 的那版 LuCI 全靠它） */
@@ -360,6 +370,7 @@ var CSS = [
 	'  .cfp .strip{grid-template-columns:repeat(auto-fit,minmax(104px,1fr))}',
 	'  .cfp .cell-v{font-size:var(--t-md)}',
 	'  .cfp .board-scroll{max-height:none}',
+	'  .cfp .logbox{max-height:none}',
 	'  .cfp .empty{flex-direction:column;align-items:stretch;gap:var(--s3)}',
 	'  .cfp .grp-t{font-size:var(--t-sm)}',
 	'}',
@@ -618,7 +629,9 @@ var CMD_LIMIT = {
 	status: 8000,
 	'run-now': 10000,
 	stop: 8000,
-	'check-sources': 120000
+	'check-sources': 120000,
+	/* 读日志只是 tail 一个本地文件，但引擎顺手要做一次封顶检查，给 15 秒宽裕些 */
+	logs: 15000
 };
 
 function runCmd(args, ms) {
@@ -690,6 +703,19 @@ function parseSources(raw) {
 	} catch (e) {
 		return { state: 'parse_error', raw: String(raw) };
 	}
+}
+
+/* 引擎的 logs 子命令回的是纯文本（不是 JSON），所以这里只有四种情况：
+ * 没执行成 / 没回应 / 空文件 / 有内容。空文件要说「还没有日志」，
+ * 不能和「读不到」混成一谈 —— 前者是重启过或还没跑过，后者是链路问题。 */
+function parseLog(raw) {
+	if (raw === null || raw === undefined)
+		return { state: 'unreachable' };
+	if (raw === HUNG)
+		return { state: 'hung' };
+	if (!String(raw).replace(/[\r\n\s]/g, ''))
+		return { state: 'empty' };
+	return { state: 'ok', text: String(raw) };
 }
 
 /* ==========================================================================
@@ -774,6 +800,7 @@ function createStore(initial) {
 var store = createStore({
 	status: { state: 'never_run', items: [] },
 	sources: null,
+	logs: null,
 	tab: 'board',
 	busy: {},
 	flash: null
@@ -1401,6 +1428,91 @@ function srcMessage(src) {
 }
 
 /* ==========================================================================
+ * 12b. 引擎日志
+ * ==========================================================================
+ * 日志在 /tmp/cf-ipcheck/cf-ipcheck.log（tmpfs，重启就清零），由引擎按
+ * log_max_kb 封顶。页面只干两件事：把最近这一截拿出来，以及一眼能看出哪几行
+ * 是坏消息。每一行都走 textContent，绝不拼 innerHTML —— 日志里会混进外部源
+ * 返回的 URL 和 curl 的原文，那些都不是可以自己解析的输入。
+ */
+function logTone(line) {
+	if (/失败|错误|中止|写不动|不是字符设备|找不到|没有 curl/.test(line))
+		return 'bad';
+	/* 「超过上限」是引擎在说它自己把旧日志截了，属于提醒不是故障 */
+	if (/已请求停止|被丢弃|已忽略|低于下限|超过上限|跳过/.test(line))
+		return 'warn';
+	return '';
+}
+
+function LogBlock(text) {
+	var lines = String(text).split('\n');
+	while (lines.length && !lines[lines.length - 1])
+		lines.pop();
+	return el('div', { class: 'logbox', role: 'log', 'aria-live': 'off' },
+		lines.map(function (ln) {
+			var t = logTone(ln);
+			return el('div', { class: t ? 'lline ' + t : 'lline', text: ln });
+		}));
+}
+
+function logMessage(lg) {
+	switch (lg.state) {
+		case 'unreachable':
+			return T('读不到日志：无法执行 %s logs（包没装好，或 rpcd 的 ACL 没放开 exec）。').format(CMD);
+		case 'hung':
+			return T('读取没有回应：路由器在 %s 秒内没返回。先确认这台电脑能正常打开路由器后台。').format(Math.round(CMD_LIMIT.logs / 1000));
+		case 'empty':
+			return T('日志文件还是空的。引擎每轮开始就会往里写（取源、候选池、达标数、吞吐），跑一轮再回来看看。');
+		default:
+			return T('没有可显示的日志。');
+	}
+}
+
+function LogsPane(lg, actions) {
+	var kids = [];
+	var busy = store.get().busy && store.get().busy.logs;
+
+	kids.push(Section(T('引擎日志'), Button({
+		label: lg ? T('重新读取') : T('读取日志'), icon: '\u21bb',
+		disabled: busy, busy: busy,
+		onClick: actions.refresh
+	})));
+
+	if (!lg) {
+		kids.push(EmptyBox({
+			title: T('还没读过日志'),
+			detail: T('这里显示引擎自己写的过程记录：逐条源取到什么、候选池多大、哪些 IP 达标、吞吐实测结果，以及每一轮的失败原因。日志写在路由器的 /tmp/cf-ipcheck/cf-ipcheck.log 里，那是内存盘，重启就清零。'),
+			action: Button({
+				kind: 'primary', label: T('读取日志'), icon: '\u21bb',
+				onClick: actions.refresh
+			})
+		}));
+		return el('div', {}, kids);
+	}
+
+	if (lg.state !== 'ok') {
+		var titles = {
+			empty: T('还没有日志'),
+			hung: T('读取日志没有回应'),
+			unreachable: T('读不到日志')
+		};
+		kids.push(EmptyBox({
+			title: titles[lg.state] || titles.unreachable,
+			detail: logMessage(lg),
+			action: Button({ label: T('重新读取'), icon: '\u21bb', onClick: actions.refresh })
+		}));
+		return el('div', {}, kids);
+	}
+
+	kids.push(LogBlock(lg.text));
+	kids.push(el('div', { class: 'note' }, [
+		el('span', { text: T('只给最近这一段（最多约 60 KB）；日志总量按「配置 → 基本设置 → 日志体积上限」封顶，超限会丢掉较早的内容并在这里留一行说明。') }),
+		Button({ kind: 'lnk', label: T('复制全部'), onClick: actions.copy })
+	]));
+	return el('div', {}, kids);
+}
+
+/* ==========================================================================
  * 13. 标签栏
  * ==========================================================================
  * 三个面板一直在文档里（隐藏的只是 display），切换只改 class / aria。
@@ -1476,14 +1588,14 @@ function rememberTab(id) {
  * 保存链路完全不变。
  */
 var GROUPS = [
-	{ id: 'basic',  title: '基本设置',   hint: '开关与周期' },
+	{ id: 'basic',  title: '基本设置',   hint: '开关、周期与日志' },
 	{ id: 'pool',   title: '候选池来源', hint: '候选从哪来' },
 	{ id: 'probe',  title: '测速与判定', hint: '阈值与吞吐' },
 	{ id: 'gist',   title: 'Gist 上传',  hint: '结果外发' }
 ];
 
 var GROUP_OPTIONS = {
-	basic: [ 'enabled', 'interval_hours', 'probe_domains', 'probe_port' ],
+	basic: [ 'enabled', 'interval_hours', 'probe_domains', 'probe_port', 'log_max_kb' ],
 	pool:  [ 'use_official_ranges', 'reuse_last', 'community_sources' ],
 	probe: [ 'candidate_budget', 'concurrency', 'probe_timeout', 'ttfb_limit', 'total_limit',
 	         'keep_count', 'speed_probe', 'speed_count', 'speed_bytes', 'speed_timeout',
@@ -1816,6 +1928,42 @@ function actCheck(btn) {
 	});
 }
 
+function actLogs(btn) {
+	/* 和源检测同一个道理：结果画在「日志」页里，从别的页点进来要先送过去，
+	 * 不然画在一个看不见的面板上，又是一次「点了没反应」。 */
+	gotoTab('logs');
+	setBusy(btn, true);
+	store.set({ busy: Object.assign({}, store.get().busy, { logs: true }) });
+	runCmd([ 'logs' ]).then(function (out) {
+		setBusy(btn, false);
+		store.set({
+			logs: parseLog(out),
+			busy: Object.assign({}, store.get().busy, { logs: false })
+		});
+	}, function () {
+		setBusy(btn, false);
+		store.set({
+			logs: { state: 'unreachable' },
+			busy: Object.assign({}, store.get().busy, { logs: false })
+		});
+	});
+}
+
+function actCopyLogs(btn) {
+	var lg = store.get().logs;
+	if (!lg || lg.state !== 'ok' || !lg.text) {
+		flash(T('没有可复制的日志'), T('日志还是空的；先跑一轮，或点「读取日志」。'), 'warn');
+		return;
+	}
+	copyText(lg.text).then(function (ok) {
+		if (ok)
+			flash(T('已复制日志'), T('最近 %s 行，可直接粘进终端输出贴给别人看。').format(
+				lg.text.split('\n').filter(function (x) { return !!x; }).length), 'ok');
+		else
+			flash(T('复制失败'), T('浏览器不让写剪贴板；日志内容请手工选中复制。'), 'warn');
+	});
+}
+
 /* 页内提示：这版 LuCI 没有 toast，优先用官方的（若存在），否则写横幅 */
 var flashTimer = null;
 
@@ -1895,6 +2043,7 @@ var P = {
 var TAB_DEFS = [
 	{ id: 'board',   label: '榜单' },
 	{ id: 'sources', label: '源与检测' },
+	{ id: 'logs',    label: '日志' },
 	{ id: 'config',  label: '配置' }
 ];
 
@@ -2003,14 +2152,33 @@ function buildPage(mapnode) {
 		srcPane.appendChild(SourcesPane(state.sources, { check: actCheck }));
 	}
 
-	/* ---- 面板 3：配置 ---- */
+	/* ---- 面板 3：日志 ---- */
+	var logsPane = el('div', { class: 'pane' });
+	/* 日志不常变，而状态每 5 秒轮询一次就重画一次 —— 重画会把日志框内部的滚动
+	 * 位置顶回顶部，正看着的那几行就跳走了。所以只在「日志本身或忙碌标记」
+	 * 真的变了才重建（和标签栏同一套办法：先比普通，再动 DOM）。 */
+	var lastLogs = null;
+	var lastLogsBusy = null;
+	var logsDrawn = false;
+	function drawLogs(state) {
+		var busyLogs = !!(state.busy && state.busy.logs);
+		if (logsDrawn && state.logs === lastLogs && busyLogs === lastLogsBusy)
+			return;
+		logsDrawn = true;
+		lastLogs = state.logs;
+		lastLogsBusy = busyLogs;
+		clear(logsPane);
+		logsPane.appendChild(LogsPane(state.logs, { refresh: actLogs, copy: actCopyLogs }));
+	}
+
+	/* ---- 面板 4：配置 ---- */
 	var cfgPane = el('div', { class: 'pane' });
 	var cfg = ConfigPane();
 	cfgPane.appendChild(cfg.node);
 	/* 重组后的分组要落进这个宿主（regroupForm 在 render 末尾才跑） */
 	P.cfgHost = cfg.host;
 
-	P.panes = { board: boardPane, sources: srcPane, config: cfgPane };
+	P.panes = { board: boardPane, sources: srcPane, logs: logsPane, config: cfgPane };
 
 	/* 表单本体搬进配置面板：LuCI 的 Map 节点这一步才拿到 */
 	if (mapnode)
@@ -2024,6 +2192,7 @@ function buildPage(mapnode) {
 	root.appendChild(P.tabsHost);
 	root.appendChild(boardPane);
 	root.appendChild(srcPane);
+	root.appendChild(logsPane);
 	root.appendChild(cfgPane);
 
 	/* 订阅：状态一变，四块各自重画。订阅回调里只读 store，不互相调用，
@@ -2040,6 +2209,7 @@ function buildPage(mapnode) {
 		P.tabsReplace(state);
 		drawBoard(state);
 		drawSources(state);
+		drawLogs(state);
 	});
 
 	P.built = true;
@@ -2099,6 +2269,13 @@ return view.extend({
 		o.description = help('probe_port',
 			_('一般保持 443。'),
 			_('HTTPS 探测的目标端口。除非你的优选用途不走 443，否则不要改 —— 改成一个非 443 端口后，很多 Cloudflare 边缘节点会直接拒绝握手，榜单会整体变空。'));
+
+		o = s.option(form.Value, 'log_max_kb', _('日志体积上限（KB）'), _('引擎日志的封顶大小。'));
+		o.datatype = 'and(uinteger,min(16),max(65536))';
+		o.default = '512';
+		o.description = help('log_max_kb',
+			_('引擎日志的封顶大小。'),
+			_('日志写在 /tmp/cf-ipcheck/cf-ipcheck.log，而 /tmp 是 tmpfs —— 不封顶等于慢慢吃内存，能长到多大只取决于多久重启一次。超过这个大小，引擎只保留最近的一半，并在日志里明说「较早的内容被丢弃」，不会悄悄截掉让人以为日志本来就这么短。下限 16 KB 是有意的：再小就装不下一轮的取源与吞吐记录，等于出问题时查不到东西。这一项不决定日志能留多久，重启后本来就会清零。'));
 
 		var src = m.section(form.TypedSection, 'global', _('候选池来源'));
 		src.anonymous = true;

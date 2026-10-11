@@ -100,6 +100,12 @@ config global 'global'
 	# 整个留空会回到默认模板（uci 分不清“显式留空”和“没这一项”）。
 	option annotate 'cf-ipcheck | {colo} | {total}ms'
 
+	# 引擎日志的体积上限（KB）。日志写在 /tmp/cf-ipcheck/cf-ipcheck.log，而 /tmp 是
+	# tmpfs —— 不封顶等于慢慢吃内存，而且长多大取决于这台机器多久重启一次。
+	# 超限就只保留最近一半，并在日志里补一行说明。下限 16 KB：再小就成了
+	# 「一轮日志还没写完就被截掉」；要放宽就往大填，别填 0（0 会被夹到 16）。
+	option log_max_kb '512'
+
 	# Gist 上传。令牌可以直接写进下面的 gist_token（内容只是优选 IP，泄露代价低，
 	# 按 Ryan 的要求走这条路）；也可以留空、改用 token_file 指向的文件。
 	# 两处都填时以 gist_token 为准。注意：写在配置里会随 sysupgrade 备份走，

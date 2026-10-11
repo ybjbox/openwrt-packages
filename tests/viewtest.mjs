@@ -33,6 +33,7 @@ const hook = "\nglobalThis.__cf_t = {\n" +
 	"\tLeaderboard: Leaderboard, COLS: COLS, domainKinds: domainKinds,\n" +
 	"\tSummaryStrip: SummaryStrip, BoardPane: BoardPane,\n" +
 	"\tSourceMatrix: SourceMatrix, SourcesPane: SourcesPane, srcMessage: srcMessage,\n" +
+	"\tparseLog: parseLog, LogsPane: LogsPane, LogBlock: LogBlock, logTone: logTone,\n" +
 	"\tTabBar: TabBar, StatusRail: StatusRail, Readout: Readout,\n" +
 	"\tregroupForm: regroupForm, ConfigPane: ConfigPane,\n" +
 	"\thelp: help, applyHelp: applyHelp, HelpMark: HelpMark, HELP: HELP,\n" +
@@ -541,11 +542,12 @@ let picked = null;
 const bar = t.TabBar([
 	{ id: 'board', label: '榜单', count: 12 },
 	{ id: 'sources', label: '源与检测' },
+	{ id: 'logs', label: '日志' },
 	{ id: 'config', label: '配置', count: 4 }
 ], 'board', id => { picked = id; });
 
 const tabs = byClass(bar, 'tab');
-eq('标签数 = 3', tabs.length, 3);
+eq('标签数 = 4', tabs.length, 4);
 eq('标签栏 role=tablist', bar.attrs.role, 'tablist');
 eq('当前标签 class 带 on', tabs[0].attrs['class'], 'tab on');
 eq('当前标签 aria-selected=true', tabs[0].attrs['aria-selected'], 'true');
@@ -738,7 +740,7 @@ eq('配置面板有全部展开 / 收起两个入口', lnkBtns.length, 2);
  * ================================================================== */
 const page = t.buildPage(null);
 ok('页面根节点带 cfp 标记', /cfp/.test(page.attrs['class']));
-eq('三个面板都在文档里', byClass(page, 'pane').length, 3);
+eq('四个面板都在文档里', byClass(page, 'pane').length, 4);
 ok('读数条常驻（不在任何 pane 里）', !!t.P.rail && !t.P.rail.closest('.pane'));
 
 const boardPane = t.P.panes['board'];
@@ -840,6 +842,49 @@ rpcImpl = async () => '{"state":"done"}';
 const beforeTimers = liveTimers();
 eq('正常返回照常给出字符串', await t.runCmd([ 'status' ]), '{"state":"done"}');
 eq('正常返回后不留未触发的定时器', liveTimers(), beforeTimers);
+
+/* ================================================================== *
+ * 14. 引擎日志页：四种「没有日志」要分开说
+ * ================================================================== */
+eq('日志：被拒 → unreachable', t.parseLog(null).state, 'unreachable');
+eq('日志：超时 → hung', t.parseLog(t.HUNG).state, 'hung');
+eq('日志：空串 → empty（不是读不到）', t.parseLog('').state, 'empty');
+eq('日志：只剩空白也算 empty', t.parseLog('\n  \n').state, 'empty');
+eq('日志：有内容 → ok', t.parseLog('a\nb\n').state, 'ok');
+eq('日志：原文不加工', t.parseLog('a\nb\n').text, 'a\nb\n');
+
+eq('日志行：失败类标 bad', t.logTone('2026-10-12T00:00:00Z 取源失败 https://x'), 'bad');
+eq('日志行：截旧日志只是提醒', t.logTone('2026-10-12T00:00:00Z 日志已超过上限 16 KB，较早的内容被丢弃'), 'warn');
+eq('日志行：正常行不上色', t.logTone('2026-10-12T00:00:00Z 候选池 96 个'), '');
+
+let lp = t.LogsPane(null, { refresh: noop, copy: noop });
+has('日志页没读过时给引导', lp, '还没读过日志');
+has('引导说清日志在设备上哪', lp, '/tmp/cf-ipcheck/cf-ipcheck.log');
+
+lp = t.LogsPane({ state: 'empty' }, { refresh: noop, copy: noop });
+has('空文件说「还没有日志」', lp, '还没有日志');
+hasNot('空文件不谎称「读不到」', lp, '读不到');
+
+lp = t.LogsPane({ state: 'hung' }, { refresh: noop, copy: noop });
+has('超时说没有回应', lp, '没有回应');
+hasNot('超时说不上「读不到」', lp, '读不到');
+
+lp = t.LogsPane({ state: 'unreachable' }, { refresh: noop, copy: noop });
+has('被拒明说是执行不了 logs', lp, '无法执行');
+
+lp = t.LogsPane({ state: 'ok', text: '一行\n二行\n三行失败\n' }, { refresh: noop, copy: noop });
+eq('日志按行渲染（尾部空行不占一行）', byClass(lp, 'lline').length, 3);
+eq('坏消息行带上 bad 类', byClass(lp, 'lline bad').length, 1);
+eq('正常行不带色类', byClass(lp, 'lline bad').length + byClass(lp, 'lline warn').length, 1);
+ok('日志画在自己的滚动容器里', byClass(lp, 'logbox').length === 1);
+has('说明只给最近一段', lp, '60 KB');
+has('给复制入口', lp, '复制全部');
+
+/* 面板从 3 个变 4 个：日志页和另外三页同一条约束 —— 一直在文档里，切换只翻 class */
+eq('标签顺序：日志在配置之前', t.TAB_DEFS.map(d => d.id).join(','), 'board,sources,logs,config');
+ok('store 默认带 logs（null = 还没读过）', t.store.get().logs === null);
+ok('日志上限这一项归进基本设置组',
+	t.GROUP_OPTIONS.basic.indexOf('log_max_kb') >= 0);
 
 console.log(fails === 0 ? '=== view 渲染断言全部通过' : `=== view 渲染断言失败 ${fails} 项`);
 process.exit(fails === 0 ? 0 : 1);

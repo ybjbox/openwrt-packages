@@ -39,6 +39,10 @@ RESULT_KEEP=$ETC_DIR/result.json
 CFNETS=$ETC_DIR/cf-nets.txt
 CFNETS_TTL=21600
 LOG=$RUN_DIR/cf-ipcheck.log
+# 日志封顶用的状态：写够一批才去查体积（逐条 stat 等于每条日志 fork 一次 wc）。
+LOGWRITES=0
+# 页面取日志时最多给这么多字节，够看清最近发生了什么，又不会把 rpc 撑爆。
+LOG_TAIL_BYTES=61440
 LOCK=$RUN_DIR/lock
 STOP=$RUN_DIR/STOP
 # 锁的最长寿命：进程被 OOM 杀掉后 pid 可能被复用，超过这个时间就当作陈旧锁回收。
@@ -95,6 +99,46 @@ fi
 
 log() {
 	printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >>"$LOG" 2>/dev/null || true
+	# 攒够 200 行才查一次体积：每条日志都去 stat 就等于白 fork 几百次
+	LOGWRITES=$((LOGWRITES + 1))
+	if [ "$LOGWRITES" -ge 200 ]; then
+		LOGWRITES=0
+		trim_log
+	fi
+	return 0
+}
+
+# 日志封顶。LOG 落在 /tmp（tmpfs 就是内存），不封顶等于慢慢吃 RAM，
+# 而且长到多大完全取决于这台机器多久重启一次。
+# 超过 log_max_kb 就只留最近一半，并补一行说明，免得看着像「日志被人删了一半」。
+# 除了每 200 行这一次，每轮的头尾和页面取日志时各查一次。
+trim_log() {
+	cap=${C_LOGKB:-512}
+	[ "$cap" -gt 0 ] 2>/dev/null || return 0
+	[ -f "$LOG" ] || return 0
+	sz=$(wc -c <"$LOG" 2>/dev/null) || return 0
+	[ "${sz:-0}" -gt $((cap * 1024)) ] || return 0
+	keep=$((cap * 512))
+	# tail -c 会拦腰截在一行中间，第一行是残句，直接丢掉
+	tail -c "$keep" "$LOG" 2>/dev/null | sed '1d' >"$LOG.tmp" || { rm -f "$LOG.tmp"; return 0; }
+	printf '%s 日志已超过上限 %s KB，较早的内容被丢弃（保留最近约 %s KB）\n' \
+		"$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$cap" "$((keep / 1024))" >>"$LOG.tmp"
+	chmod 644 "$LOG.tmp" 2>/dev/null || true
+	mv -f "$LOG.tmp" "$LOG" 2>/dev/null || { rm -f "$LOG.tmp"; return 0; }
+	return 0
+}
+
+# 给页面看的日志尾巴：最多 LOG_TAIL_BYTES，且必须从整行开始。
+# 没有日志就输出空串 —— 页面按「还没有日志」处理，不该说成「读不到」。
+print_log() {
+	[ -f "$LOG" ] || return 0
+	sz=$(wc -c <"$LOG" 2>/dev/null) || return 0
+	if [ "${sz:-0}" -gt "$LOG_TAIL_BYTES" ]; then
+		tail -c "$LOG_TAIL_BYTES" "$LOG" 2>/dev/null | sed '1d'
+	else
+		cat "$LOG" 2>/dev/null
+	fi
+	return 0
 }
 
 # cfg <option> <default>
@@ -246,6 +290,9 @@ load_config() {
 	C_GISTTOK=$(cfg gist_token '')
 	C_INTERVAL=$(cfg_range interval_hours 6 1 168)
 	C_UPLOAD=$(cfg upload_gist 0)
+	# 日志上限（KB）。下限 16 KB 是因为再小就等于「一轮日志还没写完就被截掉」，
+	# 想不起作用就把这一项填大，而不是填 0 —— 0 会让日志无限长，正是要防的事。
+	C_LOGKB=$(cfg_range log_max_kb 512 16 65536)
 	src_raw=$(cfg_list community_sources)
 	# 只吃 https://：这份清单的全部作用就是告诉你的代理"往这些地址连"，
 	# 走 http 的话它在链路上就能被人改包。混进来的其它行丢掉并说清丢了几条。
@@ -954,6 +1001,7 @@ abort_round() { # $1=reason
 # ---------------- 一轮完整流程 --------------------------------------------
 do_run() {
 	load_config
+	trim_log
 	if ! lock_acquire; then
 		log '已有实例在运行，跳过本轮'
 		return 0
@@ -1016,6 +1064,7 @@ do_run() {
 	rm -f "$LOCK"
 	[ "$C_UPLOAD" = 1 ] && upload_gist
 	log '本轮完成'
+	trim_log
 }
 
 # ---------------- 状态输出（带自愈）----------------------------------------
@@ -1064,6 +1113,9 @@ show_status() {
 # 一切正常。这个子命令把引擎**实际读到的东西**一次打出来，不用靠猜。
 do_diag() {
 	load_config
+	# 日志现状一并自述：上限配成多少、现在实际多大，排查「日志没封顶」时不用登机器翻
+	logsz=$(wc -c <"$LOG" 2>/dev/null || printf 0)
+	LOGSZ=${logsz:-0}
 	nsrc=$(printf '%s\n' "$SOURCES" | grep -c . || true)
 	# 光报 has_uci 不够：真机上就撞过 uci 找得到、但一条值都没读回来，
 	# 而 diag 里每个值都恰好等于默认值，根本看不出区别。所以把 uci 的原始
@@ -1080,7 +1132,7 @@ do_diag() {
 		# 打成什么形状（真机上就是重复行 / 带下标 / 数组式这三种在打架）。
 		uci_list=$(printf '%s\n' "$( "$UCI_BIN" -q show "$CONF.@global[0].community_sources" 2>&1 | head -n 3 | tr '\n' '~' )" | cut -c1-260)
 	fi
-	printf '{"has_uci":%s,"uci":"%s","su":"%s","curl":"%s","jq":"%s","devnull_is_chardev":%s,"null_dev":"%s","sink_writable":%s,"run_dir_mode":"%s","sources":%s,"domains":"%s","port":"%s","budget":"%s","official":"%s","reuse":"%s","colo":"%s","colo_domain":"%s","canary":"%s","probe_user":"%s","speed":"%s","speed_count":"%s","speed_bytes":"%s","speed_domain":"%s","interval":"%s","upload":"%s","run_dir":"%s","etc_dir":"%s","uci_show":"%s","uci_get_probe_port":"%s","uci_get_rc":%s,"uci_list_raw":"%s"}\n' \
+	printf '{"has_uci":%s,"uci":"%s","su":"%s","curl":"%s","jq":"%s","devnull_is_chardev":%s,"null_dev":"%s","sink_writable":%s,"run_dir_mode":"%s","sources":%s,"domains":"%s","port":"%s","budget":"%s","official":"%s","reuse":"%s","colo":"%s","colo_domain":"%s","canary":"%s","probe_user":"%s","speed":"%s","speed_count":"%s","speed_bytes":"%s","speed_domain":"%s","interval":"%s","upload":"%s","logkb":"%s","log_bytes":"%s","run_dir":"%s","etc_dir":"%s","uci_show":"%s","uci_get_probe_port":"%s","uci_get_rc":%s,"uci_list_raw":"%s"}\n' \
 		"$HAS_UCI" "$(json_str "${UCI_BIN:-}")" "$(json_str "${SU_BIN:-}")" \
 		"$(json_str "${CURL_BIN:-}")" "$(json_str "${JQ_BIN:-}")" \
 		"$([ -c /dev/null ] && printf 1 || printf 0)" "$(json_str "$NULL_DEV")" \
@@ -1091,13 +1143,37 @@ do_diag() {
 		"$(json_str "$C_COLOR")" "$(json_str "$C_COLODOMAIN")" "$(json_str "$C_CANARY")" \
 		"$(json_str "${C_PUSER:-root}")" "$(json_str "$C_SPEED")" "$(json_str "$C_SPEEDN")" \
 		"$(json_str "$C_SPEEDKB")" "$(json_str "$C_SPEEDDOM")" "$(json_str "$C_INTERVAL")" \
-		"$(json_str "$C_UPLOAD")" "$(json_str "$RUN_DIR")" "$(json_str "$ETC_DIR")" \
+		"$(json_str "$C_UPLOAD")" "$(json_str "$C_LOGKB")" \
+		"$(json_str "${LOGSZ:-0}")" \
+		"$(json_str "$RUN_DIR")" "$(json_str "$ETC_DIR")" \
 		"$(json_str "$uci_show")" "$(json_str "$uci_get")" "$uci_rc" "$(json_str "$uci_list")"
 }
 
 # ---------------- 离线自检（CI 用；不联网、不依赖 uci）--------------------
 selftest() {
 	fails=0
+	# 自检会把状态文件、锁、/etc 的持久副本写一遍再 rm 掉。调用方没指定活动目录时
+	# 就在真机上直接跑的话，删的是设备上真正在用的那几份 —— 踩过一次：
+	# /etc/cf-ipcheck/result.json 没了，页面从此说「从未运行过」，而 best-ip.txt 明明还在。
+	# 所以没给 CFIP_* 就强制搬进临时区，收尾再整块删掉。
+	ST_SCRATCH=''
+	if [ -z "${CFIP_RUN_DIR:-}" ] || [ -z "${CFIP_ETC_DIR:-}" ]; then
+		ST_SCRATCH=${TMPDIR:-/tmp}/cf-ipcheck-selftest.$$
+		if ! mkdir -p "$ST_SCRATCH/run" "$ST_SCRATCH/etc" 2>/dev/null; then
+			echo '[NG] 自检建不了临时目录，终止（不去碰真目录）'
+			return 1
+		fi
+		RUN_DIR=$ST_SCRATCH/run
+		ETC_DIR=$ST_SCRATCH/etc
+		STATUS=$RUN_DIR/status.json
+		RESULT=$RUN_DIR/result.json
+		LOCK=$RUN_DIR/lock
+		STOP=$RUN_DIR/STOP
+		LOG=$RUN_DIR/cf-ipcheck.log
+		BEST=$ETC_DIR/best-ip.txt
+		RESULT_KEEP=$ETC_DIR/result.json
+		CFNETS=$ETC_DIR/cf-nets.txt
+	fi
 	check() { # $1=desc $2=got $3=want
 		if [ "$2" = "$3" ]; then
 			printf '[PASS] %s\n' "$1"
@@ -1424,6 +1500,38 @@ selftest() {
 	check '真的在跑时不干预 running 状态' "$got" 'running'
 	rm -f "$LOCK" "$STATUS" "$RESULT_KEEP"
 
+	# 日志封顶。LOG 在 /tmp（tmpfs 就是内存），不封顶等于慢慢吃 RAM，
+	# 能长到多大取决于这台机器多久重启一次。
+	# 用独立的 scratch 文件，别拿真日志做实验。
+	log_real=$LOG
+	LOG="$RUN_DIR/selftest.log"
+	C_LOGKB=16
+	i=0
+	rm -f "$LOG" "$LOG.tmp"
+	while [ $i -lt 600 ]; do
+		printf '2026-01-01T00:00:00Z 造日志的第 %03d 行 ---------------------------------------\n' "$i" >>"$LOG"
+		i=$((i + 1))
+	done
+	trim_log
+	check '超过 log_max_kb 的日志被截回上限以内' \
+		"$([ "$(wc -c <"$LOG")" -le 16384 ] && printf ok || printf "size=$(wc -c <"$LOG")")" 'ok'
+	check '截过的日志留下一行说明' "$(grep -c '日志已超过上限' "$LOG")" '1'
+	m0=$(grep -c '日志已超过上限' "$LOG")
+	printf '2026-01-01T00:00:00Z 又一行不算超限时不该动它\n' >>"$LOG"
+	trim_log
+	check '没超限时日志不被改写' "$(grep -c '日志已超过上限' "$LOG")" "$m0"
+	check 'print_log 的输出不超过约定上限' \
+		"$([ "$(print_log | wc -c)" -le "$LOG_TAIL_BYTES" ] && printf ok || printf too-big)" 'ok'
+	check 'print_log 从整行开始（不是拦腰的残句）' "$(print_log | head -1 | cut -c1-20)" '2026-01-01T00:00:00Z'
+	rm -f "$LOG"
+	check '没有日志时输出空串（页面据此说「还没有日志」）' "$(print_log)" ''
+	LOG=$log_real
+	rm -f "$RUN_DIR/selftest.log" "$RUN_DIR/selftest.log.tmp"
+
+	if [ -n "$ST_SCRATCH" ]; then
+		rm -rf "$ST_SCRATCH"
+	fi
+
 	if [ "$fails" = 0 ]; then
 		echo '[OK] selftest 全部通过'
 		return 0
@@ -1442,6 +1550,7 @@ usage() {
   pool      只打印本轮会用的候选 IP 列表（联网取源，不测速）——核对源配置用
   canary    只跑一次出口接管自检，输出 {"intercepted":0|1}
   check-sources  逐个源体检：HTTP 状态 / 提取到的 IPv4 数 / 落在 CF 官方段内的数量
+  logs      输出引擎日志的最近部分（给页面看；最多约 60 KB，且总是从整行开始）
   colo IP   查询单个 IP 的落地机房代码（如 SIN/NRT/HKG）
   stop      请求当前这一轮尽快收尾
   daemon    常驻，按 interval_hours 循环
@@ -1463,6 +1572,7 @@ case "${1:-}" in
 	pool)    load_config; build_pool ;;
 	canary)  load_config; printf '{"intercepted":%s}\n' "$(canary_check)" ;;
 	check-sources) check_sources ;;
+	logs)    load_config; trim_log; print_log ;;
 	colo)    if ! valid_ip4 "${2:-}"; then
 				 echo '参数必须是一个纯 IPv4（不接受主机名，也不接受任何多余字符）'
 				 exit 2

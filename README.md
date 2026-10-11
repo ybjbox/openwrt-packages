@@ -62,10 +62,10 @@ sh tests/lint.sh
 # 2) cf-ipcheck 引擎离线回归（绝不联网）
 sh tests/test_cf_ipcheck.sh
 
-# 3) 引擎自带自检（离线，当前 102 项）
+# 3) 引擎自带自检（离线，不联网；项数随可用工具有增减，不作硬指标）
 sh luci-app-cf-ipcheck/root/usr/bin/cf-ipcheck selftest
 
-# 4) LuCI 视图渲染桩测（需要 Node 22+，236 条断言）
+# 4) LuCI 视图渲染桩测（需要 Node 22+，261 条断言）
 node tests/viewtest.mjs
 ```
 
