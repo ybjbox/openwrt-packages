@@ -415,8 +415,11 @@ cf-ipcheck selftest   # 离线自检，不联网
   （每轮都以为“还有实例在跑”）。`lock_live` 用 `kill -0` + 6 小时上限回收陈旧锁；
   锁里的 pid 是 `$(exec sh -c 'echo $PPID')` 取的 —— `run-now` 走的是 `( do_run & )`，
   用 `$$` 会记下立刻退出的父进程；少了 `exec` 又会记成命令替换的临时进程（selftest 里两条都钉了）。
-- **`status` 会自愈**：`running` 而锁主已不在 → 改写成 `error/interrupted`（或直接给上一次
-  `/etc` 里的结果）；`/tmp` 被清 → 从 `/etc/cf-ipcheck/result.json` 恢复，不会谎称“从未运行过”。
+- **`status` 会自愈**：`running` 而锁主已不在 → 改写成 `error` + `reason=interrupted`，
+  并且**把上一轮 `/etc` 里的榜单一起端出来**（页面在 `error` 态下面照样列旧榜单）。
+  早先这里是直接拿上一轮结果顶上，于是被 OOM/断电打断过的页面显示「已完成」、只有时间戳是旧的
+  ——「完成了」和「上一轮断了」不是一回事，不能装成完成。
+  `/tmp` 被清 → 从 `/etc/cf-ipcheck/result.json` 恢复，不会谎称“从未运行过”。
 - **本轮不可信时不查机房、不测吞吐**：`intercepted=1` 时那两列取的是代理自己的表现，
   花两轮请求也只会得到一整列相同的假数。
 - **数值配置走 `cfg_num` + `cfg_range`**：认不出「一整串都是数字」就退回默认值，超出范围就夹住，

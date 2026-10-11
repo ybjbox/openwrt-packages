@@ -158,14 +158,17 @@ else
 	rc=1
 fi
 
-# status 自愈：停在 running 但锁主已经不在，就不能再对外说 running
+# status 自愈：停在 running 但锁主已经不在，就不能再对外说 running ——
+# 而且不能拿上一轮的结果冒充「已完成」，要说 error/interrupted（榜单仍然带上）。
 printf '{"state":"running","started":"x","items":[]}' >"$RUN/status.json"
 printf '%s %s\n' "$deadpid" "$(date +%s)" >"$RUN/lock"
-got=$(sh "$BIN" status 2>/dev/null | sed -n 's/.*"state":"\([^"]*\)".*/\1/p')
-if [ "$got" = error ] || [ "$got" = never_run ] || [ "$got" = done ]; then
-	echo "[PASS] running + 死锁不会被当成还在跑（读到的是 $got）"
+got=$(sh "$BIN" status 2>/dev/null)
+state=$(printf '%s' "$got" | sed -n 's/.*"state":"\([^"]*\)".*/\1/p')
+rsn=$(printf '%s' "$got" | sed -n 's/.*"reason":"\([^"]*\)".*/\1/p')
+if [ "$state" = error ] && [ "$rsn" = interrupted ]; then
+	echo "[PASS] running + 死锁报 error/interrupted（不是拿旧结果冒充 done）"
 else
-	echo "::error::running + 死锁仍报 running，原始输出=<$(sh "$BIN" status 2>/dev/null)>"
+	echo "::error::陈旧锁的口径不对，state=$state reason=$rsn 原始输出=<$(printf '%s' "$got" | head -c 160)>"
 	rc=1
 fi
 rm -f "$RUN/lock" "$RUN/status.json"

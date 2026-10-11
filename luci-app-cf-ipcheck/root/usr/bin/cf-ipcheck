@@ -1044,8 +1044,13 @@ show_status() {
 		fi
 	fi
 	if grep -q '"state":"running"' "$STATUS" 2>/dev/null && ! lock_live; then
-		if [ -s "$RESULT_KEEP" ]; then
-			cp "$RESULT_KEEP" "$STATUS" 2>/dev/null || true
+		if [ -s "$RESULT_KEEP" ] && grep -q '"state":"done"' "$RESULT_KEEP"; then
+			# 上一轮的读数照样端出来，但状态要说实话：那是中断，不是「已完成」。
+			# 曾经这里是直接 cp 上一轮，于是被 OOM/断电打断过的页面显示「已完成」，
+			# 只有时间戳是旧的 —— 和「完成了但没结果」不是一回事，不能装成完成。
+			sed 's/"state":"done"/"state":"error","reason":"interrupted"/' \
+				"$RESULT_KEEP" >"$STATUS" 2>/dev/null ||
+				printf '{"state":"error","reason":"interrupted","items":[]}\n' >"$STATUS"
 		else
 			printf '{"state":"error","reason":"interrupted","items":[]}\n' >"$STATUS"
 		fi
@@ -1402,11 +1407,15 @@ selftest() {
 	rm -f "$LOCK" "$RESULT_KEEP"
 	got=$(show_status | sed -n 's/.*"reason":"\([^"]*\)".*/\1/p')
 	check 'running 状态遇到陈旧锁会被改写成 interrupted' "$got" 'interrupted'
-	printf '{"state":"done","items":[]}' >"$RESULT_KEEP"
+	printf '{"state":"done","finished":"f1","items":[{"ip":"1.1.1.1"}]}' >"$RESULT_KEEP"
 	printf '{"state":"running","started":"x","items":[]}' >"$STATUS"
-	got=$(show_status | sed -n 's/.*"state":"\([^"]*\)".*/\1/p')
-	check '陈旧锁时退回 /etc 里的上一轮结果' "$got" 'done'
+	got=$(show_status)
+	check '陈旧锁不冒充已完成，状态改写成 error' "$(printf '%s' "$got" | sed -n 's/.*"state":"\([^"]*\)".*/\1/p')" 'error'
+	check '中断仍说明原因 interrupted' "$(printf '%s' "$got" | sed -n 's/.*"reason":"\([^"]*\)".*/\1/p')" 'interrupted'
+	check '中断了还把上一轮的榜单端出来' "$(printf '%s' "$got" | grep -c '1\.1\.1\.1')" 1
+	check '上一轮的完成时间没被编造' "$(printf '%s' "$got" | grep -c '"finished":"f1"')" 1
 	rm -f "$STATUS"
+	printf '{"state":"done","items":[]}' >"$RESULT_KEEP"
 	got=$(show_status | sed -n 's/.*"state":"\([^"]*\)".*/\1/p')
 	check '/tmp 被清后仍能从 /etc 恢复状态（不说“从未运行过”）' "$got" 'done'
 	printf '{"state":"running","started":"x","items":[]}' >"$STATUS"
