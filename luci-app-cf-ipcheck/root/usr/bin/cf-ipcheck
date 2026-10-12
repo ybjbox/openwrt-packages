@@ -1744,7 +1744,14 @@ case "${1:-}" in
 				 printf '{"state":"running"}\n'
 				 exit 0
 			 fi
-			 ( do_run >/dev/null 2>&1 & )
+			 # 后台轮次绝不能继承 rpcd 的标准输出管道：rpcd 会一直等 EOF，把这条请求的
+			 # 响应压到整轮结束才发（真机实测管道 209 秒才关，页面点完测速后近半分钟
+			 # 显示「路由器没有回应」，F5 才恢复——根因就是它）。所以这里不直接
+			 # `( do_run & )`，而是先进子壳把 3~9 号描述符全部关闭、三个标准流全指向
+			 # /dev/null，再 exec 进 do_run —— 任何经命令替换/管道 fork 泄漏出去
+			 # 的 stdout 副本都随这一步一并断干净。
+			 { exec 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- </dev/null >/dev/null 2>&1
+			   exec do_run; } &
 			 printf '{"state":"started"}\n' ;;
 	status)  show_status ;;
 	show)    if [ -s "$BEST" ]; then cat "$BEST"; else echo '尚无结果，先执行 cf-ipcheck run'; fi ;;

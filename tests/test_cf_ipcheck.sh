@@ -135,6 +135,20 @@ else
 	echo '[PASS] 整轮结束后进度文件已清除'
 fi
 
+# run-now 必须立刻返回并关闭它的标准输出：rpcd 会一直读到 EOF 才把响应发回页面。
+# 真机曾实测这条管道 209 秒才关闭（后台轮次继承了它），页面点完测速后近半分钟
+# 显示「路由器没有回应」，F5 才恢复。
+t0=$(date +%s)
+sh "$BIN" run-now | cat >/dev/null 2>&1
+t1=$(date +%s)
+if [ $((t1 - t0)) -le 10 ]; then
+	echo '[PASS] run-now 的响应管道立即关闭'
+else
+	echo "::error::run-now 的响应管道 $((t1 - t0)) 秒才关闭，页面会被拖成「没有回应」"
+	rc=1
+fi
+rm -f "$RUN/lock" "$RUN/status.json"
+
 # 收尾改成了「先写状态，best-ip.txt 最后一笔」，而且每一笔都是临时文件 + rename。
 # 跑完整轮之后不该在任何地方留下 .tmp / .new —— 留了就说明某一步的 rename 没做到。
 left=$(ls "$RUN"/*.tmp "$RUN"/*.new "$ETC"/*.new 2>/dev/null | tr '\n' ' ')
