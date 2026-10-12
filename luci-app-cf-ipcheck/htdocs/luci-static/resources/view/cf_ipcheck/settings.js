@@ -28,7 +28,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r30';
+var VIEW_BUILD = 'r31';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -1969,9 +1969,16 @@ function actRun(btn) {
 		store.set({ busy: Object.assign({}, store.get().busy, { run: false }) });
 		if (out === HUNG) {
 			/* 挂住不等于没启动：run-now 是把后台进程甩出去，那一轮很可能已经在跑了，
-			 * 只是这条 CGI 连接没回来。所以照样开轮询，让页面自己追上真实状态。 */
+			 * 只是这条连接没回来。和成功路径同一套做法：本地先置 running、直接开轮询，
+			 * 让页面自己追上真实状态（而不是立刻 refresh 把旧状态读回来覆盖掉）。 */
 			flash(T('启动命令没有回应'), T('%s 秒内没等到返回。这一轮可能已经开始了，状态会自动跟进；一直不更新就先确认这台电脑能打开路由器后台。').format(Math.round(CMD_LIMIT['run-now'] / 1000)), 'warn');
-			refresh().then(function () { startPoll(); });
+			store.set({
+				status: Object.assign({}, store.get().status, {
+					state: 'running',
+					started: new Date().toISOString()
+				})
+			});
+			startPoll();
 			return;
 		}
 		if (out === null) {
@@ -1982,12 +1989,13 @@ function actRun(btn) {
 			flash(T('这一轮还在跑'), T('引擎说已经有一轮在测速，等它收尾；进度会自动刷新。'), 'warn');
 		else
 			flash(T('已启动一轮测速'), String(out), 'ok');
-		/* 先把本地状态置成 running 再补一次 refresh：run-now 返回「已启动」只是命令
-		 * 被受理，引擎要过几毫秒才把 running 写进 status.json。这里抢跑的 refresh
-		 * 可能读到上一轮的 done，于是轮询永远不开、停止按钮一直灰着、进度清单不出现
-		 * —— 页面停在「已完成」+ 按钮转圈，看起来就是「点了没反应」（r26 现场实测抓到的竞态）。
-		 * 置成 running 后，readings 立刻变「测速中」、停止按钮立刻可用，
-		 * refresh 拿到服务端的真实状态后会自己校准（done/error 会随之停掉轮询）。 */
+		/* 先把本地状态置成 running：run-now 返回「已启动」只是命令被受理，
+		 * 引擎要过几毫秒才把 running 写进 status.json。
+		 * 注意：这里绝不能立刻 refresh —— r30 把 run-now 的响应管道修成 0 秒后，
+		 * 紧随其后的 refresh 会抢在引擎写状态之前读到上一轮的 done，把本地 running
+		 * 覆盖回去，页面又停在「已完成」+ 不轮询（真机抓到的第二个竞态）。
+		 * 正确做法：本地先 running（读数条立刻「测速中」、停止按钮立即可用），
+		 * 直接开 3 秒轮询，第一轮轮询自然会拿到引擎的真实状态并校准。 */
 		store.set({
 			status: Object.assign({}, store.get().status, {
 				state: 'running',
@@ -1995,7 +2003,7 @@ function actRun(btn) {
 			}),
 			busy: Object.assign({}, store.get().busy, { run: false })
 		});
-		refresh().then(function () { startPoll(); });
+		startPoll();
 	}, function () {
 		setBusy(btn, false);
 		store.set({ busy: Object.assign({}, store.get().busy, { run: false }) });
