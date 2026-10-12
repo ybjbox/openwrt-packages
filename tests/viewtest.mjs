@@ -955,5 +955,24 @@ const buildEls = byClass(rail, 'build');
 eq('读数条带一个版本标记', buildEls.length, 1);
 ok('版本号形如 r+数字', /^r[0-9]+$/.test(textOf(buildEls[0])));
 
+/* ================================================================== *
+ * 17. 回归：表单分组必须留在 LuCI 的 map 节点里面
+ * 一旦搬出去（早先是调用方 clear 掉宿主再塞 wrap），map 就采不到字段值 ——
+ * 表现是改了任何一项都提示「没有待应用的更改」，页面上根本存不下配置。
+ * 这条是 r25 装机后才发现的真事故，必须有断言钉着。
+ * ================================================================== */
+function hasAncestor(root, node) {
+	while (node) {
+		if (node === root) return true;
+		node = node.parentNode;
+	}
+	return false;
+}
+const keepMap = fakeForm([ 'enabled', 'interval_hours', 'community_sources', 'candidate_budget' ]);
+const keepWrap = t.regroupForm(keepMap);
+ok('分组容器落在 map 节点里面', hasAncestor(keepMap, keepWrap));
+ok('map 节点仍在页面树里（没被 clear 掉）', hasAncestor(keepWrap, keepWrap) && keepMap.childNodes.length > 0);
+ok('字段行仍可从分组回溯到 map 节点', hasAncestor(keepMap, keepMap.querySelectorAll('.cbi-value')[0]));
+
 console.log(fails === 0 ? '=== view 渲染断言全部通过' : `=== view 渲染断言失败 ${fails} 项`);
 process.exit(fails === 0 ? 0 : 1);

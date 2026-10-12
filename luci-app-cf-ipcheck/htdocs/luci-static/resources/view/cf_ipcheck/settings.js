@@ -28,7 +28,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r25';
+var VIEW_BUILD = 'r26';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -1859,6 +1859,11 @@ function regroupForm(mapnode) {
 	 * applyHelp 依赖 label[for] 在最终位置上，先贴会被搬家带走。 */
 	applyHelp(wrap);
 
+	/* 落点必须还在 map 节点【里面】：map 靠这棵子树采字段值，把它搬出去就等于
+	 * 「改了任何一项都提示没有待应用的更改」，页面上存不下任何配置。
+	 * （r18 重写时把这一步交给调用方做，调用方 clear 掉了宿主节点 —— r25 才发现。） */
+	if (mapnode.appendChild)
+		mapnode.appendChild(wrap);
 	return wrap;
 }
 
@@ -2327,8 +2332,6 @@ function buildPage(mapnode) {
 	var cfgPane = el('div', { class: 'pane' });
 	var cfg = ConfigPane();
 	cfgPane.appendChild(cfg.node);
-	/* 重组后的分组要落进这个宿主（regroupForm 在 render 末尾才跑） */
-	P.cfgHost = cfg.host;
 
 	P.panes = { board: boardPane, sources: srcPane, logs: logsPane, config: cfgPane };
 
@@ -2594,11 +2597,8 @@ return view.extend({
 			/* 配置页的面板先建好、表单搬进去，再重组分组 */
 			var root = buildPage(mapnode);
 			injectStyle();
-			var wrap = regroupForm(mapnode);
-			if (wrap && wrap.children && wrap.children.length && P.cfgHost) {
-				clear(P.cfgHost);
-				P.cfgHost.appendChild(wrap);
-			}
+			/* 落点由 regroupForm 自己保证（分组必须留在 map 节点里面，见该函数末注释） */
+			regroupForm(mapnode);
 			/* 恢复上次停留的标签；没有记录就落到榜单页 */
 			var want = savedTab();
 			var valid = false;
