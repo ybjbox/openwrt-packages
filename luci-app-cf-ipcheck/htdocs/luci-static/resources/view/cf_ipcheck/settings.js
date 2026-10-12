@@ -28,7 +28,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r28';
+var VIEW_BUILD = 'r29';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -2236,12 +2236,37 @@ function gotoTab(id) {
  *     ├ 标签栏
  *     └ 三个面板（榜单 / 源与检测 / 配置）—— 一直在文档里，只是 display 切换
  */
+/* 读数条/榜单的重画指纹。单独成函数是为了能在桩测里钉住这条不变量：
+ * 同一份状态必须给出同一个指纹，指纹相同就绝不重建 —— 重建会换掉按钮节点，
+ * 而真实鼠标的 mousedown 与 mouseup 之间节点被换掉，Chromium 就不合成 click，
+ * 表现就是「点了没反应」（r28 真机抓到：down/up 都发生了，click 没发生）。 */
+function railKeyOf(st, busy) {
+	busy = busy || {};
+	return [ st.state, st.reason, st.intercepted, (st.items || []).length, st.finished,
+		!!busy.run, !!busy.stop, !!busy.refresh, st.enabled, st.interval ].join('|');
+}
+
+function boardKeyOf(st) {
+	return [ st.state, st.reason, st.finished, st.intercepted, (st.items || []).length,
+		JSON.stringify(st.items), JSON.stringify(st.counts) ].join('|');
+}
+
 function buildPage(mapnode) {
 	var root = el('div', { class: 'cfp' });
 
 	/* 读数条与提示条：各自订阅 store 重画 */
 	P.rail = el('div');
+	/* 读数条只在这几样真变了才重建：整条重画会换掉按钮节点，而真实鼠标点击
+	 * 的 mousedown 与 mouseup 之间只要节点被换掉，Chromium 就不会再合成 click
+	 * —— 表现就是「点了没反应」（真机抓到的：pointerdown→mousedown→mouseup 之后
+	 * click 根本没发生）。空闲时日志自动刷新会改 busy，若每次都重建，
+	 * 用户的点击有相当概率落进重建窗口被吞掉。 */
+	P.railKey = '';
 	P.railReplace = function (state) {
+		var key = railKeyOf(state.status, state.busy);
+		if (key === P.railKey)
+			return;
+		P.railKey = key;
 		clear(P.rail);
 		P.rail.appendChild(StatusRail(state.status, state.busy, {
 			run: actRun, stop: actStop, refresh: actRefresh, copy: actCopy
@@ -2286,7 +2311,12 @@ function buildPage(mapnode) {
 
 	/* ---- 面板 1：榜单 ---- */
 	var boardPane = el('div', { class: 'pane' });
+	var boardKey = '';
 	function drawBoard(state) {
+		var key = boardKeyOf(state.status);
+		if (key === boardKey)
+			return;
+		boardKey = key;
 		clear(boardPane);
 		boardPane.appendChild(BoardPane(state.status, {
 			run: actRun, stop: actStop, refresh: actRefresh, copy: actCopy, check: actCheck
@@ -2295,7 +2325,17 @@ function buildPage(mapnode) {
 
 	/* ---- 面板 2：源与检测 ---- */
 	var srcPane = el('div', { class: 'pane' });
+	var lastSources = null;
+	var lastCheck = null;
+	var sourcesDrawn = false;
 	function drawSources(state) {
+		/* 和读数条同一套防吞点逻辑：没变就不重建，别在用户按下按钮时换节点 */
+		var checking = !!(state.busy && state.busy.check);
+		if (sourcesDrawn && state.sources === lastSources && checking === lastCheck)
+			return;
+		sourcesDrawn = true;
+		lastSources = state.sources;
+		lastCheck = checking;
 		clear(srcPane);
 		srcPane.appendChild(SourcesPane(state.sources, { check: actCheck }));
 	}

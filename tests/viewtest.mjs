@@ -43,6 +43,7 @@ const hook = "\nglobalThis.__cf_t = {\n" +
 	"\tget P() { return P; }, goto: goto, savedTab: savedTab,\n" +
 	"\tbuildPage: buildPage, runCmd: runCmd,\n" +
 	"\tactRun: actRun,\n" +
+	"\trailKeyOf: railKeyOf, boardKeyOf: boardKeyOf,\n" +
 	"\tlogsRefresh: logsRefresh,\n" +
 	"\tHUNG: HUNG, CMD_LIMIT: CMD_LIMIT, isRunningReply: isRunningReply\n" +
 	"};\n";
@@ -992,6 +993,20 @@ const runP = t.actRun(null);          // 第二次 rpc（refresh 的 status）�
 await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
 eq('命令一返回，本地状态已是 running', t.store.get().status.state, 'running');
 eq('忙碌标记同时被清掉', String(t.store.get().busy.run), 'false');
+
+/* ================================================================== *
+ * 19. 回归：读数条/榜单不许无谓重建 —— 真实鼠标点击会被重建吞掉
+ * mousedown 与 mouseup 之间宿主节点被替换，Chromium 就不合成 click，
+ * 表现就是「点了没反应」。所以这些面板只在内容真变时才允许重建。
+ * ================================================================== */
+const doneSt = t.parseStatus(JSON.stringify({ state: 'done', items: [] }));
+eq('同一状态同一忙碌 → 读数条指纹相同', t.railKeyOf(doneSt, {}),
+	t.railKeyOf(t.parseStatus(JSON.stringify({ state: 'done', items: [] })), {}));
+eq('忙碌标记变化 → 读数条指纹变化', t.railKeyOf(doneSt, { run: true }) === t.railKeyOf(doneSt, {}), false);
+eq('items 变化 → 榜单指纹变化', t.boardKeyOf(doneSt) ===
+	t.boardKeyOf(t.parseStatus(JSON.stringify({ state: 'done', items: [ { ip: '1.1.1.1' } ] }))), false);
+eq('提示条变化不影响读数条指纹（分属两棵树）', t.railKeyOf(doneSt, {}),
+	t.railKeyOf(doneSt, {}));
 
 console.log(fails === 0 ? '=== view 渲染断言全部通过' : `=== view 渲染断言失败 ${fails} 项`);
 process.exit(fails === 0 ? 0 : 1);
