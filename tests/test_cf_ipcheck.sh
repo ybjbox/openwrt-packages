@@ -139,12 +139,28 @@ fi
 # 真机曾实测这条管道 209 秒才关闭（后台轮次继承了它），页面点完测速后近半分钟
 # 显示「路由器没有回应」，F5 才恢复。
 t0=$(date +%s)
+rm -f "$RUN/status.json"   # 清掉上一轮的 error，别让等待循环被旧状态提前放行
 sh "$BIN" run-now | cat >/dev/null 2>&1
 t1=$(date +%s)
 if [ $((t1 - t0)) -le 10 ]; then
 	echo '[PASS] run-now 的响应管道立即关闭'
 else
 	echo "::error::run-now 的响应管道 $((t1 - t0)) 秒才关闭，页面会被拖成「没有回应」"
+	rc=1
+fi
+
+# 管道关得快还不够：轮次必须真的启动。r31 曾把后台写法弄成 busybox ash 不支持的
+# 「exec 函数」——管道 0 秒关闭，但轮次根本没跑（真机上 fetch 一行都没有）。
+i=0
+while [ $i -lt 15 ]; do
+	[ -s "$RUN/status.json" ] && grep -q '"state":"error"' "$RUN/status.json" && break
+	sleep 1
+	i=$((i + 1))
+done
+if [ $i -lt 15 ]; then
+	echo '[PASS] run-now 的后台轮次真的启动了（离线空池 → error 中止）'
+else
+	echo "::error::run-now 的轮次没启动（管道快是假象）"
 	rc=1
 fi
 rm -f "$RUN/lock" "$RUN/status.json"
