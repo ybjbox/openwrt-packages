@@ -28,7 +28,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r32';
+var VIEW_BUILD = 'r33';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -580,7 +580,9 @@ function clock(iso, now) {
 function tone(st) {
 	switch (st.state) {
 		case 'running':
-			return 'run';
+			/* 读数滞留（连着几次没拿到路由器的返回）就降成 warn：这一轮还在跑，
+			 * 但页面手上的数字已经不是最新的了，颜色得说实话。 */
+			return st.staleFor ? 'warn' : 'run';
 		case 'never_run':
 			return 'idle';
 		case 'error':
@@ -601,7 +603,8 @@ function tone(st) {
 function stateWord(st) {
 	switch (st.state) {
 		case 'running':
-			return T('测速中');
+			/* 还在跑，但读数不是最新的了 —— 一句话说完，别让人以为页面卡死 */
+			return st.staleFor ? T('测速中 · 读数滞留') : T('测速中');
 		case 'never_run':
 			return T('尚未运行');
 		case 'unreachable':
@@ -658,11 +661,22 @@ var HUNG = { hung: true };
  * 十几个源 120 秒都不算多，别把它误判成挂住。 */
 var CMD_LIMIT = {
 	status: 8000,
+	/* 一轮跑着的时候把 status 放宽到 20 秒。为什么分开给：这时页面在持续轮询，
+	 * 一次慢返回该被当成「这一拍没赶上」，不该当成「路由器死了」。请求有 inflight
+	 * 去重，等久一点也不会把请求堆起来。
+	 * 慢不在引擎：真机整轮实测 92 次采样，status 最慢 0.48 秒（probe 阶段 8 个
+	 * 并发 curl、load 0.89 时量的），logs 同样 0.48 秒 —— 8 秒上限对引擎极宽裕，
+	 * 会超时的是这台电脑到路由器的那段路（本机代理/TUN 接管、无线抖动）。 */
+	status_running: 20000,
 	'run-now': 10000,
 	stop: 8000,
 	'check-sources': 120000,
-	/* 读日志只是 tail 一个本地文件，但引擎顺手要做一次封顶检查，给 15 秒宽裕些 */
-	logs: 15000
+	/* 读日志只是 tail 一个本地文件（真机实测最慢 0.48 秒），6 秒已经很宽裕。
+	 * 这里必须**小于** status 的上限：LuCI 的 rpc 层会把同一拍发出的调用并进一个
+	 * POST（真机抓到过：一个请求体里同时带 logs 与 status），响应要等两条都跑完
+	 * 才回来 —— logs 的上限若比 status 大，一次慢日志就会把 status 一起拖成「没有
+	 * 回应」，页面白挨一刀。桩测里钉着这条大小关系。 */
+	logs: 6000
 };
 
 function runCmd(args, ms) {
@@ -1353,6 +1367,16 @@ function BoardPane(st, actions) {
 	}
 
 	if (st.state === 'running') {
+		/* 读数滞留横幅：连着几次没拿到返回时，下面那份进度还停在上一帧。
+		 * 这时候最要命的是让人以为「页面又卡死了、得按 F5」，所以把实情和
+		 * 「不用你动手」两件事都写出来。 */
+		if (st.staleFor) {
+			kids.push(Flash({
+				title: T('读数停在 %s 秒前').format(st.staleFor),
+				text: T('路由器暂时没回话，但这一轮还在跑；页面会在后台继续重试，不需要刷新。下面的环节进度是最后一次读到的那一帧。'),
+				tone: 'warn'
+			}));
+		}
 		kids.push(RunProgress(st));
 		return el('div', {}, kids);
 	}
@@ -1364,7 +1388,7 @@ function BoardPane(st, actions) {
 			title: hung ? T('路由器没有回应')
 				: (st.state === 'unreachable' ? T('读不到引擎的输出') : T('引擎的输出读不懂')),
 			detail: hung
-				? T('等了一会儿没拿到 %s 的返回，这通常不是插件的问题。先确认这台电脑能打开路由器后台（本机代理/TUN 接管会把到 10.0.0.0/8 的流量吞掉），再看 LuCI 会话是不是已经过期。').format(CMD)
+				? T('连着几次都没等到 %s 的返回，这通常不是插件的问题。先确认这台电脑能打开路由器后台（本机代理/TUN 接管会把到 10.0.0.0/8 的流量吞掉），再看 LuCI 会话是不是已经过期。页面仍在后台每隔一会儿重试，恢复了会自己跟上；等不及就点「重新读取」。').format(CMD)
 				: (st.state === 'unreachable'
 					? T('无法执行 %s。多半是包没装好，或 rpcd 的 ACL 没放开 exec。').format(CMD)
 					: T('拿到的不是合法 JSON，无法解析。原文片段：%s').format(String(st.raw || '').slice(0, 160))),
@@ -1373,6 +1397,13 @@ function BoardPane(st, actions) {
 				onClick: actions.refresh
 			})
 		}));
+		/* 读不到不等于没有：上一轮的榜单还在手上就照样端出来。别因为一次链路
+		 * 抖动就把用户正在看的十行数字抹成白板 —— r32 就是这么干的，一次 status
+		 * 超时之后整页只剩「路由器没有回应」，非按 F5 不可。 */
+		if (st.items && st.items.length) {
+			kids.push(SummaryStrip(st));
+			kids.push(Leaderboard(st.items));
+		}
 		return el('div', {}, kids);
 	}
 
@@ -1906,6 +1937,53 @@ function ConfigPane() {
 var inflight = null;
 var poller = null;
 
+/* 一次读不到不等于路由器死了。下面这组数决定「读不到」时页面怎么办：
+ * 保住上一帧读数、放慢节奏继续轮询，连着失败到 FAIL_GIVEUP 才承认「没有回应」。
+ * 为什么不能一次就翻脸：r32 及之前，一次 status 超时会把 store.status 覆盖成
+ * unreachable 并顺手 stopPoll —— 榜单被抹成白板、整页只剩「路由器没有回应」、
+ * 此后不再轮询，非按 F5 不可；而引擎那一轮其实好端端在跑（真机抓到的现象）。
+ * 引擎侧无辜：整轮 92 次采样里 status 最慢 0.48 秒（probe 阶段 8 个并发 curl 时），
+ * 会超过 8 秒上限的是这台电脑到路由器的那段路（本机代理/TUN 接管、无线抖动）。 */
+var pollFail = 0;
+var lastGoodAt = 0;
+var POLL_MS = 3000;
+var POLL_SLOW_MS = 10000;
+var FAIL_STALE = 2;	/* 连着 2 次没读到：挂「读数滞留」横幅，节奏放慢 */
+var FAIL_GIVEUP = 4;	/* 连着 4 次没读到（约一分钟）：才说「路由器没有回应」 */
+
+function pollGap() {
+	return pollFail >= FAIL_STALE ? POLL_SLOW_MS : POLL_MS;
+}
+
+/* 没读到时的状态怎么算。返回的永远是「上一帧读数 + 一句老实话」，
+ * 绝不返回一个把榜单抹空的空壳 —— 除非手上本来就没东西可保。
+ * gaveUp 之后 staleFor 归零且不再变，指纹就不会一直变、面板不会反复重建
+ * （重建会换掉「重新读取」按钮节点，真实鼠标的点击有概率被吞掉）。 */
+function afterMiss(prev, hung) {
+	pollFail++;
+	var worth = prev.state === 'running' || !!(prev.items && prev.items.length);
+	if (!worth || pollFail >= FAIL_GIVEUP) {
+		if (worth)
+			flash(T('读取状态没有回应'),
+				T('连着 %s 次都没等到路由器返回。最后一次读到的榜单还在下面，页面每 %s 秒仍会自动重试一次，恢复了会自己跟上。').format(pollFail, Math.round(POLL_SLOW_MS / 1000)),
+				'bad');
+		return Object.assign({}, prev, {
+			state: 'unreachable',
+			reason: hung ? 'hung' : null,
+			staleFor: null,
+			gaveUp: 1
+		});
+	}
+	if (pollFail >= FAIL_STALE) {
+		var secs = lastGoodAt ? Math.max(1, Math.round((Date.now() - lastGoodAt) / 1000)) : 1;
+		flash(T('读取状态没有回应'),
+			T('页面停在 %s 秒前的读数上，后台继续重试，不用刷新页面。').format(secs), 'warn');
+		return Object.assign({}, prev, { staleFor: secs });
+	}
+	/* 只丢了一拍：什么都不改，也不弹提示（下一拍大概率就回来了，弹一句反而吓人） */
+	return Object.assign({}, prev);
+}
+
 /* 刷新状态：同一时刻只留一个 status 请求在飞，后来的共享它的结果。
  * 两次刷新叠在一起本身不会出错（写 store 是幂等的），但会把 ubus 请求翻倍。
  * 共享的前提是 inflight 一定会复位 —— runCmd 现在保证 settle（成功/被拒/超时三态），
@@ -1913,13 +1991,24 @@ var poller = null;
 function refresh() {
 	if (inflight)
 		return inflight;
+	var wasRunning = (store.get().status || {}).state === 'running';
 	store.set({ busy: Object.assign({}, store.get().busy, { refresh: true }) });
-	inflight = runCmd([ 'status' ]).then(function (out) {
+	inflight = runCmd([ 'status' ], wasRunning ? CMD_LIMIT.status_running : 0).then(function (out) {
 		inflight = null;
-		var st = parseStatus(out);
 		var busy = Object.assign({}, store.get().busy, { refresh: false });
-		if (out === HUNG)
-			flash(T('读取状态没有回应'), T('路由器在 %s 秒内没返回，页面先停在上一帧读数上。').format(Math.round(CMD_LIMIT.status / 1000)), 'bad');
+		if (out === HUNG || out === null || out === undefined) {
+			/* 这里重新读一次 store 而不是用发请求前那份：等返回的这几秒里
+			 * actRun 可能已经把本地状态置成 running 了，用旧的会把它盖回去。 */
+			var miss = afterMiss(store.get().status || {}, out === HUNG);
+			store.set({ status: miss, busy: busy });
+			/* 关键：不停轮询。慢节奏心跳让页面在路由器恢复后自己跟上，
+			 * 而不是停在错误态等人按 F5。 */
+			startPoll();
+			return miss;
+		}
+		pollFail = 0;
+		lastGoodAt = Date.now();
+		var st = parseStatus(out);
 		store.set({ status: st, busy: busy });
 		if (st.state === 'running')
 			startPoll();
@@ -1941,24 +2030,22 @@ function stopPoll() {
 	}
 }
 
-/* 测速进行中每 3 秒拉一次；结束后自停。
+/* 测速进行中每 3 秒拉一次；读不到就放慢到 10 秒，读到真结果后自己停。
  * 为什么从 5 秒收到 3 秒：一轮实测约 140 秒（取源 45 / 探测 52 / 机房+吞吐 44），
- * 5 秒只能跳 28 下，进度条看着像卡住；一次 status 只是读文件加两次 fork，代价可忽略。
- * 停止条件看 store 里的 state，不看 DOM 文案 —— 文案会因为隐藏面板等原因与真实状态不同步。 */
+ * 5 秒只能跳 28 下，进度条看着像卡住；一次 status 只是读文件加两次 fork，代价可忽略。 */
+function pollTick() {
+	/* 测速期间把日志也一起带上：这一轮正在进行到哪一步，不该要人点一下才看到。
+	 * 轮询的生死全交给 refresh() 判：这里绝不能再「看到不是 running 就停机」——
+	 * 一次读不到就把心跳掐死，页面就永远回不来了（r32 的病根之一）。 */
+	logsRefresh();
+	refresh();
+}
+
 function startPoll() {
 	if (typeof setInterval !== 'function')
 		return;
 	stopPoll();
-	poller = setInterval(function () {
-		/* 测速期间把日志也一起带上：这一轮正在进行到哪一步，不该要人点一下才看到 */
-		logsRefresh();
-		refresh().then(function (st) {
-			if (!st || st.state !== 'running')
-				stopPoll();
-		}, function () {
-			stopPoll();
-		});
-	}, 3000);
+	poller = setInterval(pollTick, pollGap());
 }
 
 function actRun(btn) {
@@ -2083,10 +2170,19 @@ function logsRefresh() {
 		return Promise.resolve(st.logs);   /* 已经有一次在飞，别叠 */
 	store.set({ busy: Object.assign({}, st.busy, { logs: true }) });
 	return runCmd([ 'logs' ]).then(function (out) {
+		var off = Object.assign({}, store.get().busy, { logs: false });
+		/* 一次读不到不要把已经拿到的日志抹掉：日志面板是主动展示的，用户可能正在读，
+		 * 抹成「读取日志没有回应」等于把他手上的东西抢走（和状态那边同一个道理）。
+		 * 下一拍会再试；真连着读不到，状态那边的横幅已经把话说清了。 */
+		if ((out === HUNG || out === null || out === undefined) &&
+				(store.get().logs || {}).state === 'ok') {
+			store.set({ busy: off });
+			return store.get().logs;
+		}
 		var lg = parseLog(out);
 		store.set({
 			logs: lg,
-			busy: Object.assign({}, store.get().busy, { logs: false })
+			busy: off
 		});
 		return lg;
 	}, function () {
@@ -2250,13 +2346,24 @@ function gotoTab(id) {
  * 表现就是「点了没反应」（r28 真机抓到：down/up 都发生了，click 没发生）。 */
 function railKeyOf(st, busy) {
 	busy = busy || {};
+	/* staleFor 只取「有没有」进指纹：灯色和状态词要跟着翻一次，但秒数每秒都在变，
+	 * 把秒数放进去就等于持续重建读数条 —— 而重建会换掉按钮节点，真实鼠标的
+	 * mousedown 与 mouseup 之间节点被换掉，Chromium 就不合成 click（r28 抓到的吞点）。 */
 	return [ st.state, st.reason, st.intercepted, (st.items || []).length, st.finished,
-		!!busy.run, !!busy.stop, !!busy.refresh, st.enabled, st.interval ].join('|');
+		!!busy.run, !!busy.stop, !!busy.refresh, st.enabled, st.interval,
+		!!st.staleFor ].join('|');
 }
 
 function boardKeyOf(st) {
 	return [ st.state, st.reason, st.finished, st.intercepted, (st.items || []).length,
-		JSON.stringify(st.items), JSON.stringify(st.counts) ].join('|');
+		JSON.stringify(st.items), JSON.stringify(st.counts),
+		/* 环节进度是一轮里唯一一直在变的东西。漏了它，榜单面板就冻在第一次画出来的
+		 * 那一帧：r32 真机实测进度停在「拉取社区源 1/13」30 秒不动，而同一时刻引擎
+		 * 已经跑到 12/13 —— 看着就像「点了没反应 / 页面卡住」。 */
+		st.stage, st.stage_done, st.stage_total, st.upload,
+		/* 滞留秒数按 10 秒一档进指纹：横幅能更新，又不会每拍都重建面板；
+		 * 认输之后 staleFor 是 null，指纹彻底稳定，「重新读取」按钮不会被反复换掉。 */
+		Math.floor((st.staleFor || 0) / 10), st.gaveUp ? 1 : 0 ].join('|');
 }
 
 function buildPage(mapnode) {

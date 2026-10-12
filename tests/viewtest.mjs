@@ -45,6 +45,10 @@ const hook = "\nglobalThis.__cf_t = {\n" +
 	"\tactRun: actRun,\n" +
 	"\trailKeyOf: railKeyOf, boardKeyOf: boardKeyOf,\n" +
 	"\tlogsRefresh: logsRefresh,\n" +
+	"\trefresh: refresh, startPoll: startPoll, stopPoll: stopPoll, afterMiss: afterMiss,\n" +
+	"\tget pollFail() { return pollFail; }, pollGap: pollGap,\n" +
+	"\tPOLL_MS: POLL_MS, POLL_SLOW_MS: POLL_SLOW_MS,\n" +
+	"\tFAIL_STALE: FAIL_STALE, FAIL_GIVEUP: FAIL_GIVEUP,\n" +
 	"\tHUNG: HUNG, CMD_LIMIT: CMD_LIMIT, isRunningReply: isRunningReply\n" +
 	"};\n";
 const src = src0.replace(marker, hook + 'return view.extend({');
@@ -302,13 +306,25 @@ const liveTimers = () => timers.filter(x => x).length;
 function fireTimers(ms) {
 	timers.filter(x => x && x.ms === ms).forEach(x => { const f = x.fn; x.ms = -1; f(); });
 }
+/* 轮询也要能被测试亲手点亮：桩里的 setInterval 原本恒返回 0（既不会跳，
+ * stopPoll 的 if (poller) 也判不出真假），于是「一次读不到就掐掉心跳」这类
+ * 病根本没地方断言。做成和 timers 一样的登记表。 */
+const intervals = [];
+const stubSetInterval = (fn, ms) => { intervals.push({ fn: fn, ms: ms }); return intervals.length; };
+const stubClearInterval = (id) => { if (id) intervals[id - 1] = null; };
+const liveIntervals = () => intervals.filter(x => x).length;
+const lastInterval = () => {
+	for (let i = intervals.length - 1; i >= 0; i--)
+		if (intervals[i]) return intervals[i];
+	return null;
+};
 
 const ctx = new Function('form', 'rpc', 'ui', 'view', 'E', '_', 'L', 'window', 'document',
 	'setTimeout', 'setInterval', 'clearInterval', 'clearTimeout', 'navigator', 'globalThis', src);
 ctx(formStub, rpcStub, uiStub, viewStub, () => makeNode('div'), _, {
 	addItem: noop, network: {}
 }, windowStub, documentStub,
-	stubSetTimeout, () => 0, () => 0, stubClearTimeout,
+	stubSetTimeout, stubSetInterval, stubClearInterval, stubClearTimeout,
 	{ clipboard: undefined }, globalThis);
 
 const t = globalThis.__cf_t;
@@ -806,6 +822,13 @@ ok('忙碌态不再只靠降透明度', !/\.cfp button\.busy\{pointer-events:non
 eq('status 的等待上限是 8 秒', t.CMD_LIMIT.status, 8000);
 eq('run-now 的等待上限是 10 秒', t.CMD_LIMIT['run-now'], 10000);
 eq('check-sources 给到 120 秒（逐条联网实拉，慢是正常的）', t.CMD_LIMIT['check-sources'], 120000);
+/* LuCI 的 rpc 会把同一拍的调用并进一个 POST（真机抓到过 logs 与 status 同体），
+ * 响应要等两条都跑完；logs 的上限一旦大过 status，一次慢日志就把 status 拖成
+ * 「没有回应」。这条大小关系是硬约束，钉住。 */
+ok('logs 的上限必须小于 status（否则同体请求会连坐）',
+	t.CMD_LIMIT.logs < t.CMD_LIMIT.status);
+ok('logs 的上限也必须小于运行期的 status 上限',
+	t.CMD_LIMIT.logs < t.CMD_LIMIT.status_running);
 
 eq('被拒不带 reason，文案仍是「读取失败」', t.stateWord(t.parseStatus(null)), '读取失败');
 eq('超时 → unreachable', t.parseStatus(t.HUNG).state, 'unreachable');
@@ -1007,6 +1030,123 @@ eq('items 变化 → 榜单指纹变化', t.boardKeyOf(doneSt) ===
 	t.boardKeyOf(t.parseStatus(JSON.stringify({ state: 'done', items: [ { ip: '1.1.1.1' } ] }))), false);
 eq('提示条变化不影响读数条指纹（分属两棵树）', t.railKeyOf(doneSt, {}),
 	t.railKeyOf(doneSt, {}));
+
+/* ================================================================== *
+ * 20. 回归：一次读不到不许打死页面（r32 现场抓到的病根）
+ * 现象：点完「立即测速」，一轮跑到中途整页翻成「路由器没有回应」，榜单被抹成
+ * 白板，而且从此不再轮询，非按 F5 不可 —— 而引擎那一轮其实好端端在跑。
+ * 根因两条：refresh 拿到 HUNG 就把 store.status 覆盖成 unreachable；随后
+ * state !== 'running' 又触发 stopPoll，把心跳一起掐了。
+ * 这里钉住三件事：保住上一帧读数、心跳不停、连着失败到阈值才认输。
+ * ================================================================== */
+const runFrame = {
+	state: 'running', stage: 'probe', stage_done: 40, stage_total: 111,
+	upload: 1, pool: 111, items: [ { ip: '1.1.1.1', total: 120, ttfb: 80, colo: 'LAX' } ]
+};
+t.store.set({ status: Object.assign({}, runFrame), busy: {}, logs: { state: 'ok', text: '一行\n二行\n' } });
+rpcImpl = () => new Promise(() => {});        // 路由器不回话
+
+t.startPoll();
+eq('正常节奏 3 秒', lastInterval().ms, t.POLL_MS);
+
+let mp = t.refresh();
+fireTimers(t.CMD_LIMIT.status_running);
+await mp;
+eq('运行中用的是放宽后的上限', t.CMD_LIMIT.status_running, 20000);
+eq('第一次没读到：状态仍是 running', t.store.get().status.state, 'running');
+eq('第一次没读到：进度没被抹掉', t.store.get().status.stage_done, 40);
+eq('第一次没读到：还不算滞留（下一拍大概率就回来了）', String(t.store.get().status.staleFor), 'undefined');
+eq('失败计数 1', t.pollFail, 1);
+eq('心跳没被掐掉', liveIntervals(), 1);
+
+mp = t.refresh();
+fireTimers(t.CMD_LIMIT.status_running);
+await mp;
+eq('第二次没读到：挂上滞留秒数', typeof t.store.get().status.staleFor, 'number');
+eq('第二次没读到：进度仍在', t.store.get().status.stage_done, 40);
+eq('第二次没读到：状态词说实话', t.stateWord(t.store.get().status), '测速中 · 读数滞留');
+eq('节奏放慢到 10 秒（不是停机）', lastInterval().ms, t.POLL_SLOW_MS);
+has('滞留时榜单顶上挂一条横幅', t.BoardPane(t.store.get().status, noActions), '路由器暂时没回话');
+has('横幅明说不用刷新页面', t.BoardPane(t.store.get().status, noActions), '不需要刷新');
+
+for (let i = 0; i < t.FAIL_GIVEUP - t.FAIL_STALE; i++) {
+	mp = t.refresh();
+	fireTimers(t.CMD_LIMIT.status_running);
+	await mp;
+}
+const gaveUp = t.store.get().status;
+eq('连着 %s 次才认输'.format(t.FAIL_GIVEUP), gaveUp.state, 'unreachable');
+eq('认输时说的是「没有回应」', gaveUp.reason, 'hung');
+eq('认输也不许把上一帧榜单扔掉', gaveUp.items.length, 1);
+has('认输的面板照样把榜单端出来', t.BoardPane(gaveUp, noActions), '1.1.1.1');
+has('认输的面板说清是没有回应', t.BoardPane(gaveUp, noActions), '路由器没有回应');
+ok('认输之后心跳仍在（恢复了能自己跟上，不用 F5）', liveIntervals() >= 1);
+eq('认输后不再计滞留秒数（指纹因此稳定，「重新读取」按钮不会被反复换掉）',
+	String(gaveUp.staleFor), 'null');
+eq('认输后连着再读不到，指纹也不再变', t.boardKeyOf(gaveUp),
+	t.boardKeyOf(t.afterMiss(gaveUp, true)));
+
+rpcImpl = async () => JSON.stringify({ state: 'running', stage: 'speed', stage_done: 3, stage_total: 10, items: [] });
+mp = t.refresh();
+await mp;
+eq('路由器一回话就自愈', t.store.get().status.stage, 'speed');
+eq('失败计数清零', t.pollFail, 0);
+eq('滞留标记去掉', String(t.store.get().status.staleFor), 'undefined');
+eq('节奏回到 3 秒', lastInterval().ms, t.POLL_MS);
+
+rpcImpl = async () => JSON.stringify({ state: 'done', items: [ { ip: '2.2.2.2' } ] });
+mp = t.refresh();
+await mp;
+eq('这一轮跑完就停心跳', liveIntervals(), 0);
+
+/* 手上根本没有任何读数（刚进页面第一次就没读到）时不许装样子：直说没回应 */
+t.store.set({ status: { state: 'never_run', items: [] }, busy: {} });
+rpcImpl = () => new Promise(() => {});
+mp = t.refresh();
+fireTimers(t.CMD_LIMIT.status);
+await mp;
+eq('没有读数可保时立刻说「没有回应」', t.store.get().status.state, 'unreachable');
+eq('被拒/超时之外不上调上限', t.CMD_LIMIT.status, 8000);
+t.stopPoll();
+
+/* 日志那边同一个道理：一次读不到不许把用户正在看的日志抹掉 */
+t.store.set({ logs: { state: 'ok', text: '一行\n二行\n' }, busy: {} });
+rpcImpl = () => new Promise(() => {});
+const keepLog = t.logsRefresh();
+fireTimers(t.CMD_LIMIT.logs);
+await keepLog;
+eq('读不到日志时保住上一份', t.store.get().logs.state, 'ok');
+eq('日志内容一个字都没少', t.store.get().logs.text, '一行\n二行\n');
+eq('日志的忙碌标记照样清掉', String(t.store.get().busy.logs), 'false');
+
+/* ================================================================== *
+ * 21. 回归：榜单指纹必须覆盖环节进度
+ * r32 真机实测：点完测速，进度清单画出来一次就冻住 —— 停在「拉取社区源 1/13」
+ * 30 秒不动，而同一时刻引擎已经跑到 12/13。原因是 boardKeyOf 里没有
+ * stage/stage_done/stage_total/upload，指纹不变就不重画。
+ * ================================================================== */
+const pf = { state: 'running', stage: 'probe', stage_done: 1, stage_total: 13, upload: 1, items: [] };
+eq('进度计数变了 → 指纹必须变', t.boardKeyOf(pf) ===
+	t.boardKeyOf(Object.assign({}, pf, { stage_done: 2 })), false);
+eq('换环节 → 指纹必须变', t.boardKeyOf(pf) ===
+	t.boardKeyOf(Object.assign({}, pf, { stage: 'rank' })), false);
+eq('总数变了 → 指纹必须变', t.boardKeyOf(pf) ===
+	t.boardKeyOf(Object.assign({}, pf, { stage_total: 14 })), false);
+eq('上传开关变了 → 指纹必须变（那一条要标灰）', t.boardKeyOf(pf) ===
+	t.boardKeyOf(Object.assign({}, pf, { upload: 0 })), false);
+eq('无关字段变了 → 指纹不变（别白白重建面板）', t.boardKeyOf(pf),
+	t.boardKeyOf(Object.assign({}, pf, { pool: 999, qualified: 5 })));
+eq('滞留跨 10 秒档 → 指纹变（横幅上的秒数要能更新）',
+	t.boardKeyOf(Object.assign({}, pf, { staleFor: 3 })) ===
+	t.boardKeyOf(Object.assign({}, pf, { staleFor: 12 })), false);
+eq('同一档内秒数变了 → 指纹不变（别每拍重建）',
+	t.boardKeyOf(Object.assign({}, pf, { staleFor: 3 })),
+	t.boardKeyOf(Object.assign({}, pf, { staleFor: 7 })));
+eq('滞留只影响灯色一次：读数条指纹只认有没有滞留',
+	t.railKeyOf(Object.assign({}, pf, { staleFor: 3 }), {}),
+	t.railKeyOf(Object.assign({}, pf, { staleFor: 300 }), {}));
+eq('读数条指纹认得出「开始滞留」', t.railKeyOf(pf, {}) ===
+	t.railKeyOf(Object.assign({}, pf, { staleFor: 3 }), {}), false);
 
 console.log(fails === 0 ? '=== view 渲染断言全部通过' : `=== view 渲染断言失败 ${fails} 项`);
 process.exit(fails === 0 ? 0 : 1);

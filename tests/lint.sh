@@ -36,8 +36,8 @@ find . \
     \( -name .git -o -name node_modules -o -name scratch -o -name 'tmp_*' \) -prune -o \
     -type f -print > "$ALL_FILES"
 
-# === [1/8] shell syntax check (sh -n) ========================================
-echo "=== [1/8] Shell syntax check (sh -n) ==="
+# === [1/9] shell syntax check (sh -n) ========================================
+echo "=== [1/9] Shell syntax check (sh -n) ==="
 : > "$SHELL_LIST"
 
 # .sh files anywhere in the repo.
@@ -74,8 +74,8 @@ while IFS= read -r f; do
     fi
 done < "$SHELL_LIST"
 
-# === [2/8] RED LINE 1: no forbidden js shipped under root/www ================
-echo "=== [2/8] Red line 1: forbidden js under root/www/ ==="
+# === [2/9] RED LINE 1: no forbidden js shipped under root/www ================
+echo "=== [2/9] Red line 1: forbidden js under root/www/ ==="
 rl1=0
 while IFS= read -r f; do
     [ -z "$f" ] && continue
@@ -95,8 +95,8 @@ if [ "$rl1" = 0 ]; then
 fi
 [ "$rl1" = 0 ] || fail=1
 
-# === [3/8] RED LINE 3: no cross-package duplicate installed file =============
-echo "=== [3/8] Red line 3: cross-package duplicate file paths ==="
+# === [3/9] RED LINE 3: no cross-package duplicate installed file =============
+echo "=== [3/9] Red line 3: cross-package duplicate file paths ==="
 # Strip the package prefix up to and including /root/, then detect duplicates.
 while IFS= read -r f; do
     [ -z "$f" ] && continue
@@ -112,8 +112,8 @@ else
     echo "[PASS] red-line-3: no cross-package duplicate file paths"
 fi
 
-# === [4/8] RED LINE 2: bandix restart hint (info only, never fails) ==========
-echo "=== [4/8] Red line 2: bandix restart hint (info only) ==="
+# === [4/9] RED LINE 2: bandix restart hint (info only, never fails) ==========
+echo "=== [4/9] Red line 2: bandix restart hint (info only) ==="
 hint=0
 while IFS= read -r f; do
     [ -z "$f" ] && continue
@@ -132,10 +132,10 @@ if [ "$hint" = 0 ]; then
     echo "      script restarts bandix after rewriting hostname_bindings.txt"
 fi
 
-# === [5/8] RED LINE 4: LuCI view JS traps (found on real device) =============
+# === [5/9] RED LINE 4: LuCI view JS traps (found on real device) =============
 # 这两条都是 2026-09-26 在雅典娜真机上验出来的：第一条让页面永远停在
 # 「正在载入视图」，第二条让结果表永远显示「尚未运行过」。
-echo "=== [5/8] Red line 4: LuCI view JS traps ==="
+echo "=== [5/9] Red line 4: LuCI view JS traps ==="
 rl4=0
 while IFS= read -r f; do
     [ -z "$f" ] && continue
@@ -168,13 +168,13 @@ else
     fail=1
 fi
 
-# === [6/8] RED LINE 5: files procd/rpcd execute must carry the exec bit ======
+# === [6/9] RED LINE 5: files procd/rpcd execute must carry the exec bit ======
 # 2026-09-26 真机装 CI 产物时暴露：仓库里 root/etc/init.d/cf-ipcheck 与
 # root/usr/bin/cf-ipcheck 是 100644，装到设备上就变成 -rw-r--r--，
 # 于是 post-install 的 enable/start 报 Permission denied，页面点「立即测速」
 # 也起不来（rpcd 是直接 execv 那个路径的）。手工 chmod 会把问题藏起来，
 # 所以这条必须在 CI 里钉死。
-echo "=== [6/8] Red line 5: executable file modes ==="
+echo "=== [6/9] Red line 5: executable file modes ==="
 # 优先看 git index 里的 mode：Windows 的 checkout 会伪造执行位，[ -x ] 在那边
 # 恒为真，只有 index mode 才是构建时真正打进包里的东西。
 USE_GIT=0
@@ -212,12 +212,12 @@ if [ "$rl5" = 1 ]; then
     fail=1
 fi
 
-# === [7/8] RED LINE 6: 引擎 JSON 与页面读数字段必须对得上 ====================
+# === [7/9] RED LINE 6: 引擎 JSON 与页面读数字段必须对得上 ====================
 # 引擎改字段名、页面忘了改，不会有任何报错：那一列永远显示 —，或者整块信息
 # 静默消失。吞吐列的键名已经改过两轮（speed_mbps -> speed_mibs -> speed_mbytes，
 # 单位从"看着像 megabits"到 MiB 再回到 Ryan 要的十进制 MB/s），靠真机才看得出来，
 # 所以这条契约检查放在 CI 里，两边任一侧单方面改名都会红。
-echo "=== [7/8] Red line 6: engine <-> view JSON field contract ==="
+echo "=== [7/9] Red line 6: engine <-> view JSON field contract ==="
 ENGINE=luci-app-cf-ipcheck/root/usr/bin/cf-ipcheck
 VIEW=luci-app-cf-ipcheck/htdocs/luci-static/resources/view/cf_ipcheck/settings.js
 TMP_ENGINE="/tmp/lint_engine.$$"
@@ -357,7 +357,7 @@ fi
 # 真机踩过：页面把源检测写成 runCmd(['sources'])，而引擎只有 check-sources，于是一点
 # 「检测源可用性」拿到的是 usage 文本，页面报「输出不是合法 JSON」。JSON 键有 red-line-6
 # 守着，命令名此前没人守 —— 这种单边改名，视图桩测和引擎自检都发现不了。
-echo "=== [8/8] Red line 8: view only calls subcommands the engine dispatches ==="
+echo "=== [8/9] Red line 8: view only calls subcommands the engine dispatches ==="
 if [ -f "$VIEW" ] && [ -f "$ENGINE" ]; then
     rl8=0
     TMP_LABELS="/tmp/lint_labels.$$"
@@ -385,6 +385,47 @@ if [ -f "$VIEW" ] && [ -f "$ENGINE" ]; then
         fail=1
     else
         echo "[PASS] red-line-8: view only calls subcommands the engine dispatches"
+    fi
+fi
+
+# --- red-line-9: 重画指纹必须覆盖被守卫组件读到的每一个状态字段 ---------------
+# r32 真机事故：boardKeyOf 的指纹里没有 stage/stage_done/stage_total/upload，
+# 而榜单面板在一轮里唯一会变的就是这四个 —— 于是进度清单画出来一次就冻住：
+# 实测停在「拉取社区源 1/13」30 秒不动，同一时刻引擎已经跑到 12/13。
+# 指纹漏字段这类 bug 桩测容易跟着一起漏（写断言的人和写指纹的人是同一个），
+# 所以这里直接从渲染函数身上把字段名抠出来，逐个去指纹里点名。
+echo "=== [9/9] Red line 9: redraw fingerprints cover the fields they guard ==="
+if [ -f "$VIEW" ]; then
+    rl9=0
+    TMP_FIELDS="/tmp/lint_fields.$$"
+    # 被守卫的渲染函数 → 它的指纹函数。加一对就在这里加一行。
+    for pair in "RunProgress:boardKeyOf"; do
+        render=${pair%%:*}
+        keyfn=${pair##*:}
+        awk "/^function ${render}\\(/,/^\\}/" "$VIEW" |
+            grep -o 'st\.[A-Za-z_]*' | sed 's/^st\.//' | sort -u > "$TMP_FIELDS"
+        keybody=$(awk "/^function ${keyfn}\\(/,/^\\}/" "$VIEW")
+        if [ ! -s "$TMP_FIELDS" ] || [ -z "$keybody" ]; then
+            echo "[FAIL] fingerprint: 从 $render / $keyfn 里什么都没提出来，这条检查本身失效了"
+            rl9=1
+            continue
+        fi
+        while read -r fld; do
+            [ -n "$fld" ] || continue
+            # 要按整词比：st.stage 会被 st.stage_done 冒充命中
+            if printf '%s' "$keybody" | grep -Eq "st\.${fld}([^A-Za-z0-9_]|\$)"; then
+                echo "[PASS] fingerprint: $render 读 $fld，$keyfn 的指纹里有"
+            else
+                echo "[FAIL] fingerprint: $render 读 $fld，但 $keyfn 的指纹里没有 —— 面板会冻在第一帧"
+                rl9=1
+            fi
+        done < "$TMP_FIELDS"
+    done
+    rm -f "$TMP_FIELDS"
+    if [ "$rl9" = 1 ]; then
+        fail=1
+    else
+        echo "[PASS] red-line-9: redraw fingerprints cover the fields they guard"
     fi
 fi
 
