@@ -388,6 +388,21 @@ if [ -f "$VIEW" ] && [ -f "$ENGINE" ]; then
     fi
 fi
 
+# --- 版本一致性：视图里的 VIEW_BUILD 必须等于 Makefile 的 PKG_RELEASE -----------
+# 视图版本号是给「你看到的到底是哪一版」准备的（uhttpd 只发 ETag，浏览器可能拿缓存
+# 不重新验证）。但没人核对的话，这个号自己就会变成第二处「文档说的和代码不一样」。
+MK=luci-app-cf-ipcheck/Makefile
+if [ -f "$VIEW" ] && [ -f "$MK" ]; then
+    mkrel=$(sed -n 's/^PKG_RELEASE:=[[:space:]]*\([0-9]*\).*/\1/p' "$MK" | head -n 1)
+    vb=$(sed -n "s/.*VIEW_BUILD = 'r\([0-9]*\)'.*/\1/p" "$VIEW" | head -n 1)
+    if [ -n "$mkrel" ] && [ "$mkrel" = "$vb" ]; then
+        echo "[PASS] build: 视图版本标记 r$vb 与 PKG_RELEASE $mkrel 一致"
+    else
+        echo "[FAIL] build: 视图版本标记 r${vb:-<无>} 与 Makefile 的 PKG_RELEASE ${mkrel:-<无>} 不一致"
+        fail=1
+    fi
+fi
+
 # --- cleanup ---
 rm -f "$ALL_FILES" "$TMP_ERR" "$TMP_DUP" "$SHELL_LIST" 2>/dev/null
 

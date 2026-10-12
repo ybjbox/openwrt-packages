@@ -399,7 +399,7 @@ cf-ipcheck selftest   # 离线自检，不联网
 | `/tmp/cf-ipcheck/{probed,aggregated,qualified,ranked,colored}.tsv` | 本轮原始（ip×域名）/ 按 IP 合并后 / 达标 / 排序 / 加了 colo+吞吐的结果，排查“为什么某条没上榜”时看这里 |
 | `/tmp/cf-ipcheck/lock` | 运行锁，内容是 `<pid> <启动秒>`（判活用 `kill -0`，超过 6 小时无条件回收） |
 | `/etc/cf-ipcheck/cf-nets.txt` | Cloudflare 官方网段的 6 小时缓存：第 1 行 `#<写入秒>`，第 2 行空格分隔的 CIDR |
-| `/tmp/cf-ipcheck/cf-ipcheck.log` | 运行日志，按 `log_max_kb` 封顶（超限只留最近一半并写一行说明）；页面上的「日志」标签读的就是它，`cf-ipcheck logs` 是同一份 |
+| `/tmp/cf-ipcheck/cf-ipcheck.log` | 运行日志，按 `log_max_kb` 封顶（超限只留最近一半并写一行说明）；页面上的「日志」标签读的就是它，`cf-ipcheck logs` 是同一份。行首时间戳是**路由器本地时间带时区偏移**（国内 `+0800`），而 `status.json`/`result.json` 里的时间是 UTC 的 `...Z`，由页面转成浏览器本地显示 |
 
 `colored.tsv` 的列序是 `ip code connect tls ttfb total colo speed domain`（吞吐单位
 十进制 MB/s，未测是 `-`），第 8、9 列分别进 `result.json` 的 `speed_mbytes` 与 `domain`。

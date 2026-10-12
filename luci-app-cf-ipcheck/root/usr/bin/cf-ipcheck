@@ -102,7 +102,10 @@ if [ "$NULL_DEV" != /dev/null ]; then
 fi
 
 log() {
-	printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >>"$LOG" 2>/dev/null || true
+	# 日志给人读，就用路由器自己的本地时间，并带上偏移（国内是 +0800），
+	# 这样页面上、日志文件里、和他手腕上的钟是同一个数。
+	# 结构化状态（status.json / result.json）仍写 UTC 的 ...Z —— 那边由页面负责转本地。
+	printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >>"$LOG" 2>/dev/null || true
 	# 攒够 200 行才查一次体积：每条日志都去 stat 就等于白 fork 几百次
 	LOGWRITES=$((LOGWRITES + 1))
 	if [ "$LOGWRITES" -ge 200 ]; then
@@ -139,7 +142,7 @@ trim_log() {
 	# tail -c 会拦腰截在一行中间，第一行是残句，直接丢掉
 	tail -c "$keep" "$LOG" 2>/dev/null | sed '1d' >"$LOG.tmp" || { rm -f "$LOG.tmp"; return 0; }
 	printf '%s 日志已超过上限 %s KB，较早的内容被丢弃（保留最近约 %s KB）\n' \
-		"$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$cap" "$((keep / 1024))" >>"$LOG.tmp"
+		"$(date '+%Y-%m-%dT%H:%M:%S%z')" "$cap" "$((keep / 1024))" >>"$LOG.tmp"
 	chmod 644 "$LOG.tmp" 2>/dev/null || true
 	mv -f "$LOG.tmp" "$LOG" 2>/dev/null || { rm -f "$LOG.tmp"; return 0; }
 	return 0
@@ -1672,6 +1675,15 @@ selftest() {
 	check 'print_log 从整行开始（不是拦腰的残句）' "$(print_log | head -1 | cut -c1-20)" '2026-01-01T00:00:00Z'
 	rm -f "$LOG"
 	check '没有日志时输出空串（页面据此说「还没有日志」）' "$(print_log)" ''
+	# 日志时间用路由器本地时区 + 偏移，页面上的数才和他手腕上的钟一致
+	LOG="$RUN_DIR/zone.log"
+	rm -f "$LOG"
+	log '时区格式断言'
+	check '日志行首是本地时间并带 ±hhmm 偏移' \
+		"$(grep -c 'T[0-9][0-9]:[0-9][0-9]:[0-9][0-9][+-][0-9][0-9][0-9][0-9] ' "$LOG")" '1'
+	head -n 1 "$LOG" | grep -q 'T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z '
+	check '日志不再用 UTC 的 Z 结尾（那套留给 JSON）' "$?" '1'
+	rm -f "$LOG"
 	LOG=$log_real
 	rm -f "$RUN_DIR/selftest.log" "$RUN_DIR/selftest.log.tmp"
 

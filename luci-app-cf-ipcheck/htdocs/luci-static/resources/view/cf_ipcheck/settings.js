@@ -24,6 +24,12 @@
 
 var CMD = '/usr/bin/cf-ipcheck';
 
+/* 视图版本号。装机后你要能一眼看出浏览器里跑的到底是哪一版 —— uhttpd 只发
+ * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
+ * 「点了没反应」这类问题第一条要排除的就是这个。
+ * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
+var VIEW_BUILD = 'r25';
+
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
  * form.Map/section/option 的声明处出现（那里是 LuCI 的固定签名，改不了）。 */
@@ -184,6 +190,8 @@ var CSS = [
 	'  @keyframes cfp-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(.65)}}',
 	'}',
 	'.cfp .rail-note{font-size:var(--t-sm);color:var(--ink-3);min-width:0}',
+	'.cfp .build{font-family:var(--mono);font-size:var(--t-xs);color:var(--ink-3);',
+	'  border:1px solid var(--rule);border-radius:var(--r1);padding:.1em .4em;white-space:nowrap}',
 	'.cfp .rail-tag{font-size:var(--t-xs);color:var(--warn-fg);background:var(--warn-bg);',
 	'  border:1px solid var(--warn-bd);border-radius:var(--r1);padding:.15em .45em;white-space:nowrap;',
 	'  font-weight:600}',
@@ -1025,6 +1033,8 @@ function StatusRail(st, busy, actions) {
 		id.push(el('span', { class: 'rail-note', text: sched }));
 	if (st.intercepted == 1)
 		id.push(el('span', { class: 'rail-tag', text: T('出口被接管') }));
+	/* 版本号常驻在这里：不用翻页脚、不用开控制台就能报给我「我看到的是 r 几」 */
+	id.push(el('span', { class: 'build', title: T('浏览器里正在跑的视图版本'), text: VIEW_BUILD }));
 
 	var running = st.state === 'running';
 
@@ -1617,7 +1627,7 @@ function LogsPane(lg, actions) {
 
 	kids.push(LogBlock(lg.text));
 	kids.push(el('div', { class: 'note' }, [
-		el('span', { text: T('只给最近这一段（最多约 60 KB）；日志总量按「配置 → 基本设置 → 日志体积上限」封顶，超限会丢掉较早的内容并在这里留一行说明。') }),
+		el('span', { text: T('只给最近这一段（最多约 60 KB）；日志总量按「配置 → 基本设置 → 日志体积上限」封顶，超限会丢掉较早的内容并在这里留一行说明。行首时间戳是路由器自己的本地时间并带时区偏移（国内是 +0800），不是 UTC。') }),
 		Button({ kind: 'lnk', label: T('复制全部'), onClick: actions.copy })
 	]));
 	return el('div', {}, kids);

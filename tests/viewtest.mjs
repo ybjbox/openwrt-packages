@@ -949,5 +949,11 @@ hasNot('total 为 0 时不显示编出来的 0/0', rp, '0/0');
 /* 读数条那句状态词不受影响：running 仍然说「测速中」 */
 eq('running 的状态词仍是测速中', t.stateWord({ state: 'running' }), '测速中');
 
+/* 版本标记：装机后报障第一眼就能说清浏览器里跑的是哪一版 */
+rail = t.StatusRail({ state: 'done', items: [] }, {}, noActions);
+const buildEls = byClass(rail, 'build');
+eq('读数条带一个版本标记', buildEls.length, 1);
+ok('版本号形如 r+数字', /^r[0-9]+$/.test(textOf(buildEls[0])));
+
 console.log(fails === 0 ? '=== view 渲染断言全部通过' : `=== view 渲染断言失败 ${fails} 项`);
 process.exit(fails === 0 ? 0 : 1);
