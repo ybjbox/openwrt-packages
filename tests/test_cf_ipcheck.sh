@@ -60,6 +60,14 @@ else
 	echo "::error::空候选池未产生 error/$want_reason，实际内容=<$(head -c 160 "$RUN/status.json" 2>/dev/null)>"
 	rc=1
 fi
+# 中止的那条路也要清掉进度文件：abort_round 里漏掉的话，下一次打开页面
+# 会先看到上一次中断时的环节，看着像「这一轮卡在同一处」
+if [ -f "$RUN/progress" ]; then
+	echo "::error::本轮中止后还留着进度文件：$(head -n 1 "$RUN/progress")"
+	rc=1
+else
+	echo '[PASS] 本轮中止后进度文件已清除'
+fi
 
 # 运行目录必须让探测身份穿得过去：真机上 procd 的 umask 077 把 /tmp/cf-ipcheck 做成
 # 700，nobody 进不去 → sink 写不到 → curl 在联网之前 rc=23，126 个候选里 112 个
@@ -119,6 +127,13 @@ else
 	rc=1
 fi
 rm -f "$RUN/lock"
+
+if [ -f "$RUN/progress" ]; then
+	echo "::error::整轮跑完还留着进度文件（下一轮会先看到上一轮的残影）：$(head -n 1 "$RUN/progress")"
+	rc=1
+else
+	echo '[PASS] 整轮结束后进度文件已清除'
+fi
 
 # 收尾改成了「先写状态，best-ip.txt 最后一笔」，而且每一笔都是临时文件 + rename。
 # 跑完整轮之后不该在任何地方留下 .tmp / .new —— 留了就说明某一步的 rename 没做到。

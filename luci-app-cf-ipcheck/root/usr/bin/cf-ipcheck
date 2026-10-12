@@ -39,6 +39,10 @@ RESULT_KEEP=$ETC_DIR/result.json
 CFNETS=$ETC_DIR/cf-nets.txt
 CFNETS_TTL=21600
 LOG=$RUN_DIR/cf-ipcheck.log
+# 运行进度：单行 `<阶段> 已完成 总数`，页面画分环节清单时只在 state=running 时读它。
+# 只在本来就便宜的地方写（每条源一次、每批探测一次、每个 colo/吞吐一次）；
+# 探测循环内部一概不动 —— 那是一段跑通了的代码，不值得为进度冒风险。
+PROGRESS=$RUN_DIR/progress
 # 日志封顶用的状态：写够一批才去查体积（逐条 stat 等于每条日志 fork 一次 wc）。
 LOGWRITES=0
 # 页面取日志时最多给这么多字节，够看清最近发生了什么，又不会把 rpc 撑爆。
@@ -105,6 +109,19 @@ log() {
 		LOGWRITES=0
 		trim_log
 	fi
+	return 0
+}
+
+# 写进度：单行 `<阶段> 已完成 总数`。包一层子 shell 是有原因的 —— 重定向失败在
+# shell 里属于「整条语句失败」，早先 cf-nets 缓存写不进去就直接把一轮打断过。
+# 进度只是锦上添花，绝不能因为它把正事弄坏，所以失败一律吞掉。
+progress_set() {
+	( printf '%s %s %s\n' "$1" "${2:-0}" "${3:-0}" >"$PROGRESS" ) 2>/dev/null || true
+	return 0
+}
+
+progress_clear() {
+	rm -f "$PROGRESS" 2>/dev/null
 	return 0
 }
 
@@ -502,9 +519,14 @@ pool_official() {
 # 实测精选榜单淹掉 —— 源的价值不跟条数成正比。
 pool_community() {
 	per=${1:-0}
+	ptotal=0
+	for s in $SOURCES; do ptotal=$((ptotal + 1)); done
+	pdone=0
 	for s in $SOURCES; do
 		out=$(curl -4 -fsSL --max-time 12 -A 'cf-ipcheck/1.0' "$s" 2>/dev/null | \
 			grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?' | expand_prefixes)
+		pdone=$((pdone + 1))
+		progress_set fetch $pdone $ptotal
 		if [ -z "$out" ]; then
 			# 记日志而不是静默：社区源改路径/换分支是很常见的事
 			log "社区源无结果: $s"
@@ -913,6 +935,9 @@ write_outputs() {
 	# 第 7 列 colo、第 8 列吞吐（十进制 MB/s，'-' 表示未测）、第 9 列胜出时用的域名。
 	colored=$RUN_DIR/colored.tsv
 	: >"$colored"
+	ck=0
+	cptotal=$(grep -c . "$RUN_DIR/ranked.tsv" 2>/dev/null || printf 0)
+	progress_set colo 0 $cptotal
 	while IFS="$(printf '\t')" read -r ip code c tls ttfb tot err dom; do
 		[ -n "$ip" ] || continue
 		colo=''
@@ -924,6 +949,8 @@ write_outputs() {
 		[ -n "$colo" ] || colo='n/a'
 		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\n' \
 			"$ip" "$code" "$c" "$tls" "$ttfb" "$tot" "$colo" "$dom" >>"$colored"
+		ck=$((ck + 1))
+		progress_set colo $ck $cptotal
 	done <"$RUN_DIR/ranked.tsv"
 
 	# 吞吐只对榜单前 speed_count 个串行实测，其余留 '-'；
@@ -932,12 +959,14 @@ write_outputs() {
 		sp_tmp=$RUN_DIR/colored_sp.tsv
 		: >"$sp_tmp"
 		k=0
+		progress_set speed 0 "$C_SPEEDN"
 		sum=''
 		while IFS="$(printf '\t')" read -r ip code c tls ttfb tot colo spd dom; do
 			[ -n "$ip" ] || continue
 			if [ "$k" -lt "$C_SPEEDN" ] && [ ! -f "$STOP" ]; then
 				spd=$(speed_of "$ip")
 				k=$((k + 1))
+				progress_set speed $k "$C_SPEEDN"
 				sum="$sum $ip=${spd}MB/s"
 			fi
 			printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
@@ -1024,6 +1053,7 @@ upload_gist() {
 # 所以宁可分成几个具体原因，也不要一律 "error"。
 abort_round() { # $1=reason
 	rm -f "$LOCK"
+	progress_clear
 	printf '{"state":"error","reason":"%s","started":"%s","items":[]}\n' "$1" "${STARTED:-}" >"$STATUS"
 	log "本轮中止：$1"
 }
@@ -1067,19 +1097,29 @@ do_run() {
 	: >"$probed"
 	# 先问一次出口有没有被接管：接管了的话后面的数字全都没意义，
 	# 但仍要跑（他可能想知道 clash 自己走哪条路），所以只是打标，不中断。
+	progress_set canary 0 1
 	intercepted=$(canary_check)
+	progress_set canary 1 1
 	[ "$intercepted" = 1 ] && log '本轮结果标记为不可信：逐 IP 差异被出口代理抹平'
+	# 分母是「候选 × 域名」：探测是笛卡尔积，页面那条进度要说的是总共要发多少请求。
+	ndom=0
+	for d in $(printf '%s' "$C_DOMAINS" | tr ',' ' '); do ndom=$((ndom + 1)); done
+	[ "$ndom" -gt 0 ] 2>/dev/null || ndom=1
+	ptotal=$((pool_n * ndom))
+	progress_set probe 0 $ptotal
 	i=0
 	for ip in $pool; do
 		for dom in $(printf '%s' "$C_DOMAINS" | tr ',' ' '); do
 			probe_one "$ip" "$dom" >>"$probed" &
 			i=$((i + 1))
-			[ "$i" -ge "$C_CONC" ] && { wait; i=0; }
+			[ "$i" -ge "$C_CONC" ] && { wait; i=0; progress_set probe "$(wc -l <"$probed" 2>/dev/null || printf 0)" $ptotal; }
 		done
 	done
 	wait
+	progress_set probe $ptotal $ptotal
 
 	# ip × domain 的原始记录先按 IP 合并，再排序截断
+	progress_set rank 0 1
 	agg=$RUN_DIR/aggregated.tsv
 	aggregate_per_ip <"$probed" >"$agg"
 
@@ -1089,11 +1129,17 @@ do_run() {
 	ranked=$(head -n "$C_KEEP" "$qual")
 	kept=$(printf '%s\n' "$ranked" | grep -c . || true)
 	counts=$(counts_json <"$agg")
+	progress_set rank 1 1
 	log "达标 $qualified / $pool_n（榜单保留 $kept）；分类 $counts"
 	write_outputs "$ranked" "$pool_n" "$qualified" "$intercepted" "$counts"
 	rm -f "$LOCK"
-	[ "$C_UPLOAD" = 1 ] && upload_gist
+	if [ "$C_UPLOAD" = 1 ]; then
+		progress_set upload 0 1
+		upload_gist
+		progress_set upload 1 1
+	fi
 	log '本轮完成'
+	progress_clear
 	trim_log
 }
 
@@ -1107,8 +1153,32 @@ do_run() {
 # 读时合并、不写进文件：状态文件是上一轮跑的时候写的，而这两个值恰恰是用户
 # 刚在页面上改过的 —— 页面要靠它们说"定时实测开着，下一轮大约几点"。
 merge_cfg() {
-	awk -v e="\"enabled\":$(cfg_num enabled 0),\"interval\":$C_INTERVAL" '
+	# upload 也带上：页面的「上传 Gist」那一环节只有开了才会走，
+	# 不给这个信息就只能让那条一直挂着「待做」骗人。
+	awk -v e="\"enabled\":$(cfg_num enabled 0),\"interval\":$C_INTERVAL,\"upload\":$(cfg_num upload_gist 0)" '
 		{ if ((i = match($0, /\}[ \t]*$/)) > 0) $0 = substr($0, 1, i - 1) "," e "}" }
+		{ print }'
+}
+
+# 把 progress 文件里的三段并进「正在跑」的状态里，页面据此画分环节进度。
+# 没有进度文件（旧状态、重启后、或这一轮压根没走到埋点）就原样透传 ——
+# 页面看到的是「没有进度信息」，退回一句老实的话，绝不显示编出来的 0/0。
+merge_progress() {
+	line=$(head -n 1 "$PROGRESS" 2>/dev/null)
+	[ -n "$line" ] || { cat; return 0; }
+	set -- $line
+	stage=${1:-}
+	done_n=${2:-0}
+	total_n=${3:-0}
+	case "$stage" in
+		canary|fetch|probe|rank|colo|speed|upload) ;;
+		*) cat; return 0 ;;
+	esac
+	case "$done_n" in ''|*[!0-9]*) done_n=0 ;; esac
+	case "$total_n" in ''|*[!0-9]*) total_n=0 ;; esac
+	awk -v s="$stage" -v d="$done_n" -v t="$total_n" '
+		{ if ((i = match($0, /\}[ \t]*$/)) > 0)
+			$0 = substr($0, 1, i - 1) ",\"stage\":\"" s "\",\"stage_done\":" d ",\"stage_total\":" t "}" }
 		{ print }'
 }
 
@@ -1133,6 +1203,12 @@ show_status() {
 		else
 			printf '{"state":"error","reason":"interrupted","items":[]}\n' >"$STATUS"
 		fi
+	fi
+	if grep -q '"state":"running"' "$STATUS" 2>/dev/null; then
+		# 正在跑的这一轮才有进度可给；done/error 状态不带这几个键，
+		# 免得页面把「上一轮的进度残影」当成这一轮的
+		merge_progress <"$STATUS" | merge_cfg
+		return 0
 	fi
 	merge_cfg <"$STATUS"
 }
@@ -1200,6 +1276,7 @@ selftest() {
 		LOCK=$RUN_DIR/lock
 		STOP=$RUN_DIR/STOP
 		LOG=$RUN_DIR/cf-ipcheck.log
+		PROGRESS=$RUN_DIR/progress
 		BEST=$ETC_DIR/best-ip.txt
 		RESULT_KEEP=$ETC_DIR/result.json
 		CFNETS=$ETC_DIR/cf-nets.txt
@@ -1545,6 +1622,30 @@ selftest() {
 	got=$(show_status | sed -n 's/.*"state":"\([^"]*\)".*/\1/p')
 	check '真的在跑时不干预 running 状态' "$got" 'running'
 	rm -f "$LOCK" "$STATUS" "$RESULT_KEEP"
+
+	# 运行进度：只在「正在跑」的状态里并上环节与计数，且没文件就不带。
+	# 关键是别把上一轮的进度残影演成这一轮的。
+	# 注意这里必须先押一把活锁：没有活锁时 running 会被自愈成 interrupted，
+	# 那是上一节要验的行为，会把这一节的断言整个带走（我自己在这儿翻过一次）。
+	printf '%s %s\n' "$$" "$now" >"$LOCK"
+	printf '{"state":"running","started":"x","items":[]}' >"$STATUS"
+	printf 'probe 40 100\n' >"$PROGRESS"
+	got=$(show_status)
+	check 'running 状态并上当前环节' "$(printf '%s' "$got" | sed -n 's/.*"stage":"\([^"]*\)".*/\1/p')" 'probe'
+	check '环节计数原样并进去' "$(printf '%s' "$got" | grep -c '"stage_done":40,"stage_total":100')" '1'
+	check '并完结尾仍是单个右括号' "$(printf '%s' "$got" | tail -c 1)" '}'
+	progress_set colo 3 10
+	check 'progress_set 写的三段能读回' "$(head -n 1 "$PROGRESS")" 'colo 3 10'
+	printf '胡来 1 2\n' >"$PROGRESS"
+	check '不认识的环节名不会被塞进 JSON' "$(show_status | grep -c '"stage"')" '0'
+	printf 'probe abc xyz\n' >"$PROGRESS"
+	check '进度里的脏数字挡成 0（不拼坏 JSON）' "$(show_status | grep -c '"stage_done":0,"stage_total":0')" '1'
+	progress_set fetch 1 13
+	printf '{"state":"done","items":[]}' >"$STATUS"
+	check 'done 状态不带环节键' "$(show_status | grep -c '"stage"')" '0'
+	progress_clear
+	check 'progress_clear 删掉进度文件' "$([ -f "$PROGRESS" ] && printf yes || printf no)" 'no'
+	rm -f "$PROGRESS" "$STATUS" "$LOCK"
 
 	# 日志封顶。LOG 在 /tmp（tmpfs 就是内存），不封顶等于慢慢吃 RAM，
 	# 能长到多大取决于这台机器多久重启一次。

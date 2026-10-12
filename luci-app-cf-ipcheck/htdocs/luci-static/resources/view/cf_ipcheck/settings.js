@@ -295,6 +295,29 @@ var CSS = [
 	'.cfp .empty-d{font-size:var(--t-sm);color:var(--ink-2);line-height:1.6;max-width:64ch}',
 	'.cfp .empty-a{flex:0 0 auto}',
 
+	/* ==========================================================================
+	 * 运行进度（只在正在测速时出现）—— 一列环节，当前那条带计数与细进度条
+	 * ========================================================================== */
+	'.cfp .prog{display:flex;flex-direction:column;gap:var(--s3)}',
+	'.cfp .prog-h{display:flex;align-items:baseline;gap:var(--s2);flex-wrap:wrap}',
+	'.cfp .prog-t{font-size:var(--t-md);font-weight:600}',
+	'.cfp .psteps{list-style:none;margin:0;padding:0;display:grid;gap:1px;',
+	'  border:1px solid var(--rule);border-radius:var(--r2);overflow:hidden;background:var(--rule)}',
+	'.cfp .pstep{display:flex;align-items:center;gap:var(--s2);padding:.42em .7em;',
+	'  background:var(--panel);font-size:var(--t-sm);color:var(--ink-3);min-height:2.1em}',
+	'.cfp .pstep .pm{flex:0 0 1em;text-align:center;font-style:normal}',
+	'.cfp .pstep .pl{flex:1 1 auto;min-width:0}',
+	'.cfp .pstep .pn{flex:0 0 auto;font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--ink-3)}',
+	'.cfp .pstep.done{color:var(--ink-2)}',
+	'.cfp .pstep.done .pm{color:var(--ok-fg)}',
+	'.cfp .pstep.now{background:var(--panel-2);color:var(--ink);font-weight:500}',
+	'.cfp .pstep.now .pm{color:var(--accent)}',
+	'.cfp .pstep.now .pn{color:var(--ink)}',
+	'.cfp .pstep.off{opacity:.5}',
+	/* 进度条只用宽度表达，不玩动画：数值每 3 秒换一次，动效只会让人分神 */
+	'.cfp .pbar{flex:0 0 34%;height:3px;border-radius:2px;background:var(--panel-2);overflow:hidden}',
+	'.cfp .pbar b{display:block;height:100%;background:var(--accent)}',
+
 	/* 说明文字块（脚注 / 字段全解） */
 	'.cfp .note{font-size:var(--t-xs);color:var(--ink-3);line-height:1.75;max-width:80ch}',
 	'.cfp .note b{color:var(--ink-2);font-weight:600}',
@@ -1225,6 +1248,88 @@ function SummaryStrip(st) {
 /* ==========================================================================
  * 11. 榜单面板
  * ========================================================================== */
+/* ==========================================================================
+ * 11a. 运行进度
+ * ==========================================================================
+ * 顺序就是引擎 do_run 的真实顺序（先建候选池，再做出口自检），不是按名字排的。
+ * 进度只在这一轮正在跑时出现；引擎没给 stage（旧状态、或重启后读到的残影）就
+ * 老实退回一句「正在测速」，不画半截清单、也不把 0/0 当成进度。
+ */
+var STAGES = [
+	{ id: 'fetch',  label: '拉取社区源' },
+	{ id: 'canary', label: '出口接管自检' },
+	{ id: 'probe',  label: '并发探测' },
+	{ id: 'rank',   label: '合并与排序' },
+	{ id: 'colo',   label: '查落地机房' },
+	{ id: 'speed',  label: '实测下载吞吐' },
+	{ id: 'upload', label: '上传 Gist' }
+];
+
+function stageIndex(id) {
+	for (var i = 0; i < STAGES.length; i++)
+		if (STAGES[i].id === id)
+			return i;
+	return -1;
+}
+
+function stageCountText(done, total) {
+	if (!(total > 0))
+		return '';
+	return String(done) + '/' + String(total);
+}
+
+function RunProgress(st) {
+	var cur = stageIndex(st.stage);
+	var head = T('正在测速');
+	var kids = [];
+
+	if (cur < 0) {
+		return EmptyBox({
+			spin: true,
+			title: head,
+			detail: T('这一轮还在跑，完成后本页会自动更新。（这一版引擎没回环节进度，只能给这一句）')
+		});
+	}
+
+	var doneN = Number(st.stage_done) || 0;
+	var totalN = Number(st.stage_total) || 0;
+	var curText = stageCountText(doneN, totalN);
+	if (curText)
+		head += ' · ' + STAGES[cur].label + ' ' + curText;
+
+	var steps = STAGES.map(function (sg, i) {
+		var state = 'todo', note = '';
+		if (i < cur || (i === cur && totalN > 0 && doneN >= totalN))
+			state = 'done';
+		else if (i === cur)
+			state = 'now';
+		/* 上传这一环节只有开了才走；没开就别让它一直挂着「待做」骗人 */
+		if (sg.id === 'upload' && Number(st.upload) !== 1)
+			state = 'off';
+		if (state === 'now')
+			note = curText;
+		else if (state === 'done')
+			note = sg.id === 'upload' ? '' : stageCountText(totalN, totalN);
+		else if (state === 'off')
+			note = T('未开启');
+		var row = [
+			el('i', { class: 'pm', text: state === 'done' ? '✓' : (state === 'now' ? '●' : (state === 'off' ? '—' : '○')) }),
+			el('span', { class: 'pl', text: T(sg.label) }),
+			el('span', { class: 'pn', text: note })
+		];
+		if (state === 'now' && totalN > 0)
+			row.push(el('span', { class: 'pbar' },
+				el('b', { style: { width: Math.min(100, Math.round(doneN * 100 / totalN)) + '%' } })));
+		return el('li', { class: 'pstep ' + state }, row);
+	});
+
+	kids.push(el('div', { class: 'prog-h', 'aria-live': 'polite' }, el('span', { class: 'prog-t', text: head })));
+	kids.push(el('ol', { class: 'psteps' }, steps));
+	kids.push(el('p', { class: 'note' },
+		T('探测是「攒够一批一起等」，所以那一条会跳着走而不是平滑递增；这一轮的真实过程记录在「日志」页，切过去就能看到，不用点任何按钮。')));
+	return el('div', { class: 'prog' }, kids);
+}
+
 function BoardPane(st, actions) {
 	var kids = [];
 
@@ -1238,11 +1343,7 @@ function BoardPane(st, actions) {
 	}
 
 	if (st.state === 'running') {
-		kids.push(EmptyBox({
-			spin: true,
-			title: T('正在测速'),
-			detail: T('这一轮还在跑，通常需要十几秒到几分钟（取决于候选数与超时）。完成后本页会自动更新。')
-		}));
+		kids.push(RunProgress(st));
 		return el('div', {}, kids);
 	}
 
@@ -1825,9 +1926,10 @@ function stopPoll() {
 	}
 }
 
-/* 测速进行中每 5 秒拉一次；结束后自停。
- * 停止条件看 store 里的 state，不看 DOM 文案 —— 文案会因为隐藏面板等原因
- * 与真实状态不同步。 */
+/* 测速进行中每 3 秒拉一次；结束后自停。
+ * 为什么从 5 秒收到 3 秒：一轮实测约 140 秒（取源 45 / 探测 52 / 机房+吞吐 44），
+ * 5 秒只能跳 28 下，进度条看着像卡住；一次 status 只是读文件加两次 fork，代价可忽略。
+ * 停止条件看 store 里的 state，不看 DOM 文案 —— 文案会因为隐藏面板等原因与真实状态不同步。 */
 function startPoll() {
 	if (typeof setInterval !== 'function')
 		return;
@@ -1841,7 +1943,7 @@ function startPoll() {
 		}, function () {
 			stopPoll();
 		});
-	}, 5000);
+	}, 3000);
 }
 
 function actRun(btn) {

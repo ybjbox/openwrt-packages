@@ -31,6 +31,7 @@ const hook = "\nglobalThis.__cf_t = {\n" +
 	"\tnum: num, ms: ms, mbps: mbps, ago: ago, clock: clock,\n" +
 	"\tstale: stale, scheduleLine: scheduleLine, DASH: DASH,\n" +
 	"\tLeaderboard: Leaderboard, COLS: COLS, domainKinds: domainKinds,\n" +
+	"\tRunProgress: RunProgress, STAGES: STAGES,\n" +
 	"\tSummaryStrip: SummaryStrip, BoardPane: BoardPane,\n" +
 	"\tSourceMatrix: SourceMatrix, SourcesPane: SourcesPane, srcMessage: srcMessage,\n" +
 	"\tparseLog: parseLog, LogsPane: LogsPane, LogBlock: LogBlock, logTone: logTone,\n" +
@@ -914,6 +915,39 @@ eq('同一时刻不叠日志请求', logCalls, 1);
 release();
 await Promise.all([pa, pb]);
 eq('去重的那次也拿到同一份结果', t.store.get().logs.state, 'empty');
+
+/* ================================================================== *
+ * 16. 运行进度：七个环节、当前那条带计数，缺信息就退回老实的一句话
+ * ================================================================== */
+eq('环节顺序按 do_run 的真实走法（先建池，再做出口自检）',
+	t.STAGES.map(s => s.id).join(','), 'fetch,canary,probe,rank,colo,speed,upload');
+
+let rp = t.RunProgress({ state: 'running' });
+has('没给环节时不画半截清单', rp, '没回环节进度');
+eq('没给环节时一条步骤都不出', byClass(rp, 'pstep').length, 0);
+
+rp = t.RunProgress({ state: 'running', stage: 'probe', stage_done: 40, stage_total: 100, upload: 1 });
+eq('七个环节都画出来', byClass(rp, 'pstep').length, 7);
+eq('排在探测前的两条标已完成', byClass(rp, 'pstep done').length, 2);
+eq('当前环节只有一条高亮', byClass(rp, 'pstep now').length, 1);
+has('标题带当前环节与计数', rp, '并发探测 40/100');
+eq('进度条宽度按 done/total 算', byClass(rp, 'pbar')[0].childNodes[0].style.width, '40%');
+eq('探测之后的环节排在待做', byClass(rp, 'pstep todo').length, 4);
+
+rp = t.RunProgress({ state: 'running', stage: 'probe', stage_done: 100, stage_total: 100, upload: 1 });
+eq('环节跑满就不再挂「当前」', byClass(rp, 'pstep now').length, 0);
+eq('跑满后全部标完成', byClass(rp, 'pstep done').length, 3);
+
+rp = t.RunProgress({ state: 'running', stage: 'speed', stage_done: 3, stage_total: 10, upload: 0 });
+eq('没开上传时那一条标灰', byClass(rp, 'pstep off').length, 1);
+has('没开上传要写清楚', rp, '未开启');
+
+rp = t.RunProgress({ state: 'running', stage: 'canary', stage_done: 0, stage_total: 0, upload: 1 });
+eq('total 为 0 时不画进度条', byClass(rp, 'pbar').length, 0);
+hasNot('total 为 0 时不显示编出来的 0/0', rp, '0/0');
+
+/* 读数条那句状态词不受影响：running 仍然说「测速中」 */
+eq('running 的状态词仍是测速中', t.stateWord({ state: 'running' }), '测速中');
 
 console.log(fails === 0 ? '=== view 渲染断言全部通过' : `=== view 渲染断言失败 ${fails} 项`);
 process.exit(fails === 0 ? 0 : 1);
