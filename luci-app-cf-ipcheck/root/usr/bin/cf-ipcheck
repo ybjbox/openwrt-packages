@@ -1720,7 +1720,8 @@ EOF
 
 case "${1:-}" in
 	run)     do_run ;;
-	run-now) if lock_live; then
+	run-now) log '收到页面指令 run-now'
+			 if lock_live; then
 				 printf '{"state":"running"}\n'
 				 exit 0
 			 fi
@@ -1730,7 +1731,8 @@ case "${1:-}" in
 	show)    if [ -s "$BEST" ]; then cat "$BEST"; else echo '尚无结果，先执行 cf-ipcheck run'; fi ;;
 	pool)    load_config; build_pool ;;
 	canary)  load_config; printf '{"intercepted":%s}\n' "$(canary_check)" ;;
-	check-sources) check_sources ;;
+	check-sources) log '收到页面指令 check-sources'
+	               check_sources ;;
 	logs)    load_config; trim_log; print_log ;;
 	colo)    if ! valid_ip4 "${2:-}"; then
 				 echo '参数必须是一个纯 IPv4（不接受主机名，也不接受任何多余字符）'
@@ -1738,7 +1740,8 @@ case "${1:-}" in
 			 fi
 			 load_config; colo_of "${2:-}"
 			 printf '\n' ;;
-	stop)    : >"$STOP"; echo '已请求停止（当前这一轮结束后不再继续探测）' ;;
+	stop)    log '收到页面指令 stop'
+	         : >"$STOP"; echo '已请求停止（当前这一轮结束后不再继续探测）' ;;
 	daemon)  while :; do
 				 load_config
 				 if [ "$(cfg enabled 0)" = 1 ]; then

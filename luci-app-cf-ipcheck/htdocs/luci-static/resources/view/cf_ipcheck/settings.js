@@ -28,7 +28,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r26';
+var VIEW_BUILD = 'r27';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -1982,9 +1982,19 @@ function actRun(btn) {
 			flash(T('这一轮还在跑'), T('引擎说已经有一轮在测速，等它收尾；进度会自动刷新。'), 'warn');
 		else
 			flash(T('已启动一轮测速'), String(out), 'ok');
-		/* 无条件开始轮询 + 立刻拉一次：run-now 只是把后台进程甩出去，
-		 * 那一轮要几毫秒后才把 running 写进状态。这里抢跑一次就可能读到上一轮的
-		 * done，于是永远是「已完成」——所以先补一次 refresh 再开轮询。 */
+		/* 先把本地状态置成 running 再补一次 refresh：run-now 返回「已启动」只是命令
+		 * 被受理，引擎要过几毫秒才把 running 写进 status.json。这里抢跑的 refresh
+		 * 可能读到上一轮的 done，于是轮询永远不开、停止按钮一直灰着、进度清单不出现
+		 * —— 页面停在「已完成」+ 按钮转圈，看起来就是「点了没反应」（r26 现场实测抓到的竞态）。
+		 * 置成 running 后，readings 立刻变「测速中」、停止按钮立刻可用，
+		 * refresh 拿到服务端的真实状态后会自己校准（done/error 会随之停掉轮询）。 */
+		store.set({
+			status: Object.assign({}, store.get().status, {
+				state: 'running',
+				started: new Date().toISOString()
+			}),
+			busy: Object.assign({}, store.get().busy, { run: false })
+		});
 		refresh().then(function () { startPoll(); });
 	}, function () {
 		setBusy(btn, false);

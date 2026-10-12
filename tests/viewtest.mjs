@@ -42,6 +42,7 @@ const hook = "\nglobalThis.__cf_t = {\n" +
 	"\tCSS: CSS, el: el, get store() { return store; },\n" +
 	"\tget P() { return P; }, goto: goto, savedTab: savedTab,\n" +
 	"\tbuildPage: buildPage, runCmd: runCmd,\n" +
+	"\tactRun: actRun,\n" +
 	"\tlogsRefresh: logsRefresh,\n" +
 	"\tHUNG: HUNG, CMD_LIMIT: CMD_LIMIT, isRunningReply: isRunningReply\n" +
 	"};\n";
@@ -973,6 +974,24 @@ const keepWrap = t.regroupForm(keepMap);
 ok('分组容器落在 map 节点里面', hasAncestor(keepMap, keepWrap));
 ok('map 节点仍在页面树里（没被 clear 掉）', hasAncestor(keepWrap, keepWrap) && keepMap.childNodes.length > 0);
 ok('字段行仍可从分组回溯到 map 节点', hasAncestor(keepMap, keepMap.querySelectorAll('.cbi-value')[0]));
+
+/* ================================================================== *
+ * 18. 回归：点「立即测速」后本地必须立刻进 running
+ * run-now 返回「已启动」只是命令被受理，引擎几毫秒后才把 running 写进状态。
+ * 抢跑的 refresh 若读到上一轮的 done，轮询就永远不会开 —— 页面停在「已完成」+
+ * 转圈，看起来就是「点了没反应」（r26 现场抓到的竞态）。断言：命令返回后、
+ * refresh 尚未落地前，store 的状态必须已经是 running。
+ * ================================================================== */
+let rpcCalls = 0;
+rpcImpl = () => {
+	rpcCalls++;
+	return rpcCalls === 1 ? Promise.resolve('{"state":"started"}') : new Promise(() => {});
+};
+t.store.set({ status: { state: 'done', items: [] }, busy: {} });
+const runP = t.actRun(null);          // 第二次 rpc（refresh 的 status）永不返回，runP 不会 settle
+await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+eq('命令一返回，本地状态已是 running', t.store.get().status.state, 'running');
+eq('忙碌标记同时被清掉', String(t.store.get().busy.run), 'false');
 
 console.log(fails === 0 ? '=== view 渲染断言全部通过' : `=== view 渲染断言失败 ${fails} 项`);
 process.exit(fails === 0 ? 0 : 1);
