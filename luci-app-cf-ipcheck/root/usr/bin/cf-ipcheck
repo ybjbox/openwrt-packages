@@ -619,12 +619,15 @@ probe_one() {
 		printf '%s\t0\t0\t0\t0\t0\tinvalid_ip\t%s\n' "${ip%% *}" "$dom"
 		return 0
 	fi
-	raw=$(run_probe "$(probe_cmd "$ip" "$dom" /)" 2>/dev/null)
-	rc=$?
+	# STOP 先查：都请求停止了，还去 curl 一遍纯属浪费（真机试过一次：
+	# stop 之后整批探测仍全量跑完才罢手，白白多花一两分钟流量）。
+	# 注意输出要带 stopped 标记，统计里才能如实显示「这轮是被叫停的」。
 	if [ -f "$STOP" ]; then
 		printf '%s\t0\t0\t0\t0\t0\tstopped\t%s\n' "$ip" "$dom"
 		return 0
 	fi
+	raw=$(run_probe "$(probe_cmd "$ip" "$dom" /)" 2>/dev/null)
+	rc=$?
 	if [ "$rc" = 0 ] && [ -n "$raw" ]; then
 		printf '%s' "$raw" | awk -F, -v ip="$ip" -v dom="$dom" '
 			NF >= 5 {
@@ -1134,6 +1137,15 @@ do_run() {
 	counts=$(counts_json <"$agg")
 	progress_set rank 1 1
 	log "达标 $qualified / $pool_n（榜单保留 $kept）；分类 $counts"
+	if [ "$kept" = 0 ]; then
+		# 被 stop 截断、或整轮探测全失败：绝不能拿一份空榜单去覆盖上一轮那份好的。
+		# 不发布任何产物，锁一放，状态留给自愈 —— 页面会显示「上一轮中断」+
+		# 上一轮榜单（真机上撞过一次：stop 之后 best-ip.txt 被写成 0 行）。
+		rm -f "$LOCK"
+		log '本轮没有达标结果，不覆盖上一轮榜单'
+		progress_clear
+		return 0
+	fi
 	write_outputs "$ranked" "$pool_n" "$qualified" "$intercepted" "$counts"
 	rm -f "$LOCK"
 	if [ "$C_UPLOAD" = 1 ]; then
@@ -1589,6 +1601,13 @@ selftest() {
 	rm -f "$LOCK"
 	if lock_acquire; then check 'lock_acquire 在无锁时能拿到' yes yes; else check 'lock_acquire 在无锁时能拿到' no yes; fi
 	if lock_acquire; then check '已有活锁时 lock_acquire 必须失败' yes no; else check '已有活锁时 lock_acquire 必须失败' no no; fi
+	# STOP 先查：请求停止后，剩下的探测必须直接标 stopped 而不是再去 curl
+	# （这条同时保证 selftest 离线能过：一旦逻辑退化，这里就会真去联网探测）。
+	: >"$STOP"
+	got=$(probe_one 1.1.1.1 example.com)
+	check 'STOP 已置时探测直接标 stopped（不联网）' "$(printf '%s\n' "$got" | cut -f7)" 'stopped'
+	rm -f "$STOP"
+
 	# lock_acquire 记的 pid 必须是“真正在跑这一轮的那个进程”。run-now 走的是
 	# `( do_run & )`，记成命令替换的临时进程就等于记了个立刻消失的 pid ——
 	# 表现是每一轮都以为没人在跑（重复并发跑）或永远以为有人在跑。
