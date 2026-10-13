@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r40';
+var VIEW_BUILD = 'r41';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -349,7 +349,7 @@ function stateWord(st) {
 function why(reason) {
 	switch (reason) {
 		case 'empty_pool':
-			return T('候选池是空的：社区源一条都没拉到，官方网段又关着。先到「源与检测」页检测一下，看是不是哪些源改了路径；或临时打开「Cloudflare 官方网段」。');
+			return T('候选池是空的：社区源一条都没拉到，官方网段又关着。到「源与检测」页补几条源并点「保存并检测」，看是不是哪些源改了路径；或临时打开「Cloudflare 官方网段」。');
 		case 'missing_curl':
 			return T('这台机器上没有 curl。所有探测都由 curl --resolve 发起，请安装 curl 与 ca-bundle。');
 		case 'missing_bin':
@@ -854,10 +854,14 @@ function scheduleLine(st) {
 	if (Number(st.enabled) === 0)
 		return T('定时实测：关闭');
 	var s = T('定时实测：每 %s 小时').format(st.interval != null ? st.interval : '?');
-	if (st.interval != null && st.finished) {
-		var next = Date.parse(st.finished);
-		if (isFinite(next)) {
-			var d = new Date(next + Number(st.interval) * 3600000);
+	if (st.interval != null) {
+		/* r41 的周期守门从【起轮】时刻算余量（引擎写 /etc/cf-ipcheck/lastrun 的是 do_run
+			* 开头那一刻），所以这里也必须用 started —— 拿 finished 会把预计时间整整晚一轮
+			* 的时长（一轮两三分钟），页面上说「下一轮约 18:40」而引擎 18:37 就开跑了。
+			* 老状态文件没有 started（或被裁过）才退回 finished。 */
+		var base = Date.parse(st.started || st.finished);
+		if (isFinite(base)) {
+			var d = new Date(base + Number(st.interval) * 3600000);
 			s += T('，下一轮约 %s').format(pad2(d.getHours()) + ':' + pad2(d.getMinutes()));
 		}
 	}
@@ -1277,22 +1281,35 @@ function SourceMatrix(rows) {
 function SourcesPane(src, actions) {
 	var kids = [];
 
-	kids.push(Section(T('源清单'), Button({
-		label: T('重新检测'), icon: '\u2315',
+	kids.push(Section(T('逐源检测'), Button({
+		label: T('保存并检测'), icon: '\u2315',
 		disabled: store.get().busy && store.get().busy.check,
 		busy: store.get().busy && store.get().busy.check,
+		title: T('先把上面「源清单」的改动存进配置（只保存、不应用，因此不会重启服务，也不会顺手起一轮），再逐条实拉一次。'),
 		onClick: actions.check
 	})));
+
+	kids.push(el('p', { class: 'note' },
+		T('改完点「保存并检测」：先把清单写进配置，再逐条实拉。这一步只【保存】、不【应用】，所以不重启服务、也不会顺手起一轮；但它没走「应用」，设备重启后会回到上次应用的那份清单 —— 要长期生效请再到「配置」页点一次「保存并应用」。')));
 
 	if (!src) {
 		/* 还没点过检测：说清这一页是干嘛的，并给按钮 */
 		kids.push(EmptyBox({
 			title: T('还没有检测过'),
-			detail: T('逐条实拉社区源，列出 HTTP 状态、提取到的 IPv4 数量，以及其中落在 Cloudflare 官方网段内的比例。段内占比掉到 90% 以下，通常说明这个源换了内容。'),
+			detail: T('「保存并检测」会逐条实拉你在上面源清单里填的地址，列出 HTTP 状态、提取到的 IPv4 数量，以及其中落在 Cloudflare 官方网段内的比例。段内占比掉到 90% 以下，通常说明这个源换了内容。'),
 			action: Button({
-				kind: 'primary', label: T('开始检测'), icon: '\u2315',
+				kind: 'primary', label: T('保存并检测'), icon: '\u2315',
 				onClick: actions.check
 			})
+		}));
+		return el('div', {}, kids);
+	}
+
+	if (src.state === 'saving') {
+		kids.push(EmptyBox({
+			spin: true,
+			title: T('正在保存源清单'),
+			detail: T('检测用的是配置文件里的那份清单，所以先把页面上刚改的内容写进 UCI —— 只保存、不应用，因此既不重启服务也不起轮。')
 		}));
 		return el('div', {}, kids);
 	}
@@ -1324,6 +1341,10 @@ function SourcesPane(src, actions) {
 
 function srcMessage(src) {
 	switch (src.state) {
+		case 'save_failed':
+			/* 保存没成就别去检测：引擎读的是配置文件，检测出来的会是上一份清单，
+			 * 那比报错更误导人。这里把 LuCI 的校验原因原样搬出来（它已经说了是哪个字段）。 */
+			return T('源清单没有存进去，所以这次没有检测：%s。检查完再点一次「保存并检测」。').format(String(src.reason || '未知原因'));
 		case 'unreachable':
 			return whyNoReply(T('检测没跑成'), 'check_sources');
 		case 'hung':
@@ -1331,7 +1352,7 @@ function srcMessage(src) {
 		case 'parse_error':
 			return T('检测返回的内容不是合法 JSON。原文片段：%s').format(String(src.raw || '').slice(0, 160));
 		case 'empty':
-			return T('一条源都没检出：「社区优选源 URL」这一项是空的。到「配置 → 候选池来源」加上几条。');
+			return T('一条源都没检出：上面「源清单」是空的。展开它填几条 HTTPS 地址，再点「保存并检测」。');
 		default:
 			return T('没有可用的检测结果。');
 	}
@@ -1512,19 +1533,23 @@ function rememberTab(id) {
  */
 var GROUPS = [
 	{ id: 'basic',  title: '基本设置',   hint: '开关、周期与日志' },
-	{ id: 'pool',   title: '候选池来源', hint: '候选从哪来' },
+	{ id: 'pool',   title: '候选池来源', hint: '候选从哪来；源清单在「源与检测」页编辑' },
 	{ id: 'probe',  title: '测速与判定', hint: '阈值与吞吐' },
 	{ id: 'gist',   title: 'Gist 上传',  hint: '结果外发' }
 ];
 
 var GROUP_OPTIONS = {
 	basic: [ 'enabled', 'interval_hours', 'probe_domains', 'probe_port', 'log_max_kb' ],
-	pool:  [ 'use_official_ranges', 'reuse_last', 'community_sources' ],
+	pool:  [ 'use_official_ranges', 'reuse_last' ],
 	probe: [ 'candidate_budget', 'concurrency', 'probe_timeout', 'ttfb_limit', 'total_limit',
 	         'keep_count', 'speed_probe', 'speed_count', 'speed_bytes', 'speed_timeout',
 	         'speed_domain', 'colo_probe', 'colo_domain', 'canary_check', 'probe_user', 'annotate' ],
 	gist:  [ 'upload_gist', 'gist_id', 'gist_file', 'gist_token', 'token_file' ]
 };
+
+/* 不参与「配置」分组的字段：源清单的编辑行搬到「源与检测」页去（见 relocateSourceEditor）。
+ * 它仍然属于同一张 Map、同一条保存链路，只是长在了另一块面板上。 */
+var EDIT_ONLY_OPTIONS = { community_sources: true };
 
 var GROUPS_KEY = 'cf-ipcheck.groups.';
 
@@ -1629,8 +1654,16 @@ function regroupForm(mapnode) {
 	/* 认不出归属的行（以后加了新 option 就会落到这里）单独兜一组，
 	 * 保证「一个字段都不会因为重组而消失」。 */
 	rows.forEach(function (r) {
-		if (used.indexOf(r) < 0)
-			leftovers.push(r);
+		if (used.indexOf(r) >= 0)
+			return;
+		/* 源清单那一行不归配置页管（它要被搬去源面板）：兜进「其它」反而会出现两份。
+		 * 万一宿主不在（比如拼装顺序变了），它就留在 form.js 原来渲染的位置上，
+		 * 字段不会丢 —— 宁可长错地方，不可看不见。 */
+		var lab = r.querySelector('label[for]');
+		var key = lab && lab.htmlFor ? String(lab.htmlFor).split('.').pop() : '';
+		if (EDIT_ONLY_OPTIONS[key])
+			return;
+		leftovers.push(r);
 	});
 	if (leftovers.length) {
 		var lb = el('div', { class: 'grp-b' });
@@ -1679,6 +1712,92 @@ function regroupForm(mapnode) {
 	 * （r18 重写时把这一步交给调用方做，调用方 clear 掉了宿主节点 —— r25 才发现。） */
 	if (mapnode.appendChild)
 		mapnode.appendChild(wrap);
+	return wrap;
+}
+
+/* ==========================================================================
+ * 6b. 把「社区优选源 URL」那一行搬到「源与检测」页
+ * ==========================================================================
+ * r41 按 Ryan 的要求把源编辑与源检测并成一页。为什么能这么搬：
+ * LuCI 的 Map.parse() 走 this.children → section → option，每个 option 用
+ * 【自己持有的控件对象】取值（formvalue() → this.input.get()），不看节点在文档里的
+ * 位置 —— 所以行搬到别的面板，保存链路照旧。r26 在真机 A/B 证过同一件事
+ * （把整张 map 搬出原位照样存得进）。
+ * 反过来说，这份 DynamicList 全程只有这一份：绝不在两个面板各渲染一遍 ——
+ * 同 cbid 的控件出现两份就是两个出处，改一处、存另一处。
+ */
+var SRC_EDIT_KEY = 'community_sources';
+var SRC_EDIT_OPEN_KEY = GROUPS_KEY + 'srcedit';
+
+function findOptionRow(root, key) {
+	var rows = root && root.querySelectorAll ? root.querySelectorAll('.cbi-value') : [];
+	for (var i = 0; i < rows.length; i++) {
+		var lab = rows[i].querySelector('label[for]');
+		if (lab && String(lab.htmlFor || '').split('.').pop() === key)
+			return rows[i];
+	}
+	return null;
+}
+
+/* 把表单里渲染好的那一行搬进 srcEdit 宿主（宿主在源面板里、不参与每拍重画）。
+ * 返回搬过去的行；找不到就什么都不动（宁缺毋滥：配置页留原样也比搬错强）。 */
+function relocateSourceEditor(mapnode, srcEdit) {
+	if (!mapnode || !srcEdit || !srcEdit.appendChild)
+		return null;
+	/* m.save() 之后 form.js 会重画 map  contents，宿主里那半截旧行必须先倒掉 ——
+	 * 旧节点已经不属于任何 option 了，留着它等于页面上有两份同名输入区。 */
+	clear(srcEdit);
+	var row = findOptionRow(mapnode, SRC_EDIT_KEY) || findOptionRow(srcEdit, SRC_EDIT_KEY);
+	if (!row)
+		return null;
+
+	var openKey = SRC_EDIT_OPEN_KEY;
+	var open = false;
+	try {
+		var saved = window.localStorage.getItem(openKey);
+		/* 默认收起（这次合并就是为了省版面）；用户手动展开过就记住 */
+		open = saved === '1';
+	} catch (e) {}
+
+	var body = el('div', { class: 'grp-b' });
+	body.appendChild(row);
+	var head = el('div', {
+		class: 'grp-h', tabindex: '0', role: 'button',
+		'aria-expanded': open ? 'true' : 'false'
+	}, [
+		el('i', { class: 'chev' }),
+		el('span', { class: 'grp-t', text: T('源清单') }),
+		el('span', { class: 'grp-x', text: T('每行一个 HTTPS 地址；改完点下面的「保存并检测」') })
+	]);
+	var box = el('div', { class: 'grp src-edit' + (open ? ' open' : '') }, [ head, body ]);
+
+	function apply(v) {
+		box.className = 'grp src-edit' + (v ? ' open' : '');
+		head.setAttribute('aria-expanded', v ? 'true' : 'false');
+		try { window.localStorage.setItem(openKey, v ? '1' : '0'); } catch (e2) {}
+	}
+	/* 交给调用方（和配置页的组同一个约定），桩测与以后的「全部展开」都按这个口调 */
+	box.__apply = apply;
+	head.addEventListener('click', function () { apply(!(box.className.indexOf('open') >= 0)); });
+	head.addEventListener('keydown', function (ev) {
+		if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') {
+			ev.preventDefault();
+			apply(!(box.className.indexOf('open') >= 0));
+		}
+	});
+	srcEdit.appendChild(box);
+	/* 解释要跟着搬：这一行的 ⓘ 现在长在源页上，配置页里已经没有它了 */
+	applyHelp(srcEdit);
+	return row;
+}
+
+/* 表单重排 = 分组 + 把源清单那一行搬去源页。
+ * m.save() 之后必须再跑一次：form.js 重画了 map  contents，搬过去的行被打回原形。 */
+function layoutForm(mapnode, srcEdit) {
+	if (!mapnode)
+		return null;
+	var wrap = regroupForm(mapnode);
+	relocateSourceEditor(mapnode, srcEdit);
 	return wrap;
 }
 
@@ -1971,11 +2090,38 @@ function actCheck(btn) {
 	 * 否则结果落在另一个隐藏面板里，看着像点了没反应。 */
 	gotoTab('sources');
 	setBusy(btn, true);
+	/* 先保存再检测：引擎的 check_sources 从 UCI 读清单（`cfg_list community_sources`），
+	 * 页面上刚敲进去的那几条不存进去就检不到。
+	 * 为什么只 save 不 apply：form.js 里 Map.save() = parse() → 逐条写 UCI → load()，
+	 * 不跑 procd 的 reload；而这个包的 init.d 是 `reload_service(){ stop; start; }`，
+	 * 走 apply 会把 daemon 重启一遍（r41 之前那还会当场多吃一轮 ≈100MB）。
+	 * 引擎每轮都重新 load_config，所以"存进去"就已经对下一轮生效了。
+	 * 代价要说清：save() 存的是【整张表单】的当前值，不只这一项；改动停在未提交
+	 * 的 delta 里，设备重启就没了 —— 要长期生效仍然要点标准的「保存并应用」。 */
 	store.set({
-		sources: { state: 'checking' },
+		sources: { state: 'saving' },
 		busy: Object.assign({}, store.get().busy, { check: true })
 	});
-	runCmd([ 'check-sources' ]).then(function (out) {
+	var chain = Promise.resolve();
+	if (P.form && typeof P.form.save === 'function')
+		chain = Promise.resolve(P.form.save(null, true));
+	chain.then(function () {
+		/* save() 末尾会 renderContents()，把我们搬到这一页的表单行打回 map 里，
+		 * 所以排版必须重跑一次（分组 + 再搬一回）。 */
+		layoutForm(P.mapnode, P.srcEdit);
+		store.set({ sources: { state: 'checking' } });
+		return runCmd([ 'check-sources' ]);
+	}, function (err) {
+		/* 存都没存成，就不能去检测：那样检出来的是配置文件里的旧清单，
+		 * 页面会拿着"你没填过的那几条"的健康度骗人。 */
+		layoutForm(P.mapnode, P.srcEdit);
+		store.set({
+			sources: { state: 'save_failed', reason: (err && err.message) ? err.message : '保存表单时出错' },
+			busy: Object.assign({}, store.get().busy, { check: false })
+		});
+	}).then(function (out) {
+		if (store.get().sources && store.get().sources.state === 'save_failed')
+			return;
 		store.set({
 			sources: parseSources(out),
 			busy: Object.assign({}, store.get().busy, { check: false })
@@ -2125,7 +2271,11 @@ var P = {
 	tabs: null,      /* 标签栏容器 */
 	panes: {},       /* id -> 面板节点 */
 	built: false,    /* 页面是否已经建好（订阅回调依赖它） */
-	unsub: null      /* store 订阅的退订函数（重进页面时先退再订） */
+	unsub: null,     /* store 订阅的退订函数（重进页面时先退再订） */
+	mapnode: null,   /* LuCI 表单本体（m.render() 给的那个 div） */
+	form: null,      /* form.Map 实例：「保存并检测」要调它的 save() */
+	srcEdit: null,   /* 源清单编辑行的固定宿主（在「源与检测」页，不参与每拍重画） */
+	srcRes: null     /* 检测结果宿主：drawSources 只清这一块 */
 };
 
 var TAB_DEFS = [
@@ -2286,22 +2436,30 @@ function buildPage(mapnode) {
 		}));
 	}
 
-	/* ---- 面板 2：源与检测 ---- */
+	/* ---- 面板 2：源与检测（编辑 + 检测同一屏，r41 合并）---- */
 	var srcPane = el('div', { class: 'pane', id: 'cfp-pane-sources', role: 'tabpanel', tabindex: '0',
 		'aria-labelledby': 'cfp-tab-sources' });
+	/* 编辑区是固定宿主：源清单那一行被搬进这里，之后**每拍重画都不碰它**。
+	 * 必须如此 —— 输入框若在用户按下与松开之间被换掉，Chromium 就不合成 click
+	 * （r29 的吞点），而且打字打到一半节点没了。 */
+	P.srcEdit = el('div', { class: 'src-edit-host' });
+	P.srcRes = el('div', { class: 'src-res' });
+	srcPane.appendChild(P.srcEdit);
+	srcPane.appendChild(P.srcRes);
 	var lastSources = null;
 	var lastCheck = null;
 	var sourcesDrawn = false;
 	function drawSources(state) {
-		/* 和读数条同一套防吞点逻辑：没变就不重建，别在用户按下按钮时换节点 */
+		/* 和读数条同一套防吞点逻辑：没变就不重建，别在用户按下按钮时换节点。
+		 * 只动 P.srcRes —— 编辑区在另一个容器里，不参与这一步。 */
 		var checking = !!(state.busy && state.busy.check);
 		if (sourcesDrawn && state.sources === lastSources && checking === lastCheck)
 			return;
 		sourcesDrawn = true;
 		lastSources = state.sources;
 		lastCheck = checking;
-		clear(srcPane);
-		srcPane.appendChild(SourcesPane(state.sources, { check: actCheck }));
+		clear(P.srcRes);
+		P.srcRes.appendChild(SourcesPane(state.sources, { check: actCheck }));
 	}
 
 	/* ---- 面板 3：日志 ---- */
@@ -2422,14 +2580,14 @@ return view.extend({
 		o.rmempty = false;
 		o.description = help('enabled',
 			_('关掉后不再自动跑。'),
-			_('关闭时后台只空转，不会消耗流量；打开后由 cron 调度，一分钟内开始下一轮。改完点保存，下一轮生效。'));
+			_('关闭时后台只空转，不消耗流量。打开后按上面的定时周期循环：距上一轮【起轮】满一个周期就开始下一轮，所以从关翻到开时若上一轮还在周期内，不会立刻重跑 —— 现在就想测就点「立即测速」。改完点保存就生效，不需要重启服务。'));
 
 		o = s.option(form.Value, 'interval_hours', _('定时周期（小时）'), _('两轮之间的间隔。'));
 		o.datatype = 'and(uinteger,min(1),max(168))';
 		o.default = '6';
 		o.description = help('interval_hours',
 			_('两轮之间的间隔。'),
-			_('范围 1~168 小时。周期越短读数越新鲜，但每轮都要拉一遍社区源并探测候选池，流量与 CPU 开销都会上去。软路由上 6 小时是个折中。'));
+			_('范围 1~168 小时，从上一轮【起轮】的时刻开始算（不是从它结束算），所以一轮跑多久不会把下一轮越推越远。周期越短读数越新鲜，但每轮都要拉一遍社区源并探测候选池，流量与 CPU 开销都会上去 —— 真机一轮约 100MB，软路由上 6 小时是个折中。手动点「立即测速」同样会把下一轮顺延一个周期。'));
 
 		o = s.option(form.Value, 'probe_domains', _('探测域名'), _('逗号分隔，须经 Cloudflare。'));
 		o.default = 'www.cloudflare.com';
@@ -2466,10 +2624,10 @@ return view.extend({
 			_('让榜单跨轮连续。'),
 			_('把上一轮已经入围的 IP 并回候选池一起测。好处是榜单不会「一轮好一轮空」地跳；代价是如果一个 IP 已经劣化，它会多占一个候选名额，要再过一两轮才掉出去。'));
 
-		o = src.option(form.DynamicList, 'community_sources', _('社区优选源 URL'), _('每行一个 HTTPS 文本地址。'));
+		o = src.option(form.DynamicList, 'community_sources', _('社区优选源 URL'), _('这一项显示在「源与检测」页顶部。'));
 		o.description = help('community_sources',
-			_('每行一个 HTTPS 文本地址。'),
-			_('这些地址返回纯文本，里面夹着一堆 IPv4；引擎逐行提取、去重后进候选池。没有格式要求，只要 IP 出现在文本里就行（HTML 注释、Markdown、纯列表都能读）。想确认某个源还在不在提供真正的 CF 地址，去「源与检测」页点一次检测，看它的「段内占比」。'));
+			_('这一项显示在「源与检测」页顶部。'),
+			_('这些地址返回纯文本，里面夹着一堆 IPv4；引擎逐行提取、去重后进候选池。没有格式要求，只要 IP 出现在文本里就行（HTML 注释、Markdown、纯列表都能读）。要增删就切到「源与检测」页：那一页顶部就是这份清单，改完点「保存并检测」，逐源体检的结果紧跟在下面 —— 段内占比掉到 90% 以下通常说明这个源换了内容。'));
 
 		var thr = m.section(form.TypedSection, 'global', _('测速与判定'));
 		thr.anonymous = true;
@@ -2613,10 +2771,13 @@ return view.extend({
 
 		return m.render().then(function (mapnode) {
 			linkStyle();
-			/* 配置页的面板先建好、表单搬进去，再重组分组 */
+			/* 「保存并检测」要调 Map.save()，所以实例得留个把手 */
+			P.form = m;
+			P.mapnode = mapnode;
+			/* 配置页的面板先建好、表单搬进去，再重组分组（并把源清单那一行送去源页） */
 			var root = buildPage(mapnode);
 			/* 落点由 regroupForm 自己保证（分组必须留在 map 节点里面，见该函数末注释） */
-			regroupForm(mapnode);
+			layoutForm(mapnode, P.srcEdit);
 			/* 恢复上次停留的标签；没有记录就落到榜单页 */
 			var want = savedTab();
 			var valid = false;
@@ -2650,6 +2811,12 @@ return view.extend({
 			P.unsub();
 			P.unsub = null;
 		}
+		/* 表单把手与源页宿主一起清掉：teardown 之后 DOM 已经不在文档里，
+		 * 留着旧 Map 实例会让下次进页面的「保存并检测」写到一份废弃的表单上。 */
+		P.form = null;
+		P.mapnode = null;
+		P.srcEdit = null;
+		P.srcRes = null;
 		P.built = false;
 		return true;
 	}

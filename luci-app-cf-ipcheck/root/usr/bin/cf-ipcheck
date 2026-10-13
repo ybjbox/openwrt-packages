@@ -39,6 +39,13 @@ RESULT_KEEP=$ETC_DIR/result.json
 CFNETS=$ETC_DIR/cf-nets.txt
 CFNETS_TTL=21600
 
+# 上一轮**起轮**的时刻（一行秒级 epoch）。daemon 用它判断"现在到点没有"。
+# 为什么存 /etc 而不是 /tmp：/tmp 重启就空，于是"设备重启 = 立刻跑一轮"；而 procd 的
+# reload 触发（改完 UCI 点保存并应用就会 stop+start）同理，改一次配置就白烧一轮
+# ——真机一轮要吃掉约 100MB。存在 /etc 后这两条都不会再莫名起轮，
+# 而这份写入和 result.json 同频（每轮一次），flash 磨损可以忽略。
+LAST_RUN=$ETC_DIR/lastrun
+
 # 单源聚合闸（见 pool_community 的注释）。expand_prefixes 自己限住了"一条前缀最多
 # 展开成多少个 /24"，但那只是**逐条**的闸：一条被换掉或伪造的源可以列几百条 /12，
 # 逐条合规、加起来是几百万行，全灌进一个 shell 变量 —— 路由器会被自己的候选池撑爆，
@@ -1104,6 +1111,32 @@ abort_round() { # $1=reason
 }
 
 # ---------------- 一轮完整流程 --------------------------------------------
+# 上一轮起轮时刻。读不到 / 内容不像数字（首次安装、被人手工清过、写到一半断）
+# 一律回 0 = "当没跑过"，宁可立刻跑一轮，也别出现"服务在跑却永远不测"。
+last_run_epoch() {
+	[ -f "$LAST_RUN" ] || { printf '0\n'; return 0; }
+	lr=$(head -n 1 "$LAST_RUN" 2>/dev/null)
+	case "$lr" in
+		''|*[!0-9]*) printf '0\n' ;;
+		*) printf '%s\n' "$lr" ;;
+	esac
+}
+
+# 距离下一轮还有多少秒；0 = 到点了该跑。
+due_gap() {
+	now=$(date +%s)
+	last=$(last_run_epoch)
+	[ "$last" -gt 0 ] 2>/dev/null || { printf '0\n'; return 0; }
+	# 时钟往回跳过（开机后 NTP 校正、或手动改时间）会把 left 撑成好几天，
+	# 那种情况直接当到点 —— 代价是可能多跑一轮，比"永远不跑"便宜。
+	[ "$now" -ge "$last" ] 2>/dev/null || { printf '0\n'; return 0; }
+	gap=$((C_INTERVAL * 3600))
+	[ "$gap" -gt 0 ] 2>/dev/null || gap=21600
+	left=$((gap - (now - last)))
+	[ "$left" -gt 0 ] 2>/dev/null || left=0
+	printf '%s\n' "$left"
+}
+
 do_run() {
 	load_config
 	trim_log
@@ -1113,6 +1146,12 @@ do_run() {
 	fi
 	rm -f "$STOP"
 	STARTED=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+	# 起轮时刻另存一行 epoch：daemon 的周期守门用它算"到点没有"。
+	# 为什么不现算 status.json 里的 started：真机实测 BusyBox 的 date 不认 ISO 的
+	# `2026-10-13T10:26:49Z`（直接 `invalid date` 并非 0 退出），而认得的
+	# `2026-10-13 10:26:49` 又是按**本地时区**解释的 —— 差一整段 +0800（28800 秒）。
+	# 写在子壳里：目录不存在时重定向失败是 shell 级错误，不能让它打断整轮。
+	( printf '%s\n' "$(date +%s)" >"$LAST_RUN" ) 2>/dev/null || true
 	# budget / port 一起写进状态：真机上出现过"表单改成 64 没保存，跑的还是 256"，
 	# 而页面只报候选数，看不出这一轮到底按什么配置跑的。
 	printf '{"state":"running","started":"%s","budget":%s,"port":%s,"items":[]}' \
@@ -1334,6 +1373,7 @@ selftest() {
 		BEST=$ETC_DIR/best-ip.txt
 		RESULT_KEEP=$ETC_DIR/result.json
 		CFNETS=$ETC_DIR/cf-nets.txt
+		LAST_RUN=$ETC_DIR/lastrun
 	fi
 	check() { # $1=desc $2=got $3=want
 		if [ "$2" = "$3" ]; then
@@ -1792,10 +1832,33 @@ selftest() {
 	unset CURL_BIN
 	C_GISTTOK=''
 
+	# ---- 周期守门（r41）：改完 UCI 点「保存并应用」会 stop+start daemon，
+	# 没有这道门就是"改一条源、白烧一轮约 100MB"。
+	C_INTERVAL=6
+	rm -f "$LAST_RUN"
+	check 'lastrun 缺失 ⇒ 当没跑过，立刻起轮（别出现永远不测）' "$(last_run_epoch)" '0'
+	check 'lastrun 缺失 ⇒ due_gap=0' "$(due_gap)" '0'
+	printf 'abc\n' >"$LAST_RUN"
+	check 'lastrun 内容不是数字 ⇒ 同样退回 0' "$(due_gap)" '0'
+	printf '%s\n' "$(date +%s)" >"$LAST_RUN"
+	check '刚跑过 ⇒ 还要等满 6 小时（21600±60 秒）' \
+		"$([ "$(due_gap)" -ge 21540 ] && [ "$(due_gap)" -le 21600 ] && echo ok || echo ng)" 'ok'
+	printf '%s\n' "$(( $(date +%s) - 21600 + 600 ))" >"$LAST_RUN"
+	check '上一轮起于「6 小时差 10 分钟」前 ⇒ 还剩 600 秒（真的在算余量）' "$(due_gap)" '600'
+	printf '%s\n' "$(( $(date +%s) - 21600 - 5 ))" >"$LAST_RUN"
+	check '上一轮已满 6 小时 ⇒ due_gap=0，正常起轮' "$(due_gap)" '0'
+	printf '%s\n' "$(( $(date +%s) + 7200 ))" >"$LAST_RUN"
+	check '时钟往回跳过（起轮时刻在未来）⇒ 当到点，不睡 48 小时' "$(due_gap)" '0'
+	C_INTERVAL=0
+	printf '%s\n' "$(date +%s)" >"$LAST_RUN"
+	check '周期被填成 0 ⇒ 兜底 6 小时，而不是每片都起轮' \
+		"$([ "$(due_gap)" -ge 21540 ] && echo ok || echo ng)" 'ok'
+	C_INTERVAL=6
+	rm -f "$LAST_RUN"
+
 	if [ -n "$ST_SCRATCH" ]; then
 		rm -rf "$ST_SCRATCH"
 	fi
-
 	if [ "$fails" = 0 ]; then
 		echo '[OK] selftest 全部通过'
 		return 0
@@ -1857,27 +1920,29 @@ case "${1:-}" in
 	         : >"$STOP"; echo '已请求停止（当前这一轮结束后不再继续探测）' ;;
 	daemon)  while :; do
 				 load_config
-				 if [ "$(cfg enabled 0)" = 1 ]; then
-					 do_run || log '本轮异常结束'
-					 # 按 60 秒一片睡，每片重读配置。一次性 sleep 6 小时的话，改了
-					 # interval_hours 或把总开关关掉，都要等这一觉睡完才生效 ——
-					 # 而 uci 的 reload 触发会不会把 procd 实例拉起来，不该拿它当保证。
-					 secs=$((C_INTERVAL * 3600))
-					 [ "$secs" -gt 0 ] 2>/dev/null || secs=21600
-					 slept=0
-					 while [ "$slept" -lt "$secs" ]; do
-						 sleep 60
-						 slept=$((slept + 60))
-						 load_config
-						 [ "$(cfg enabled 0)" = 1 ] || break
-						 # 周期被改短了就提前结束这一觉，下一轮按新周期重算
-						 [ "$slept" -lt "$((C_INTERVAL * 3600))" ] 2>/dev/null || break
-					 done
-				 else
+				 if [ "$(cfg enabled 0)" != 1 ]; then
 					 # 关掉时空转短睡，LuCI 里打开开关一分钟内就开始测，
-					 # 不必等上一个 6 小时周期，也不需要重启服务。
+					 # 不需要重启服务。
 					 sleep 60
+					 continue
 				 fi
+				 # 周期守门：距离上一轮起轮不满 interval_hours 就不跑。
+				 # 没有这道门的话，procd 的 reload 触发（改完 UCI 点「保存并应用」
+				 # → init.d 的 reload_service = stop+start）会让每次改配置都白烧一轮
+				 # ——真机一轮约 100MB，而他改的往往只是一条源地址。
+				 # 按 60 秒一片睡、每片重读配置：关掉总开关或把周期改短都能在一分钟内
+				 # 反映出来，不必等完一觉。
+				 left=$(due_gap)
+				 while [ "$left" -gt 0 ]; do
+					 sleep 60
+					 left=$((left - 60))
+					 [ "$left" -gt 0 ] || break
+					 load_config
+					 [ "$(cfg enabled 0)" = 1 ] || break
+					 left=$(due_gap)
+				 done
+				 [ "$(cfg enabled 0)" = 1 ] || continue
+				 do_run || log '本轮异常结束'
 			 done ;;
 	diag)    do_diag ;;
 	selftest) selftest ;;

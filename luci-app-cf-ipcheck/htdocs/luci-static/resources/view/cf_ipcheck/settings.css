@@ -301,3 +301,8 @@
   .cfp .chev,.cfp .lamp-dot,.cfp button,.cfp .tab{transition:none;animation:none}
   .cfp .lamp.t-run .lamp-dot,.cfp .empty.spin .empty-ic{animation:none}
 }
+
+/* r41：源清单编辑行搬进了「源与检测」页。它复用的就是配置页那套 .grp 折叠盒，
+   这里只补两点：与下面结果区之间的间距，以及展开时给输入区一点内衬。 */
+.cfp .src-edit-host{margin-bottom:var(--s3)}
+.cfp .src-edit .grp-b{padding:var(--s2) var(--s4)}
