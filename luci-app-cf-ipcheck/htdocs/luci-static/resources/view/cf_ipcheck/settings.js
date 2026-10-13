@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r43';
+var VIEW_BUILD = 'r44'
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -1002,7 +1002,7 @@ function SummaryStrip(st) {
 	}));
 	cells.push(Readout({
 		label: T('榜单'), value: num(st.usable != null ? st.usable : (st.items || []).length),
-		sub: T('按总耗时排序保留的条数')
+		sub: T('按 TTFB 排序保留的条数')
 	}));
 
 	/* 失败分类：只在引擎给了 counts 且确有失败时出现 */
@@ -1212,7 +1212,7 @@ function BoardPane(st, actions) {
 	kids.push(Section(T('榜单')));
 	kids.push(Leaderboard(st.items));
 	kids.push(el('p', { class: 'note' },
-		T('按总耗时升序排列，同值再看 TTFB。列头 TCP / TLS / TTFB / 总计 单位均为毫秒；MB/s 为十进制（1 MB = 1000 KB），只对前若干个 IP 实测、仅作参考不参与排序，未测或失败显示 %s。').format(DASH)));
+		T('按 TTFB 升序排列，同值再看总耗时。列头 TCP / TLS / TTFB / 总计 单位均为毫秒；MB/s 为十进制（1 MB = 1000 KB），只对前若干个 IP 实测、仅作参考不参与排序，未测或失败显示 %s。总计那一列含响应体下载时间，会随内容大小变化，所以排序看的是 TTFB（首字节，含 TCP+TLS）。').format(DASH)));
 
 	return el('div', {}, kids);
 }
@@ -2649,12 +2649,12 @@ return view.extend({
 			_('第二道门槛。'),
 			_('必须与 TTFB 同时满足才算可用。它管的是整个请求从头到尾的时间，能挡掉那些「响应快但传得慢」的节点。两道门槛是「与」的关系，任一超限就淘汰。'));
 
-		o = thr.option(form.Value, 'keep_count', _('榜单保留条数'), _('按总耗时升序取前 N。'));
+		o = thr.option(form.Value, 'keep_count', _('榜单保留条数'), _('按 TTFB 升序取前 N。'));
 		o.datatype = 'and(uinteger,min(1),max(100))';
 		o.default = '10';
 		o.description = help('keep_count',
-			_('按总耗时升序取前 N。'),
-			_('排序规则是总耗时升序，耗时相同再看 TTFB。保留条数不影响测速本身，只影响写出多少条以及页面上列多少行；留 10 条左右足够客户端做故障切换。'));
+			_('按 TTFB 升序取前 N。'),
+			_('排序规则是 TTFB 升序，同值再看总耗时（r44 换的：总耗时含响应体下载时间，一次偶发 403 的错误页几乎没有 body，按总耗时排会白赚约 500 毫秒抢到榜首）。保留条数不影响测速本身，只影响写出多少条以及页面上列多少行；留 10 条左右足够客户端做故障切换。'));
 
 		o = thr.option(form.Flag, 'speed_probe', _('入围后再测下载速度'), _('串行拉大文件测 MB/s。'));
 		o.rmempty = false;

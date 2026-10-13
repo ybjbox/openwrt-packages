@@ -13,7 +13,9 @@
 #
 # 判"可用"的口径（照抄我从 luci-app-cloudflare-ip 的 observe.sh 里核实过的语义）：
 #   curl 退出码 0 且 200 <= http_code < 500；失败按 dns/connect/timeout/tls/http 分类。
-#   指标：connect(TCP 握手) / tls(appconnect-connect) / ttfb / total，排序 total->ttfb。
+#   指标：connect(TCP 握手) / tls(appconnect-connect) / ttfb / total，排序 ttfb->total。
+#   为什么不用 total 当主键（r44）：total 含响应体下载时间，4xx 的错误页几乎没有 body，
+#   按 total 排会让一次偶发 403 白赚约 500ms 压住所有 200（真机数据见 rank() 上方注释）。
 #   为什么不用 ping：Cloudflare 是 anycast，ICMP 低延迟不代表你的线路能用。
 #
 # 多个探测域名时按 IP 合并（aggregate_per_ip）：一个 IP 只在榜单里出现一次，
@@ -54,6 +56,15 @@ LAST_RUN=$ETC_DIR/lastrun
 CF_SRC_MAXBYTES=2097152
 CF_SRC_MAXPREFIX=512
 CF_SRC_MAXLINES=8000
+
+# 4xx 串行复测的条数上限（见 retest_4xx）。为什么不进 uci：它不是"用户想要的行为"，
+# 只是给一轮探测兜底的护栏；正常一轮 4xx 只有个位数（真机 131 个候选里 2 个），
+# 上限设 20 足够覆盖，再多说明整站在挡我们，复测也救不回来，白白串行几十秒。
+# 留环境变量是为了 selftest 能把它压到 1 去验"截断"这条分支。
+CFIP_4XX_RETEST_MAX=${CFIP_4XX_RETEST_MAX:-20}
+# 复测之间的间隔（秒）。同样是护栏不是功能：留 1 秒是为了不再制造一次小并发。
+# 可覆盖只为了 selftest 能秒跑完这几条分支。
+CFIP_4XX_RETEST_GAP=${CFIP_4XX_RETEST_GAP:-1}
 LOG=$RUN_DIR/cf-ipcheck.log
 # 运行进度：单行 `<阶段> 已完成 总数`，页面画分环节清单时只在 state=running 时读它。
 # 只在本来就便宜的地方写（每条源一次、每批探测一次、每个 colo/吞吐一次）；
@@ -671,17 +682,31 @@ probe_one() {
 
 # 多域名 -> 每个 IP 一行。探测是 ip × domain 的笛卡尔积（不同域名走不同的
 # CF 前置机，同一 IP 的延迟能差几倍），但榜单的语义是“哪个 IP 好用”，
-# 所以这里先按 IP 合并：有成功记录就留 total 最小的那次（连带它的域名），
-# 全失败则留第一次失败记录。不合并的话同一个 IP 会在榜单里出现 N 遍，
-# keep_count 的名额全被重复项吃掉，qualified 也会超过候选池大小。
+# 所以这里先按 IP 合并。r44 起的选择顺序是三级：
+#   1) 2xx/3xx 的成功样本优先于 4xx 的样本（同一颗 IP 两个域名各回一次时，
+#      绝不能让 403 那次把 200 那次顶掉 —— 403 的响应体小、total 假性偏低，
+#      旧口径"取 total 最小"正好会选错）；
+#   2) 同类之间比 ttfb（与内容大小无关），ttfb 相同再比 total；
+#   3) 全失败则留第一次失败记录。
+# 不合并的话同一个 IP 会在榜单里出现 N 遍，keep_count 的名额全被重复项吃掉，
+# qualified 也会超过候选池大小。
 aggregate_per_ip() {
 	awk '
 	BEGIN { FS = "\t"; OFS = "\t" }
+	function is4xx(c) { return (c + 0 >= 400) ? 1 : 0 }
+	function better(a, b) {   # a 这一行是否比已留的 b 更好（b 传 "" 表示还没有）
+		if (b == "") return 1
+		split(a, A, "\t"); split(b, B, "\t")
+		fa = is4xx(A[2]); fb = is4xx(B[2])
+		if (fa != fb) return fa < fb
+		if ((A[5] + 0) != (B[5] + 0)) return (A[5] + 0) < (B[5] + 0)
+		return (A[6] + 0) < (B[6] + 0)
+	}
 	NF >= 7 {
 		ip = $1
 		if (!(ip in seen)) { seen[ip] = ++n; order[n] = ip }
 		if ($7 == "none") {
-			if (!(ip in good) || ($6 + 0) < goodtot[ip]) { good[ip] = $0; goodtot[ip] = $6 + 0 }
+			if (better($0, good[ip])) good[ip] = $0
 		} else if (!(ip in bad)) {
 			bad[ip] = $0
 		}
@@ -726,17 +751,26 @@ colo_of() {
 }
 
 # ---------------- 过滤 + 排序（纯文本处理，可离线自测）--------------------
-# stdin: probe_one/aggregate_per_ip 的 TSV；stdout: 达标并按 total->ttfb 排序的前 N 行
+# stdin: probe_one/aggregate_per_ip 的 TSV；stdout: 达标并按 ttfb->total 排序的前 N 行
+#
+# 为什么主键是 ttfb 而不是 total（r44 改的，真机数据驱动）：total 含【响应体下载时间】，
+# 而响应体大小由内容决定 —— 一轮里 131 个候选有 2 个回了 403（并发打 www.cloudflare.com
+# 撞上边缘 bot/WAF 的抖动，事后单独复测同一颗 IP 是 200、body 1333872 字节）：
+#   403 那条 ttfb=550.6 total=550.8（错误页几乎没有 body）
+#   200 那条 ttfb=216.3 total=715.9（首页 1.3MB，下载吃掉约 500ms）
+# 按 total 升序，403 就白赚 500ms 压住所有 200 —— 榜单前两名被两个"没验证成功"的 IP 占掉。
+# ttfb（curl 的 time_starttransfer，含 TCP+TLS+首字节）与内容大小无关，才是 anycast
+# 远近的信号；吞吐另有 MB/s 那一列单独实测，不参与排序。
 #
 # 不能用 sort -k：OpenWrt 的 busybox sort 常常是无 KEY_SUPPORT 的精简版
 # （usage 只有 -nru -z），-k6,6n 会被**静默忽略**、原序输出，CI 里也一样。
-# 所以改成把 total/ttfb 补成定宽数字前缀后用 sort -n（busybox 与 GNU 行为一致），
-# 再用 cut 去掉前缀。定宽保证同 total 时按 ttfb 依次比较。
+# 所以改成把 ttfb/total 补成定宽数字前缀后用 sort -n（busybox 与 GNU 行为一致），
+# 再用 cut 去掉前缀。定宽保证同 ttfb 时按 total 依次比较。
 rank() {
 	awk -v ttfb="$C_TTFB" -v tot="$C_TOTAL" '
 		BEGIN { FS = "\t"; OFS = "\t" }
 		NF >= 7 && $7 == "none" && $6+0 > 0 && $6+0 <= tot && $5+0 <= ttfb {
-			printf "%015.3f\t%015.3f\t%s\n", $6, $5, $0
+			printf "%015.3f\t%015.3f\t%s\n", $5, $6, $0
 		}' |
 		sort -n |
 		cut -f3- |
@@ -748,10 +782,57 @@ rank_all() {
 	awk -v ttfb="$C_TTFB" -v tot="$C_TOTAL" '
 		BEGIN { FS = "\t"; OFS = "\t" }
 		NF >= 7 && $7 == "none" && $6+0 > 0 && $6+0 <= tot && $5+0 <= ttfb {
-			printf "%015.3f\t%015.3f\t%s\n", $6, $5, $0
+			printf "%015.3f\t%015.3f\t%s\n", $5, $6, $0
 		}' |
 		sort -n |
 		cut -f3-
+}
+
+# ---------------- 4xx 串行复测（r44）---------------------------------------
+# 并发探测会撞上边缘的 bot/WAF 抖动：真机一轮里 114 个 200、2 个 403，而那两颗 IP
+# 事后单独复测都是 200。403 的响应体极小，total 会假性偏低（排序已改成看 ttfb，
+# 但这一列的 colo/吞吐也一起拿不到，榜单上就是两行"未验证"），所以给它一次机会：
+#   串行（不再制造并发压力）、最多 CFIP_4XX_RETEST_MAX 条、拿到 <400 就替换这一行；
+#   仍然 4xx 就保留原行 —— 它确实能完成 TLS+HTTP，按口径仍是"可用"，只是排不上去。
+# 只对 class=none 且 code>=400 的行动手；失败行（timeout/tls/...）复测没有意义。
+retest_4xx() { # stdin=聚合后的 TSV -> stdout=复测后的 TSV
+	rt_in=$RUN_DIR/retest.in
+	rt_out=$RUN_DIR/retest.out
+	rt_try=0
+	rt_fixed=0
+	cat >"$rt_in"
+	: >"$rt_out"
+	while IFS= read -r line; do
+		ip=$(printf '%s\n' "$line" | cut -f1)
+		code=$(printf '%s\n' "$line" | cut -f2)
+		class=$(printf '%s\n' "$line" | cut -f7)
+		dom=$(printf '%s\n' "$line" | cut -f8)
+		case "$code" in
+			''|*[!0-9]*) printf '%s\n' "$line" >>"$rt_out"; continue ;;
+		esac
+		if [ "$class" != none ] || [ "$code" -lt 400 ] || [ "$rt_try" -ge "$CFIP_4XX_RETEST_MAX" ] || [ -f "$STOP" ]; then
+			printf '%s\n' "$line" >>"$rt_out"
+			continue
+		fi
+		rt_try=$((rt_try + 1))
+		# 串行之间留一拍，别把复测又变成一次小并发
+		[ "$CFIP_4XX_RETEST_GAP" -gt 0 ] 2>/dev/null && sleep "$CFIP_4XX_RETEST_GAP"
+		new=$(probe_one "$ip" "$dom")
+		ncode=$(printf '%s\n' "$new" | cut -f2)
+		nclass=$(printf '%s\n' "$new" | cut -f7)
+		case "$ncode" in
+			''|*[!0-9]*) ncode=0 ;;
+		esac
+		if [ "$nclass" = none ] && [ "$ncode" -lt 400 ]; then
+			printf '%s\n' "$new" >>"$rt_out"
+			rt_fixed=$((rt_fixed + 1))
+		else
+			printf '%s\n' "$line" >>"$rt_out"
+		fi
+	done <"$rt_in"
+	cat "$rt_out"
+	[ "$rt_try" -gt 0 ] && log "4xx 复测 $rt_try 条，$rt_fixed 条转为 2xx/3xx"
+	rm -f "$rt_in" "$rt_out"
 }
 
 # ---------------- 出口接管自检（canary）--------------------------------------
@@ -1206,6 +1287,9 @@ do_run() {
 	progress_set rank 0 1
 	agg=$RUN_DIR/aggregated.tsv
 	aggregate_per_ip <"$probed" >"$agg"
+	# 回了 4xx 的那几颗串行给一次复测机会（并发撞 WAF 的抖动，事后复测常常是 200）。
+	# 放在 counts 之前：复测改写了行内容，分类统计必须跟着改后的事实走。
+	retest_4xx <"$agg" >"$RUN_DIR/agg2.tsv" && mv -f "$RUN_DIR/agg2.tsv" "$agg"
 
 	qual=$RUN_DIR/qualified.tsv
 	rank_all <"$agg" >"$qual"
@@ -1386,14 +1470,22 @@ selftest() {
 	C_TTFB=3000
 	C_TOTAL=5000
 	C_KEEP=3
-	# 104.16.1.1 total=120 最优；104.16.9.9 total=8000 超 total_limit 应剔除；
-	# 104.16.5.5 total=400 但 ttfb=4500 超 ttfb_limit 应剔除；104.16.2.2 失败(dns)应剔除。
-	# 排序断言要能区分「按 total 升序」与「busybox 退化成的整行字典序」：
-	# 下面三条存活行的 IP 字典序（1.1 < 2.2 < 3.3）与 total 升序
-	# （3.3=120 < 2.2=190 < 1.1=270）刚好相反，任何不真正按数值排序的实现都会被抓。
-	sample=$(printf '104.16.9.9\t200\t6000.0\t500.0\t7000.0\t8000.0\tnone\n104.16.5.5\t200\t300.0\t200.0\t4500.0\t4600.0\tnone\n104.16.2.2\t0\t0\t0\t0\t0\tdns\n104.16.1.1\t200\t100.0\t50.0\t118.0\t270.0\tnone\n104.16.3.3\t200\t150.0\t60.0\t260.0\t120.0\tnone\n104.16.2.2\t200\t120.0\t55.0\t150.0\t190.0\tnone')
+	# 排序主键是 ttfb（r44）。这三条存活行故意做成：
+	#   ttfb 升序 = 3.3(100) < 2.2(118) < 1.1(150)
+	#   total 升序 = 1.1(120) < 2.2(200) < 3.3(400)   ← 旧主键，顺序正好相反
+	#   IP 字典序 = 1.1 < 2.2 < 3.3                  ← busybox 不排序时的退化形状
+	# 两个"错误实现"都会给出与期望不同的结果，所以这条断言同时盯住两件事。
+	# 104.16.9.9 total=8000 超 total_limit 应剔除；104.16.5.5 ttfb=4500 超 ttfb_limit 应剔除；
+	# 104.16.2.2 那条 dns 失败应剔除。
+	sample=$(printf '104.16.9.9\t200\t6000.0\t500.0\t7000.0\t8000.0\tnone\n104.16.5.5\t200\t300.0\t200.0\t4500.0\t4600.0\tnone\n104.16.2.2\t0\t0\t0\t0\t0\tdns\n104.16.1.1\t200\t100.0\t50.0\t150.0\t120.0\tnone\n104.16.3.3\t200\t90.0\t40.0\t100.0\t400.0\tnone\n104.16.2.2\t200\t120.0\t55.0\t118.0\t200.0\tnone')
 	got=$(printf '%s\n' "$sample" | rank | cut -f1 | tr '\n' ' ')
-	check '按 total 数值升序（区别于整行字典序）' "$got" '104.16.3.3 104.16.2.2 104.16.1.1 '
+	check '按 ttfb 数值升序（total 序与 IP 字典序都被排除）' "$got" '104.16.3.3 104.16.2.2 104.16.1.1 '
+	# r44 的立项现场：偶发 403 的错误页几乎没有 body，total 会假性低于正常的 200。
+	# 真机数字：403 那条 ttfb=550.6/total=550.8，200 那条 ttfb=216.3/total=715.9。
+	# 旧口径（total 主键）会把 403 排在前面，新口径必须把 200 排前面。
+	four=$(printf '172.66.2.44\t403\t175.0\t196.0\t550.6\t550.8\tnone\n172.64.159.242\t200\t52.1\t105.5\t216.3\t715.9\tnone')
+	got=$(printf '%s\n' "$four" | rank | cut -f1 | tr '\n' ' ')
+	check '偶发 403 不再靠"错误页没 body"抢到榜首' "$got" '172.64.159.242 172.66.2.44 '
 	# 全失败时 rank 应产出空而非报错
 	only_bad=$(printf '1.1.1.1\t0\t0\t0\t0\t0\ttimeout\n' | rank | grep -c . || true)
 	check '全部失败时返回空榜单' "$only_bad" '0'
@@ -1561,8 +1653,13 @@ selftest() {
 	two=$(printf '104.16.1.1\t200\t100.0\t50.0\t118.0\t270.0\tnone\twww.cloudflare.com\n104.16.1.1\t200\t90.0\t40.0\t100.0\t150.0\tnone\tcdn.example.com\n104.16.2.2\t0\t0\t0\t0\t0\ttimeout\twww.cloudflare.com\n104.16.2.2\t200\t80.0\t30.0\t90.0\t120.0\tnone\tcdn.example.com\n104.16.3.3\t0\t0\t0\t0\t0\ttimeout\twww.cloudflare.com\n104.16.3.3\t0\t0\t0\t0\t0\tdns\tcdn.example.com')
 	got=$(printf '%s\n' "$two" | sh "$0" _aggregate | cut -f1 | tr '\n' ' ')
 	check '按 IP 合并成一行（保留输入里首次出现的顺序）' "$got" '104.16.1.1 104.16.2.2 104.16.3.3 '
-	got=$(printf '%s\n' "$two" | sh "$0" _aggregate | awk -F'\t' '$1=="104.16.1.1"{print $6"\t"$8}')
-	check '同 IP 多条成功时取 total 最小的那次（连带它的域名）' "$got" '150.0	cdn.example.com'
+	got=$(printf '%s\n' "$two" | sh "$0" _aggregate | awk -F'\t' '$1=="104.16.1.1"{print $5"\t"$8}')
+	check '同 IP 多条成功时取 ttfb 最小的那次（连带它的域名）' "$got" '100.0	cdn.example.com'
+	# r44：同一颗 IP 一个域名回 200、另一个回 403 时，绝不能因为 403 的 total/ttfb
+	# 好看就把 200 那条顶掉 —— 类优先于数值。
+	fourmix=$(printf '8.8.8.8\t403\t50.0\t60.0\t80.0\t81.0\tnone\ta.example\n8.8.8.8\t200\t90.0\t100.0\t200.0\t700.0\tnone\tb.example')
+	got=$(printf '%s\n' "$fourmix" | aggregate_per_ip | awk -F'\t' '{print $2"\t"$8}')
+	check '同 IP 有 2xx 也有 4xx 时留 2xx 那次（类优先，不比数值）' "$got" '200	b.example'
 	got=$(printf '%s\n' "$two" | sh "$0" _aggregate | awk -F'\t' '$1=="104.16.2.2"{print $7}')
 	check '同 IP 有成有败时留成功那条' "$got" 'none'
 	got=$(printf '%s\n' "$two" | sh "$0" _aggregate | awk -F'\t' '$1=="104.16.3.3"{print $7}')
@@ -1573,6 +1670,70 @@ selftest() {
 	check '分类统计输出成合法 JSON 对象' "$got" '{"none":2,"timeout":1}'
 	got=$(printf '' | counts_json 2>/dev/null)
 	check '没有记录时分类是空对象' "$got" '{}'
+
+	# ---- r44：4xx 串行复测（retest_4xx）------------------------------------
+	# 现场是这一轮的真机数据：131 个候选里 2 个回 403，事后单独复测同一颗是 200。
+	# 假 curl 直接把 curl -w 的那串吐出来（probe_one 就吃这个形状）。stub 里把值
+	# 写死而不是用环境变量传：本机 Git Bash 下子进程解析 /tmp 路径与父进程不一致，
+	# cat 读不到就输出空串，probe_one 会报 transport_0 —— 值内联就没这个歧义。
+	# 直接调用函数、不用 `sh "$0" _retest`：子进程会重新初始化 RUN_DIR/STOP/LOG 这些
+	# 顶层路径，那等于绕开 selftest 的隔离区去碰真目录。
+	rt_curl=${CURL_BIN:-}
+	rt_puser=${C_PUSER:-}
+	rt_timeout=${C_TIMEOUT:-}
+	rt_max=${CFIP_4XX_RETEST_MAX:-20}
+	rt_stub=$ST_SCRATCH/curl-rt
+	mk_stub() { # $1 = curl -w 的那串
+		printf '#!/bin/sh\nprintf \x27%s\\n\x27\nexit 0\n' "$1" >"$rt_stub"
+		chmod +x "$rt_stub" 2>/dev/null
+	}
+	CURL_BIN=$rt_stub
+	C_PUSER=''
+	C_TIMEOUT=2
+	# C_PORT / NULL_DEV 平时由 load_config 给，selftest 这一段没走 load_config ——
+	# 少一个变量 probe_cmd 就会在 set -u 下整个吐空串，症状是"复测没替换"，
+	# 看着像 retest_4xx 的逻辑坏了（真凶是缺参数）。
+	C_PORT=${C_PORT:-443}
+	NULL_DEV=${NULL_DEV:-/dev/null}
+	CFIP_4XX_RETEST_GAP=0
+	rt_rows=$(printf '172.66.2.44\t403\t175.0\t196.0\t550.6\t550.8\tnone\twww.cloudflare.com\n172.64.159.242\t200\t52.1\t105.5\t216.3\t715.9\tnone\twww.cloudflare.com\n104.16.9.9\t0\t0\t0\t0\t0\ttimeout\twww.cloudflare.com')
+	# 前面有自测用例会把 STOP 文件留下来（那是故意的），而 retest_4xx 和 probe_one
+	# 都按"有 STOP 就不联网"办事 —— 不清掉的话这几条全在测 STOP 分支，测不到主路径。
+	rm -f "$STOP"
+	mk_stub '200,0.05,0.09,0.12,0.30'
+	: >"$LOG"
+	printf '%s\n' "$rt_rows" | retest_4xx >"$ST_SCRATCH/rt-ok.tsv" 2>/dev/null
+	got=$(awk -F'\t' '$1=="172.66.2.44"{print $2" "$5" "$6}' "$ST_SCRATCH/rt-ok.tsv")
+	check '复测拿到 200 就替换那一行（连带新的 ttfb/total）' "$got" '200 120.0 300.0'
+	got=$(grep -c . "$ST_SCRATCH/rt-ok.tsv")
+	check '复测不增不减行数、也不去碰失败行' "$got" '3'
+	got=$(awk -F'\t' '$1=="104.16.9.9"{print $7}' "$ST_SCRATCH/rt-ok.tsv")
+	check 'timeout 那行原样保留' "$got" 'timeout'
+	got=$(grep -c '4xx 复测 1 条，1 条转为 2xx/3xx' "$LOG")
+	check '日志如实报了几条复测、几条转好' "$got" '1'
+	# 复测仍然 4xx → 保留原行（它确实完成了 TLS+HTTP，按口径仍算可用）
+	mk_stub '403,0.17,0.20,0.55,0.55'
+	printf '%s\n' "$rt_rows" | retest_4xx >"$ST_SCRATCH/rt-4xx.tsv" 2>/dev/null
+	got=$(awk -F'\t' '$1=="172.66.2.44"{print $2" "$5}' "$ST_SCRATCH/rt-4xx.tsv")
+	check '复测还是 403 时保留原行，不假装成功' "$got" '403 550.6'
+	# 上限：两条 4xx、上限 1 → 只复测第一条，第二条原样留着
+	mk_stub '200,0.05,0.09,0.12,0.30'
+	CFIP_4XX_RETEST_MAX=1
+	rt_two=$(printf '9.9.9.1\t403\t10\t10\t50\t51\tnone\ta\n9.9.9.2\t403\t10\t10\t60\t61\tnone\ta\n')
+	printf '%s\n' "$rt_two" | retest_4xx >"$ST_SCRATCH/rt-cap.tsv" 2>/dev/null
+	got=$(awk -F'\t' '$1=="9.9.9.1"{print $2}' "$ST_SCRATCH/rt-cap.tsv")
+	got2=$(awk -F'\t' '$1=="9.9.9.2"{print $2}' "$ST_SCRATCH/rt-cap.tsv")
+	check '复测条数有上限（第二条不碰）' "$got $got2" '200 403'
+	CFIP_4XX_RETEST_MAX=${rt_max:-20}
+	# STOP 之后不再复测（叫停了还去联网就是浪费流量）
+	printf '%s\n' "$rt_rows" | ( : >"$STOP"; retest_4xx ) >"$ST_SCRATCH/rt-stop.tsv" 2>/dev/null
+	got=$(awk -F'\t' '$1=="172.66.2.44"{print $2}' "$ST_SCRATCH/rt-stop.tsv")
+	check '请求停止后不再做复测' "$got" '403'
+	rm -f "$STOP" "$rt_stub"
+	CURL_BIN=${rt_curl:-curl}
+	C_PUSER=${rt_puser:-nobody}
+	C_TIMEOUT=${rt_timeout:-5}
+	CFIP_4XX_RETEST_GAP=1
 
 	# 出口接管自检的判定：只看有没有拿到 HTTP 状态码。
 	# 保留地址回任何状态码（含 404）都说明 443 被本地接管。
@@ -1844,7 +2005,10 @@ selftest() {
 	check '刚跑过 ⇒ 还要等满 6 小时（21600±60 秒）' \
 		"$([ "$(due_gap)" -ge 21540 ] && [ "$(due_gap)" -le 21600 ] && echo ok || echo ng)" 'ok'
 	printf '%s\n' "$(( $(date +%s) - 21600 + 600 ))" >"$LAST_RUN"
-	check '上一轮起于「6 小时差 10 分钟」前 ⇒ 还剩 600 秒（真的在算余量）' "$(due_gap)" '600'
+	# 只读一次：调两次 due_gap 会跨秒边界（真机 selftest 就飘出过 599/600）
+	dg=$(due_gap)
+	check '上一轮起于「6 小时差 10 分钟」前 ⇒ 还剩 600±1 秒（真的在算余量）' \
+		"$([ "$dg" -ge 599 ] && [ "$dg" -le 600 ] && echo ok || echo ng)" 'ok'
 	printf '%s\n' "$(( $(date +%s) - 21600 - 5 ))" >"$LAST_RUN"
 	check '上一轮已满 6 小时 ⇒ due_gap=0，正常起轮' "$(due_gap)" '0'
 	printf '%s\n' "$(( $(date +%s) + 7200 ))" >"$LAST_RUN"
@@ -1951,6 +2115,7 @@ case "${1:-}" in
 	_sample) sample_lines "${2:-256}" ;;
 	_ucilist) uci_list_parse ;;
 	_aggregate) aggregate_per_ip ;;
+	_retest) retest_4xx ;;
 	_counts) err_counts ;;
 	_canaryv) canary_verdict "${2:-}" ;;
 	_cfin)   cf_count_in "${2:-}" ;;

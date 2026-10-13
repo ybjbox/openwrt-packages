@@ -574,7 +574,7 @@ const noActions = { run: noop, stop: noop, refresh: noop, copy: noop, check: noo
 
 let pane = t.BoardPane(done, noActions);
 has('正常态渲染榜单', pane, '104.16.1.1');
-has('正常态给出排序说明', pane, '按总耗时升序');
+has('正常态给出排序说明', pane, '按 TTFB 升序排列');
 
 pane = t.BoardPane(t.parseStatus(JSON.stringify({ state: 'done', intercepted: 1, items: [] })), noActions);
 has('接管态给出红条', pane, '出口被代理接管');
