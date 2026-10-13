@@ -39,7 +39,9 @@ const hook = "\nglobalThis.__cf_t = {\n" +
 	"\tregroupForm: regroupForm, ConfigPane: ConfigPane,\n" +
 	"\thelp: help, applyHelp: applyHelp, HelpMark: HelpMark, HELP: HELP,\n" +
 	"\tTAB_DEFS: TAB_DEFS, GROUPS: GROUPS, GROUP_OPTIONS: GROUP_OPTIONS,\n" +
-	"\tCSS: CSS, el: el, get store() { return store; },\n" +
+	"\tel: el, luminanceOf: luminanceOf, detectScheme: detectScheme,\n" +
+	"\tlinkStyle: linkStyle, applyScheme: applyScheme, CSS_PATH: CSS_PATH,\n" +
+	"\tget store() { return store; },\n" +
 	"\tget P() { return P; }, goto: goto, savedTab: savedTab,\n" +
 	"\tbuildPage: buildPage, runCmd: runCmd,\n" +
 	"\tactRun: actRun,\n" +
@@ -814,18 +816,68 @@ eq('重复组装页面不会累积订阅', t.store.count(), before);
 ok('组装后订阅数恰好为 1', t.store.count() === 1);
 
 /* ================================================================== *
- * 12. 样式：设计令牌必须真的被写进产物
+ * 12. 样式：独立 css 文件 + 跟随主题 + 明暗判定
  * ================================================================== */
-const css = t.CSS;
+const cssPath = viewPath.replace(/\.js$/, '.css');
+const relCss = 'view/cf_ipcheck/settings.css';
+ok('样式表是独立文件（不再在 JS 里拼 CSS 字符串）', fs.existsSync(cssPath));
+ok('视图里已经没有 CSS 常量', !/var CSS = \[/.test(src0));
+ok('样式路径与磁盘上的文件对得上', src0.includes("CSS_PATH = '" + relCss + "'") &&
+	cssPath.replace(/\\/g, '/').endsWith('/luci-static/resources/' + relCss));
+ok('用 <link rel=stylesheet> 挂，优先走 L.resource()', /L\.resource\(CSS_PATH\)/.test(src0) && /rel: 'stylesheet'/.test(src0));
+
+const css = fs.readFileSync(cssPath, 'utf8');
 ok('CSS 用 oklch 色空间', /oklch\(/.test(css));
 ok('CSS 声明暗色为默认', /:root\s*\{[^}]*--bg/.test(css));
-ok('CSS 有浅色媒体查询', /prefers-color-scheme:\s*light/.test(css));
+ok('浅色令牌挂在 .cfp.is-light 上（由 JS 判定后加类）', /\.cfp\.is-light\s*\{/.test(css));
+ok('不再用 prefers-color-scheme 规则判明暗（会被主题的强制深色打脸）',
+	!/@media\s*\(prefers-color-scheme:/.test(css));
+ok('强调色优先取主题主色（暗色用 --dark-primary）',
+	/--accent:var\(--dark-primary, var\(--primary,/.test(css));
+ok('强调色优先取主题主色（亮色用 --primary）',
+	/--accent:var\(--primary, var\(--primary-color-high,/.test(css));
+ok('暗色下的强调文字走淡化版，不直接拿主题色当文字',
+	/--accent-ink:color-mix\(in oklab, var\(--accent\)/.test(css));
+ok('文字型强调不再用填充色（填充与文字分令牌）',
+	!/(^|[{;\s])color:var\(--accent\)/m.test(css));
+ok('正文继承主题字体，不再自带一套字体栈', /\.cfp\{color:var\(--ink\);font-family:inherit/.test(css));
+ok('等宽字体优先取主题的 --font-mono', /--mono:var\(--font-mono/.test(css));
 ok('CSS 数字用等宽 + tabular-nums', /tabular-nums/.test(css));
 ok('CSS 尊重减少动效偏好', /prefers-reduced-motion/.test(css));
 ok('CSS 有可见焦点环', /:focus-visible/.test(css));
 ok('CSS 里的 class 前缀统一', /\.cfp/.test(css) && /\.board/.test(css) && /\.tabs/.test(css));
 ok('忙碌态在图标位画转圈', /\.cfp button\.busy \.bi\{[^]*?animation:cfp-spin/.test(css));
 ok('忙碌态不再只靠降透明度', !/\.cfp button\.busy\{pointer-events:none;opacity:\.6\}/.test(css));
+
+/* linkStyle：幂等，挂不上也不许抛 */
+documentStub.head = makeNode('head');
+t.linkStyle();
+const links1 = byTag(documentStub.head, 'link');
+eq('第一次挂上一条 link', links1.length, 1);
+eq('link 的 href 在 L 没给 resource 时落到默认路径', links1[0].attrs.href, '/luci-static/resources/' + relCss);
+t.linkStyle();
+eq('再挂一次不累积（按 href 去重）', byTag(documentStub.head, 'link').length, 1);
+
+/* 明暗判定：量主题真正渲染出来的底色 */
+eq('oklch 的 L 分量直接当亮度', t.luminanceOf('oklch(19.5% 0.012 250)'), 0.195);
+eq('纯白亮度是 1', t.luminanceOf('rgb(255, 255, 255)'), 1);
+eq('纯黑亮度是 0', t.luminanceOf('#000000'), 0);
+eq('全透明不算底色（要继续往上找）', String(t.luminanceOf('rgba(0, 0, 0, 0)')), 'null');
+eq('认不出的颜色回 null 而不是瞎判', String(t.luminanceOf('tomato')), 'null');
+const oldGCS = globalThis.getComputedStyle;
+globalThis.getComputedStyle = () => ({ backgroundColor: 'rgb(244, 245, 247)' });
+eq('量到 Argon 亮色底（实测 rgb(244,245,247)）就判 light', t.detectScheme(), 'light');
+const node = { className: 'cfp' };
+eq('applyScheme 回 light', t.applyScheme(node), 'light');
+eq('根节点加上 is-light', node.className, 'cfp is-light');
+globalThis.getComputedStyle = () => ({ backgroundColor: 'rgb(30, 30, 30)' });
+eq('量到 Argon 暗色底（实测 rgb(30,30,30)）就判 dark', t.detectScheme(), 'dark');
+eq('切回暗色时把类摘掉', t.applyScheme(node), 'dark');
+eq('根节点类名回到 cfp', node.className, 'cfp');
+globalThis.getComputedStyle = () => ({ backgroundColor: 'rgba(0, 0, 0, 0)' });
+eq('全程拿不到不透明底色时默认暗色（不误闪一下亮底）', t.detectScheme(), 'dark');
+if (oldGCS === undefined) delete globalThis.getComputedStyle;
+else globalThis.getComputedStyle = oldGCS;
 
 /* ================================================================== *
  * 13. RPC 三态：正常 / 被拒 / 挂住

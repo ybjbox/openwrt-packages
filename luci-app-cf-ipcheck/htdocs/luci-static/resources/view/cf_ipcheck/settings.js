@@ -28,7 +28,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r34';
+var VIEW_BUILD = 'r35';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -38,395 +38,123 @@ function T(s) {
 }
 
 /* ==========================================================================
- * 1. 设计令牌
+ * 1. 样式挂载与明暗判定
  * ==========================================================================
- * 所有样式都从这里取，组件里不允许出现裸数值（除 1px 发丝线与 0）。
+ * 样式表是 htdocs/luci-static/resources/view/cf_ipcheck/settings.css，用 <link> 挂，
+ * 不在 JS 里拼 CSS 字符串 —— 这是树内做法（luci-app-qosify 的 overview.js、mwan3
+ * 都这样）：构建期能压缩、浏览器能单独缓存、视图 JS 少背 16KB。
  *
- * 配色思路 —— 工业仪表盘，暗色优先：
- *   底色不用纯黑（真实世界里没有纯黑），用带一点冷蓝的中性色，靠明度差分层
- *   而不是靠阴影（暗色下阴影几乎看不见）。浅色主题是对称的第二套，不是把
- *   暗色反相。信号色的暗色版降饱和、提明度：同样的彩度铺在深底上会刺眼。
+ * 明暗判定为什么不交给 @media (prefers-color-scheme)：本机跑的是 Argon，它的深色模式
+ * 由 uci 的 argon.@global[0].mode 决定（normal=跟随系统，dark/light=强制）。强制模式下
+ * 媒体查询跟的是**操作系统**的偏好，和页面真实明暗会打架 —— 表现就是整站暗、我们这块
+ * 亮。所以直接量主题真正渲染出来的底色：读 body（拿不到再看 #maincontainer /
+ * #maincontent），算相对亮度。实测 Argon 亮色 body 是 rgb(244,245,247)、暗色是
+ * rgb(30,30,30)，中间切一刀足够稳。判定结果缓存起来，轮询时复查一次（改系统偏好时
+ * Argon 会自己换，不用重开页面）。
  */
-var TOKENS = {
-	dark: {
-		'--bg':        'oklch(19.5% 0.012 250)',
-		'--panel':     'oklch(23.5% 0.012 250)',
-		'--panel-2':   'oklch(26.5% 0.013 250)',
-		'--ink':       'oklch(93% 0.005 250)',
-		'--ink-2':     'oklch(76% 0.008 250)',
-		'--ink-3':     'oklch(62% 0.010 250)',
-		'--rule':      'oklch(34% 0.014 250)',
-		'--rule-soft': 'oklch(29% 0.013 250)',
-		'--focus':     'oklch(72% 0.14 250)',
+var CSS_PATH = 'view/cf_ipcheck/settings.css';
+var schemeNow = null;
 
-		'--idle-fg':   'oklch(70% 0.010 250)',
-		'--idle-bg':   'oklch(28% 0.012 250)',
-		'--idle-bd':   'oklch(36% 0.014 250)',
-		'--run-fg':    'oklch(80% 0.13 78)',
-		'--run-bg':    'oklch(30% 0.045 78)',
-		'--run-bd':    'oklch(44% 0.075 76)',
-		'--ok-fg':     'oklch(80% 0.13 167)',
-		'--ok-bg':     'oklch(29% 0.040 167)',
-		'--ok-bd':     'oklch(42% 0.070 167)',
-		'--warn-fg':   'oklch(82% 0.13 70)',
-		'--warn-bg':   'oklch(30% 0.045 68)',
-		'--warn-bd':   'oklch(44% 0.075 66)',
-		'--bad-fg':    'oklch(76% 0.15 27)',
-		'--bad-bg':    'oklch(29% 0.050 28)',
-		'--bad-bd':    'oklch(43% 0.090 27)',
-
-		'--accent':    'oklch(72% 0.16 52)',
-		'--accent-fg': 'oklch(21% 0.030 50)',
-		'--accent-bg': 'oklch(30% 0.050 52)',
-
-		'--shadow':    '0 1px 2px oklch(0% 0 0 / 0.28)'
-	},
-	light: {
-		'--bg':        'oklch(98.2% 0.004 250)',
-		'--panel':     'oklch(100% 0 0)',
-		'--panel-2':   'oklch(96.8% 0.005 250)',
-		'--ink':       'oklch(24% 0.018 250)',
-		'--ink-2':     'oklch(45% 0.014 250)',
-		'--ink-3':     'oklch(60% 0.012 250)',
-		'--rule':      'oklch(88% 0.008 250)',
-		'--rule-soft': 'oklch(93% 0.006 250)',
-		'--focus':     'oklch(58% 0.17 250)',
-
-		'--idle-fg':   'oklch(52% 0.012 250)',
-		'--idle-bg':   'oklch(95% 0.006 250)',
-		'--idle-bd':   'oklch(87% 0.008 250)',
-		'--run-fg':    'oklch(52% 0.14 75)',
-		'--run-bg':    'oklch(95.5% 0.045 80)',
-		'--run-bd':    'oklch(82% 0.10 78)',
-		'--ok-fg':     'oklch(45% 0.11 165)',
-		'--ok-bg':     'oklch(95% 0.035 168)',
-		'--ok-bd':     'oklch(80% 0.075 167)',
-		'--warn-fg':   'oklch(50% 0.13 62)',
-		'--warn-bg':   'oklch(95.5% 0.040 68)',
-		'--warn-bd':   'oklch(82% 0.090 65)',
-		'--bad-fg':    'oklch(49% 0.18 26)',
-		'--bad-bg':    'oklch(95.5% 0.035 28)',
-		'--bad-bd':    'oklch(82% 0.090 27)',
-
-		'--accent':    'oklch(58% 0.17 48)',
-		'--accent-fg': 'oklch(100% 0 0)',
-		'--accent-bg': 'oklch(96% 0.030 55)',
-
-		'--shadow':    '0 1px 2px oklch(30% 0.02 250 / 0.07)'
-	}
-};
-
-/* 尺度：4pt 基准。按用途命名（间距/半径/字阶），不按数值 —— 以后改基准时
- * 组件不用动。字阶只留五级且级差拉大，避免 13/14/15 那种糊成一片的层次。 */
-var SCALE = {
-	'--s1': '4px', '--s2': '8px', '--s3': '12px', '--s4': '16px',
-	'--s5': '24px', '--s6': '32px', '--s7': '48px',
-	'--r1': '3px', '--r2': '6px', '--r3': '10px',
-	'--t-xs': '11px', '--t-sm': '12.5px', '--t-md': '14px', '--t-lg': '17px', '--t-xl': '22px',
-	'--mono': 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
-	'--sans': 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans SC", sans-serif',
-	/* 动效：只动 transform/opacity；缓动走指数曲线（不用 ease 那个折中值） */
-	'--d-fast': '120ms', '--d-base': '220ms',
-	'--e-out': 'cubic-bezier(.16,1,.3,1)',
-	'--e-in-out': 'cubic-bezier(.65,0,.35,1)'
-};
-
-function vars(map) {
-	var out = [];
-	for (var k in map) {
-		if (Object.prototype.hasOwnProperty.call(map, k))
-			out.push('  ' + k + ':' + map[k] + ';');
-	}
-	return out.join('\n');
-}
-
-var CSS = [
-	':root{',
-	vars(SCALE),
-	vars(TOKENS.dark),
-	'}',
-	'@media (prefers-color-scheme: light){',
-	'  :root{',
-	vars(TOKENS.light).replace(/^/gm, '  '),
-	'  }',
-	'}',
-
-	/* ---- 容器与排版 ---- */
-	'.cfp{color:var(--ink);font-family:var(--sans);font-size:var(--t-md);line-height:1.55;',
-	'  -webkit-font-smoothing:antialiased}',
-	'.cfp *{box-sizing:border-box}',
-	/* 数字一律等宽 + 定宽数位：这是整页可比较性的基础 */
-	'.cfp .n{font-family:var(--mono);font-variant-numeric:tabular-nums;letter-spacing:-.01em}',
-	'.cfp .u{font-size:var(--t-xs);color:var(--ink-3);font-weight:400;margin-left:.15em}',
-	'.cfp h3,.cfp h4{margin:0;font-weight:600;letter-spacing:.005em}',
-	'.cfp p{margin:0}',
-
-	/* 小节标题：小号 + 字距 + 大写化的视觉重量，靠一条发丝线拉开层次 */
-	'.cfp .sec{display:flex;align-items:baseline;gap:var(--s2);margin:0 0 var(--s3)}',
-	'.cfp .sec-t{font-size:var(--t-xs);font-weight:700;letter-spacing:.08em;text-transform:uppercase;',
-	'  color:var(--ink-3);white-space:nowrap}',
-	'.cfp .sec-rule{flex:1;height:1px;background:var(--rule);transform:translateY(-.25em)}',
-
-	/* ==========================================================================
-	 * 状态读数条（常驻顶部，不随标签切换）
-	 * ========================================================================== */
-	'.cfp .rail{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s3) var(--s4);',
-	'  padding:var(--s3) var(--s4);background:var(--panel);border:1px solid var(--rule);',
-	'  border-radius:var(--r3);box-shadow:var(--shadow);margin-bottom:var(--s4)}',
-	'.cfp .rail-id{display:flex;align-items:center;gap:var(--s3);min-width:0;flex:1 1 auto;flex-wrap:wrap}',
-	'.cfp .rail-acts{display:flex;align-items:center;gap:var(--s2);flex-wrap:wrap}',
-
-	/* 状态灯：色点 + 配色胶囊。进行中时呼吸（尊重 reduced-motion） */
-	'.cfp .lamp{display:inline-flex;align-items:center;gap:.5em;padding:.3em .7em;border-radius:999px;',
-	'  font-size:var(--t-sm);font-weight:600;white-space:nowrap;',
-	'  color:var(--idle-fg);background:var(--idle-bg);border:1px solid var(--idle-bd)}',
-	'.cfp .lamp-dot{width:.5em;height:.5em;border-radius:50%;background:currentColor;flex:0 0 auto}',
-	'.cfp .lamp.t-run{color:var(--run-fg);background:var(--run-bg);border-color:var(--run-bd)}',
-	'.cfp .lamp.t-ok{color:var(--ok-fg);background:var(--ok-bg);border-color:var(--ok-bd)}',
-	'.cfp .lamp.t-warn{color:var(--warn-fg);background:var(--warn-bg);border-color:var(--warn-bd)}',
-	'.cfp .lamp.t-bad{color:var(--bad-fg);background:var(--bad-bg);border-color:var(--bad-bd)}',
-	'@media (prefers-reduced-motion: no-preference){',
-	'  .cfp .lamp.t-run .lamp-dot{animation:cfp-pulse 1.5s var(--e-in-out) infinite}',
-	'  @keyframes cfp-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(.65)}}',
-	'}',
-	'.cfp .rail-note{font-size:var(--t-sm);color:var(--ink-3);min-width:0}',
-	'.cfp .build{font-family:var(--mono);font-size:var(--t-xs);color:var(--ink-3);',
-	'  border:1px solid var(--rule);border-radius:var(--r1);padding:.1em .4em;white-space:nowrap}',
-	'.cfp .rail-tag{font-size:var(--t-xs);color:var(--warn-fg);background:var(--warn-bg);',
-	'  border:1px solid var(--warn-bd);border-radius:var(--r1);padding:.15em .45em;white-space:nowrap;',
-	'  font-weight:600}',
-
-	/* ==========================================================================
-	 * 按钮 —— 八态齐全（hover/focus-visible/active/disabled/loading）
-	 * ========================================================================== */
-	'.cfp button{font-family:inherit;font-size:var(--t-sm);font-weight:500;line-height:1.4;',
-	'  display:inline-flex;align-items:center;gap:.4em;padding:.42em .8em;border-radius:var(--r2);',
-	'  border:1px solid var(--rule);background:var(--panel-2);color:var(--ink);cursor:pointer;',
-	'  transition:background var(--d-fast) var(--e-out),border-color var(--d-fast) var(--e-out),',
-	'    color var(--d-fast) var(--e-out),opacity var(--d-fast) var(--e-out)}',
-	'.cfp button:hover:not(:disabled){background:var(--panel);border-color:var(--ink-3)}',
-	'.cfp button:focus-visible{outline:2px solid var(--focus);outline-offset:2px}',
-	'.cfp button:active:not(:disabled){transform:translateY(1px)}',
-	'.cfp button:disabled{opacity:.42;cursor:not-allowed}',
-	'.cfp button.primary{border-color:transparent;background:var(--accent);color:var(--accent-fg);font-weight:600}',
-	'.cfp button.primary:hover:not(:disabled){filter:brightness(1.07);border-color:transparent}',
-	'.cfp button.ghost{background:transparent;border-color:transparent;color:var(--ink-2);padding:.42em .55em}',
-	'.cfp button.ghost:hover:not(:disabled){background:var(--panel-2);border-color:transparent;color:var(--ink)}',
-	'.cfp button.busy{pointer-events:none;opacity:.78}',
-	/* 忙碌时把定宽的图标位换成转圈：不换文案、不改宽度，但一眼看得出这一下点下去了 */
-	'.cfp button.busy .bi{opacity:1;font-size:0;border:2px solid currentColor;border-top-color:transparent;',
-	'  border-radius:50%;width:.85em;height:.85em;animation:cfp-spin .8s linear infinite}',
-	'.cfp .bi{width:1em;text-align:center;font-style:normal;opacity:.75;flex:0 0 auto}',
-	'.cfp button.primary .bi{opacity:1}',
-	/* 纯文字链接式按钮（展开/收起、跳转） */
-	'.cfp .lnk{background:none;border:0;padding:.15em .3em;color:var(--focus);font-size:var(--t-xs);',
-	'  border-radius:var(--r1);cursor:pointer;min-height:0}',
-	'.cfp .lnk:hover:not(:disabled){background:var(--panel-2);border-color:transparent}',
-
-	/* ==========================================================================
-	 * 标签栏
-	 * ========================================================================== */
-	'.cfp .tabs{display:flex;gap:var(--s1);border-bottom:1px solid var(--rule);margin-bottom:var(--s4);',
-	'  overflow-x:auto;-webkit-overflow-scrolling:touch}',
-	'.cfp .tab{position:relative;flex:0 0 auto;display:inline-flex;align-items:center;gap:.45em;',
-	'  padding:.5em .85em;border:0;border-bottom:2px solid transparent;margin-bottom:-1px;',
-	'  border-radius:0;background:none;color:var(--ink-3);font-size:var(--t-md);font-weight:500;',
-	'  white-space:nowrap;cursor:pointer;',
-	'  transition:color var(--d-fast) var(--e-out),border-color var(--d-fast) var(--e-out)}',
-	'.cfp .tab:hover:not(.on){color:var(--ink-2);background:var(--panel-2)}',
-	'.cfp .tab:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}',
-	'.cfp .tab.on{color:var(--ink);font-weight:600;border-bottom-color:var(--accent)}',
-	'.cfp .tab-n{font-size:var(--t-xs);font-weight:600;padding:.05em .4em;border-radius:999px;',
-	'  background:var(--idle-bg);border:1px solid var(--idle-bd);color:var(--ink-3)}',
-	'.cfp .tab.on .tab-n{color:var(--accent);border-color:var(--accent);background:var(--accent-bg)}',
-	'.cfp .pane{display:none}',
-	'.cfp .pane.on{display:block}',
-
-	/* ==========================================================================
-	 * 读数带：一排「标签 / 值 / 单位」单元，靠 1px 网格线分列
-	 * ========================================================================== */
-	'.cfp .strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(134px,1fr));',
-	'  gap:1px;background:var(--rule);border:1px solid var(--rule);border-radius:var(--r2);',
-	'  overflow:hidden;margin-bottom:var(--s4)}',
-	'.cfp .cell{background:var(--panel);padding:var(--s3)}',
-	'.cfp .cell-k{font-size:var(--t-xs);color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase;',
-	'  font-weight:600;white-space:nowrap}',
-	'.cfp .cell-v{display:flex;align-items:baseline;gap:.1em;margin-top:var(--s1);',
-	'  font-size:var(--t-lg);font-weight:600}',
-	'.cfp .cell-v.warn{color:var(--warn-fg)}',
-	'.cfp .cell-sub{font-size:var(--t-xs);color:var(--ink-3);margin-top:.15em;white-space:nowrap;',
-	'  overflow:hidden;text-overflow:ellipsis}',
-
-	/* ==========================================================================
-	 * 榜单：CSS Grid 行（不用 table —— 要精确控制列宽、降列与粘性表头）
-	 * ========================================================================== */
-	'.cfp .board{border:1px solid var(--rule);border-radius:var(--r2);background:var(--panel);',
-	'  overflow:hidden;margin-bottom:var(--s3)}',
-	'.cfp .board-scroll{overflow:auto;max-height:min(58vh,540px)}',
-	'.cfp .brow{display:grid;align-items:center;',
-	'  grid-template-columns:2.4em minmax(9em,1.5fr) 3.6em 4.6em 4.6em 4.8em 5em 3.8em 5.6em;',
-	'  border-bottom:1px solid var(--rule-soft);min-width:max-content}',
-	'.cfp .brow:last-child{border-bottom:0}',
-	'.cfp .brow.head{position:sticky;top:0;z-index:2;background:var(--panel-2);',
-	'  border-bottom:1px solid var(--rule)}',
-	'.cfp .brow.head .bc{font-size:var(--t-xs);font-weight:700;letter-spacing:.04em;text-transform:uppercase;',
-	'  color:var(--ink-3);padding-top:var(--s2);padding-bottom:var(--s2)}',
-	'.cfp .bc{padding:var(--s2) var(--s3);font-size:var(--t-sm);white-space:nowrap}',
-	'.cfp .bc.r{text-align:right}',
-	'.cfp .brow.data:hover{background:var(--panel-2)}',
-	/* 第一名：左侧强调竖条 + 略重的字重，一眼看出「现在用这个」 */
-	'.cfp .brow.top > .bc:first-child{box-shadow:inset 3px 0 0 var(--accent)}',
-	'.cfp .brow.top .bc{font-weight:600}',
-	'.cfp .rk{color:var(--ink-3);font-size:var(--t-xs);font-weight:600}',
-	'.cfp .brow.top .rk{color:var(--accent)}',
-	'.cfp .ip{font-family:var(--mono);font-size:var(--t-sm)}',
-	'.cfp .code-ok{color:var(--ok-fg);font-weight:600}',
-	'.cfp .code-odd{color:var(--warn-fg);font-weight:600}',
-	/* 吞吐：数字旁一条迷你横条做相对比较（宽度 = 相对本轮最大值） */
-	'.cfp .spd{display:inline-flex;align-items:center;justify-content:flex-end;gap:.4em;width:100%}',
-	'.cfp .spd-bar{width:32px;height:3px;border-radius:2px;background:var(--idle-bd);overflow:hidden;flex:0 0 auto}',
-	'.cfp .spd-fill{display:block;height:100%;background:var(--ok-fg);border-radius:2px}',
-	/* 多域名时多一列 */
-	'.cfp .board.multi .brow{grid-template-columns:2.4em minmax(9em,1.5fr) 3.6em 4.6em 4.6em 4.8em 5em 3.8em 5.6em minmax(7em,1fr)}',
-
-	/* 空态：说清原因 + 给一个能解决它的按钮 */
-	'.cfp .empty{display:flex;align-items:flex-start;gap:var(--s3);padding:var(--s5) var(--s4);',
-	'  border:1px dashed var(--rule);border-radius:var(--r2);background:var(--panel);margin:0 0 var(--s4)}',
-	'.cfp .empty-ic{flex:0 0 auto;width:20px;height:20px;border-radius:50%;',
-	'  border:2px solid var(--rule);border-top-color:var(--accent);margin-top:.1em}',
-	'@media (prefers-reduced-motion: no-preference){',
-	'  .cfp .empty.spin .empty-ic{animation:cfp-spin 1s linear infinite}',
-	'  @keyframes cfp-spin{to{transform:rotate(360deg)}}',
-	'}',
-	'.cfp .empty-b{flex:1 1 auto;min-width:0}',
-	'.cfp .empty-t{font-size:var(--t-md);font-weight:600;margin-bottom:.15em}',
-	'.cfp .empty-d{font-size:var(--t-sm);color:var(--ink-2);line-height:1.6;max-width:64ch}',
-	'.cfp .empty-a{flex:0 0 auto}',
-
-	/* ==========================================================================
-	 * 运行进度（只在正在测速时出现）—— 一列环节，当前那条带计数与细进度条
-	 * ========================================================================== */
-	'.cfp .prog{display:flex;flex-direction:column;gap:var(--s3)}',
-	'.cfp .prog-h{display:flex;align-items:baseline;gap:var(--s2);flex-wrap:wrap}',
-	'.cfp .prog-t{font-size:var(--t-md);font-weight:600}',
-	'.cfp .psteps{list-style:none;margin:0;padding:0;display:grid;gap:1px;',
-	'  border:1px solid var(--rule);border-radius:var(--r2);overflow:hidden;background:var(--rule)}',
-	'.cfp .pstep{display:flex;align-items:center;gap:var(--s2);padding:.42em .7em;',
-	'  background:var(--panel);font-size:var(--t-sm);color:var(--ink-3);min-height:2.1em}',
-	'.cfp .pstep .pm{flex:0 0 1em;text-align:center;font-style:normal}',
-	'.cfp .pstep .pl{flex:1 1 auto;min-width:0}',
-	'.cfp .pstep .pn{flex:0 0 auto;font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--ink-3)}',
-	'.cfp .pstep.done{color:var(--ink-2)}',
-	'.cfp .pstep.done .pm{color:var(--ok-fg)}',
-	'.cfp .pstep.now{background:var(--panel-2);color:var(--ink);font-weight:500}',
-	'.cfp .pstep.now .pm{color:var(--accent)}',
-	'.cfp .pstep.now .pn{color:var(--ink)}',
-	'.cfp .pstep.off{opacity:.5}',
-	/* 进度条只用宽度表达，不玩动画：数值每 3 秒换一次，动效只会让人分神 */
-	'.cfp .pbar{flex:0 0 34%;height:3px;border-radius:2px;background:var(--panel-2);overflow:hidden}',
-	'.cfp .pbar b{display:block;height:100%;background:var(--accent)}',
-
-	/* 说明文字块（脚注 / 字段全解） */
-	'.cfp .note{font-size:var(--t-xs);color:var(--ink-3);line-height:1.75;max-width:80ch}',
-	'.cfp .note b{color:var(--ink-2);font-weight:600}',
-	/* 引擎日志：等宽、框内自己滚，坏消息按关键词上色。
-	   行内容一律走 textContent —— 日志里混着外部源的 URL 和 curl 原文，
-	   那些不是可以交给 HTML 解析的输入。 */
-	'.cfp .logbox{font-family:var(--mono);font-size:var(--t-xs);line-height:1.55;',
-	'  max-height:min(58vh,540px);overflow:auto;background:var(--panel-2);',
-	'  border:1px solid var(--rule);border-radius:var(--r2);padding:.55em .7em;',
-	'  white-space:pre-wrap;word-break:break-all}',
-	'.cfp .lline{min-height:1.4em}',
-	'.cfp .lline.bad{color:var(--bad-fg)}',
-	'.cfp .lline.warn{color:var(--warn-fg)}',
-	'.cfp abbr{text-decoration:underline dotted;text-underline-offset:2px;cursor:help}',
-
-	/* 提示横幅（没有 toast 的那版 LuCI 全靠它） */
-	'.cfp .flash{display:flex;align-items:flex-start;gap:.5em;margin-top:var(--s2);padding:.5em .75em;',
-	'  border-radius:var(--r2);font-size:var(--t-sm);line-height:1.6;',
-	'  color:var(--idle-fg);background:var(--idle-bg);border:1px solid var(--idle-bd)}',
-	'.cfp .flash.ok{color:var(--ok-fg);background:var(--ok-bg);border-color:var(--ok-bd)}',
-	'.cfp .flash.warn{color:var(--warn-fg);background:var(--warn-bg);border-color:var(--warn-bd)}',
-	'.cfp .flash.bad{color:var(--bad-fg);background:var(--bad-bg);border-color:var(--bad-bd)}',
-	'.cfp .flash b{font-weight:700}',
-
-	/* ==========================================================================
-	 * 参数分组（配置页）
-	 * ========================================================================== */
-	'.cfp .grps-bar{display:flex;align-items:center;gap:var(--s1);margin-bottom:var(--s3)}',
-	'.cfp .grp{border:1px solid var(--rule);border-radius:var(--r2);margin-bottom:var(--s3);',
-	'  background:var(--panel);overflow:hidden}',
-	'.cfp .grp-h{display:flex;align-items:center;gap:var(--s2);padding:var(--s3) var(--s4);',
-	'  cursor:pointer;user-select:none}',
-	'.cfp .grp-h:hover{background:var(--panel-2)}',
-	'.cfp .grp-h:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}',
-	'.cfp .grp-t{font-size:var(--t-md);font-weight:600;flex:1;min-width:0}',
-	'.cfp .grp-x{font-size:var(--t-xs);color:var(--ink-3);font-weight:400;white-space:nowrap}',
-	/* 折叠箭头：CSS 画的直角 V，不依赖字体里的 ▾ ▸（那两个字形各平台不一致） */
-	'.cfp .chev{display:inline-block;width:.34em;height:.34em;flex:0 0 auto;',
-	'  border-right:1.7px solid currentColor;border-bottom:1.7px solid currentColor;',
-	'  transform:rotate(45deg);transform-origin:60% 60%;',
-	'  transition:transform var(--d-base) var(--e-out);color:var(--ink-3)}',
-	'.cfp .grp:not(.open) .chev{transform:rotate(-45deg)}',
-	'.cfp .grp-b{display:none;border-top:1px solid var(--rule-soft)}',
-	'.cfp .grp.open .grp-b{display:block}',
-	'.cfp .sep{color:var(--rule);user-select:none}',
-
-	/* 字段说明：一行短句 + 一个 ⓘ。完整解释挂在 title 上，点 ⓘ 就地展开。 */
-	'.cfp .cbi-value-description{max-width:none;cursor:help}',
-	'.cfp .hmark{display:inline-flex;align-items:center;justify-content:center;',
-	'  width:1.05em;height:1.05em;margin-left:.4em;border:1px solid var(--rule);',
-	'  border-radius:50%;font-size:.82em;font-style:normal;line-height:1;',
-	'  color:var(--ink-3);background:var(--panel-2);cursor:help;',
-	'  vertical-align:-.12em;transition:border-color var(--d-fast) var(--e-out),',
-	'  color var(--d-fast) var(--e-out)}',
-	'.cfp .hmark:hover{color:var(--ink);border-color:var(--ink-3)}',
-	'.cfp .hmark:focus-visible{outline:2px solid var(--focus);outline-offset:1px}',
-	'.cfp .hmark[aria-expanded="true"]{color:var(--ink);border-color:var(--ink-3);background:var(--panel)}',
-	/* 展开体：占满一行，左侧一道强调线，跟常驻说明区分开 */
-	'.cfp .hbody{margin-top:var(--s2);padding:var(--s2) var(--s3);',
-	'  border-left:2px solid var(--run);background:var(--panel-2);',
-	'  border-radius:0 var(--r1) var(--r1) 0;color:var(--ink-2);',
-	'  font-size:var(--t-xs);line-height:1.6;white-space:normal;cursor:auto}',
-
-	/* ==========================================================================
-	 * 窄屏：标签可滑、按钮加高到好点、榜单降列
-	 * ========================================================================== */
-	'@media (max-width:760px){',
-	'  .cfp .rail{flex-direction:column;align-items:stretch;gap:var(--s3)}',
-	'  .cfp .rail-acts{justify-content:flex-start}',
-	'  .cfp button{min-height:42px}',
-	'  .cfp button.lnk{min-height:0}',
-	'  .cfp .tab{padding:.55em .65em;font-size:var(--t-sm)}',
-	'  .cfp .strip{grid-template-columns:repeat(auto-fit,minmax(104px,1fr))}',
-	'  .cfp .cell-v{font-size:var(--t-md)}',
-	'  .cfp .board-scroll{max-height:none}',
-	'  .cfp .logbox{max-height:none}',
-	'  .cfp .empty{flex-direction:column;align-items:stretch;gap:var(--s3)}',
-	'  .cfp .grp-t{font-size:var(--t-sm)}',
-	'}',
-	'@media (prefers-reduced-motion: reduce){',
-	'  .cfp .chev,.cfp .lamp-dot,.cfp button,.cfp .tab{transition:none;animation:none}',
-	'  .cfp .lamp.t-run .lamp-dot,.cfp .empty.spin .empty-ic{animation:none}',
-	'}'
-].join('\n');
-
-var STYLE_ID = 'cf-ipcheck-css';
-
-/* 注入样式。stub 环境（单测）里没有真正的 document，静默跳过别把视图带崩。 */
-function injectStyle() {
+function linkStyle() {
 	try {
 		if (!document || !document.createElement || !document.head)
 			return;
-		if (document.getElementById(STYLE_ID))
-			return;
-		var s = document.createElement('style');
-		s.id = STYLE_ID;
-		s.textContent = CSS;
-		document.head.appendChild(s);
+		var href = (typeof L !== 'undefined' && L && typeof L.resource === 'function') ?
+			L.resource(CSS_PATH) : ('/luci-static/resources/' + CSS_PATH);
+		for (var n = document.head.firstChild; n; n = n.nextSibling) {
+			if (String(n.tagName).toUpperCase() === 'LINK' && n.getAttribute && n.getAttribute('href') === href)
+				return;
+		}
+		document.head.appendChild(el('link', { rel: 'stylesheet', href: href }));
 	} catch (e) {
-		/* 注入失败最多是没样式，功能照走 */
+		/* 挂不上最多是没样式，功能照走 */
 	}
+}
+
+/* 一串 CSS 颜色 -> 0..1 的相对亮度；认不出来或全透明就回 null，让调用方往上找。
+ * oklch 的 L 分量本身就是感知亮度（0..1），直接当判据够用，不必换算成 sRGB。 */
+function luminanceOf(color) {
+	var c = String(color == null ? '' : color).trim();
+	var m = /^oklch\(\s*([\d.]+)(%?)/.exec(c);
+	if (m)
+		return m[2] === '%' ? Number(m[1]) / 100 : Number(m[1]);
+	m = /^rgba?\(([^)]+)\)/.exec(c);
+	if (m) {
+		var p = m[1].match(/[\d.]+/g);
+		if (!p || p.length < 3)
+			return null;
+		if (p.length > 3 && Number(p[3]) === 0)
+			return null;
+		return linLum(Number(p[0]), Number(p[1]), Number(p[2]));
+	}
+	m = /^#([0-9a-f]{3,8})$/i.exec(c);
+	if (m) {
+		var h = m[1];
+		if (h.length === 3)
+			h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+		return linLum(parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16));
+	}
+	return null;
+}
+
+function linLum(r, g, b) {
+	var f = function (k) {
+		k = k / 255;
+		return k <= 0.03928 ? k / 12.92 : Math.pow((k + 0.055) / 1.055, 2.4);
+	};
+	return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+}
+
+function bgLuminance() {
+	var nodes = [];
+	try {
+		nodes = [document.body, document.getElementById('maincontainer'),
+			document.getElementById('maincontent'), document.documentElement];
+	} catch (e) {
+		return null;
+	}
+	for (var i = 0; i < nodes.length; i++) {
+		if (!nodes[i] || typeof getComputedStyle !== 'function')
+			continue;
+		try {
+			var v = luminanceOf(getComputedStyle(nodes[i]).backgroundColor);
+			if (v != null)
+				return v;
+		} catch (e) {
+			/* 拿不到就试下一个宿主节点 */
+		}
+	}
+	return null;
+}
+
+function detectScheme() {
+	var v = bgLuminance();
+	if (v == null) {
+		/* 量不到底色（不是浏览器环境，或主题把背景挂在我们没看到的节点上）：
+		 * 退到媒体查询；再判不出来就默认暗色 —— CSS 的 :root 本来就是暗色那套，
+		 * 判不出时「不加类」比「加错类」更不容易闪一下错颜色。 */
+		try {
+			if (typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: light)').matches)
+				return 'light';
+		} catch (e) {
+			/* 没有 matchMedia 就走下面的默认 */
+		}
+		return 'dark';
+	}
+	return v < 0.35 ? 'dark' : 'light';
+}
+
+/* 把判定结果落到根节点的类上（CSS 里那套浅色令牌挂在 .cfp.is-light 下）。
+ * 只在真的变了时才动 className，别每拍都碰 —— 碰节点这件事在别的版本上
+ * 已经证明会牵连到点击行为。 */
+function applyScheme(node) {
+	var want = detectScheme();
+	if (want === schemeNow)
+		return want;
+	schemeNow = want;
+	if (node && node.className != null)
+		node.className = 'cfp' + (want === 'light' ? ' is-light' : '');
+	return want;
 }
 
 /* ==========================================================================
@@ -2044,6 +1772,9 @@ function pollTick() {
 	 * 一次读不到就把心跳掐死，页面就永远回不来了（r32 的病根之一）。 */
 	logsRefresh();
 	refresh();
+	/* 顺手复查一次明暗：改系统偏好或主题模式时 Argon 会当场换色，
+	 * 我们得跟着换，不然就出现「整站变暗、这块还亮着」。 */
+	applyScheme(P.root);
 }
 
 function startPoll() {
@@ -2383,6 +2114,10 @@ function boardKeyOf(st) {
 
 function buildPage(mapnode) {
 	var root = el('div', { class: 'cfp' });
+	/* 建好就立刻判一次明暗：浅色那套令牌挂在 .cfp.is-light 上，
+	 * 类名晚一步加就会先闪一下暗底（首帧就在用户眼前）。 */
+	P.root = root;
+	applyScheme(root);
 
 	/* 读数条与提示条：各自订阅 store 重画 */
 	P.rail = el('div');
@@ -2773,10 +2508,9 @@ return view.extend({
 			_('不想把令牌写进 UCI 配置（因为它会随备份走并回显）时，把令牌单独写在一个文件里，这里填路径。文件权限建议 600。两个位置都填了的话，以 gist_token 为准。'));
 
 		return m.render().then(function (mapnode) {
-			injectStyle();
+			linkStyle();
 			/* 配置页的面板先建好、表单搬进去，再重组分组 */
 			var root = buildPage(mapnode);
-			injectStyle();
 			/* 落点由 regroupForm 自己保证（分组必须留在 map 节点里面，见该函数末注释） */
 			regroupForm(mapnode);
 			/* 恢复上次停留的标签；没有记录就落到榜单页 */
