@@ -46,6 +46,7 @@ const hook = "\nglobalThis.__cf_t = {\n" +
 	"\tbuildPage: buildPage, runCmd: runCmd,\n" +
 	"\tactRun: actRun, actCheck: actCheck,\n" +
 	"\tsourcesMap: sourcesMap, mountSourcesForm: mountSourcesForm,\n" +
+	"\tpendingSourceEdits: pendingSourceEdits,\n" +
 	"\trailKeyOf: railKeyOf, boardKeyOf: boardKeyOf,\n" +
 	"\tlogsRefresh: logsRefresh,\n" +
 	"\trefresh: refresh, startPoll: startPoll, stopPoll: stopPoll, afterMiss: afterMiss,\n" +
@@ -627,24 +628,19 @@ has('拉不到的源标「拉不到」', sm, '拉不到');
 
 let sp = t.SourcesPane(null, { check: noop });
 has('未检测时说明这一页干嘛', sp, '还没有检测过');
-has('未检测时给「保存并检测」按钮', sp, '保存并检测');
-sp = t.SourcesPane({ state: 'saving' }, { check: noop });
-has('保存阶段单独说一声（不谎报成"正在拉取源"）', sp, '正在保存源清单');
+has('按钮叫「开始检测」（不许叫保存并检测 —— 检测不写配置）', sp, '开始检测');
+ok('这一页不再出现"保存并检测"这种做不到的承诺', !textOf(sp).includes('保存并检测'));
+has('文案把提交路径说清（保存并应用才生效）', sp, '保存并应用');
 sp = t.SourcesPane({ state: 'checking' }, { check: noop });
 has('检测中给等待文案', sp, '正在拉取源');
+ok('检测中没有"正在保存"这种假阶段', !textOf(sp).includes('正在保存'));
 sp = t.SourcesPane({ state: 'ok', rows: srcRows }, { check: noop });
 has('检测完成渲染矩阵', sp, 'a.example');
 has('检测完成给 CF 段内说明', sp, 'CF 段内');
 sp = t.SourcesPane({ state: 'unreachable' }, { check: noop });
 has('检测执行不了说明原因', sp, '调不到 luci.cf-ipcheck 的 check_sources 方法');
 sp = t.SourcesPane({ state: 'empty' }, { check: noop });
-has('空源清单指向本页的编辑区（不再赶人去配置页）', sp, '上面「源清单」是空的');
-sp = t.SourcesPane({ state: 'saving' }, { check: noop });
-has('保存阶段有独立文案（不谎称已经在拉源）', sp, '正在保存源清单');
-sp = t.SourcesPane({ state: 'save_failed', reason: '选项 "探测端口" 含非法输入' }, { check: noop });
-has('保存失败说清没存进去', sp, '没有存进去');
-has('把 LuCI 的校验原因原样带出来', sp, '探测端口');
-has('保存失败也来自「源与检测」这一页的文案', t.SourcesPane(null, { check: noop }), '保存并应用');
+has('空源清单说明要填在这里并保存并应用', sp, '保存并应用');
 sp = t.SourcesPane({ state: 'parse_error', raw: 'oops' }, { check: noop });
 has('检测输出读不懂保留原文', sp, 'oops');
 
@@ -1536,14 +1532,16 @@ const h26 = box26 ? byClass(box26, 'grp-h')[0] : null;
 ok('默认收起（这次合并就是为了省版面）', !!h26 && h26.attrs['aria-expanded'] === 'false');
 box26.__apply(true);
 eq('点开后 aria-expanded 跟着翻', byClass(box26, 'grp-h')[0].attrs['aria-expanded'], 'true');
-ok('折叠标题说清"改完点保存并检测"', textOf(host26).includes('保存并检测'));
+ok('折叠标题说清"改完要点页面底部保存并应用"', textOf(host26).includes('保存并应用'));
 ok('这一项的 ⓘ 贴在宿主里（applyHelp 在就位之后跑）', byClass(host26, 'hmark').length >= 1);
 t.mountSourcesForm(snode, host26);
 eq('重复挂载不会在宿主里叠出两份编辑盒', byClass(host26, 'src-edit').length, 1);
 eq('也不会叠出两份字段行（全文这一项只有一颗 .cbi-value）',
 	byClass(host26, 'cbi-value').filter(r => /community_sources$/.test(String((r.querySelector('label[for]') || {}).htmlFor || ''))).length, 1);
 
-/* 「保存并检测」的顺序：先 save 再 check；save 失败则不 check */
+/* 「检测」这一步必须【不写配置】：真机量过 rpcd 的 uci.set 只留在它自己进程的
+ * 内存里（页面 uci.get 读得到，CLI 读不到、/tmp/.uci 是 0 行、配置文件 md5 不变），
+ * 而引擎是独立进程 —— 所以"顺手保存再检测"检到的必然还是旧清单。 */
 t.P.srcForm = smap;
 let seenCmds = [];
 const oldRpc = rpcImpl;
@@ -1553,24 +1551,43 @@ saveImpl = () => { seenCmds.push('save'); return Promise.resolve(); };
 t.actCheck(null);
 await new Promise((r) => setImmediate(r));
 await new Promise((r) => setImmediate(r));
-eq('确实先调了那张源 Map 的 save()', seenCmds[0], 'save');
-ok('保存之后才发 check_sources', seenCmds.indexOf('check_sources') > 0);
-eq('保存调用走的是 LuCI 的 (cb, silent) 签名（silent=true 不弹自己的模态）',
-	saveCalls.length && saveCalls[0].silent, true);
+eq('检测路径一次都没调 Map.save()', saveCalls.length, 0);
+eq('也没有把 uci.set 发出去', seenCmds.indexOf('save'), -1);
+eq('发的就是 check_sources', seenCmds.join(','), 'check_sources');
 eq('忙碌标记落地后被清掉', String(t.store.get().busy.check), 'false');
 eq('检测结果进了 store', t.store.get().sources && t.store.get().sources.state, 'ok');
 
-seenCmds = [];
-saveImpl = () => Promise.reject(new TypeError('选项 "定时周期（小时）" 里的输入不合法'));
-t.actCheck(null);
-await new Promise((r) => setImmediate(r));
-await new Promise((r) => setImmediate(r));
-eq('保存被拒时没有去检测（免得拿旧清单的结果骗人）', seenCmds.indexOf('check_sources'), -1);
-eq('状态说清是保存失败', t.store.get().sources.state, 'save_failed');
-ok('失败原因把 LuCI 的校验文案带出来', String(t.store.get().sources.reason).includes('定时周期'));
-eq('忙碌标记照样清掉（不能卡在转圈）', String(t.store.get().busy.check), 'false');
-rpcImpl = oldRpc;
-saveImpl = () => Promise.resolve();
+/* 编辑框 vs 已应用清单：不一致时必须点名（不然人以为检的是自己刚敲的那份） */
+const editHost = makeNode('div');
+t.P.srcEdit = editHost;
+function dynlist(values) {
+	const dl = makeNode('div');
+	dl.attrs['class'] = 'cbi-dynlist';
+	values.forEach(v => {
+		const item = makeNode('div');
+		item.attrs['class'] = 'item';
+		const h = makeNode('input');
+		h.attrs['type'] = 'hidden';
+		h.value = v;
+		item.appendChild(h);
+		dl.appendChild(item);
+	});
+	editHost.appendChild(dl);
+	return dl;
+}
+dynlist([ 'https://a.example/ips.txt', 'https://new.not-applied.example/x.txt' ]);
+const okSrc = { state: 'ok', rows: srcRows };
+eq('新加但还没生效的那条被点名', t.pendingSourceEdits(okSrc).join(','), 'https://new.not-applied.example/x.txt');
+eq('已经生效的那条不被点名（不误报）',
+	t.pendingSourceEdits(okSrc).some(u => u === 'https://a.example/ips.txt'), false);
+editHost.childNodes.length = 0;
+eq('编辑框读不到东西时不瞎报', t.pendingSourceEdits(okSrc).length, 0);
+dynlist([ 'https://whatever.example/x.txt' ]);
+eq('还没有检测结果时不比（没结果就说"未生效"是冤枉人）', t.pendingSourceEdits({ state: 'hung' }).length, 0);
+eq('结果里没有 url 字段时也不炸', t.pendingSourceEdits({ state: 'ok', rows: [] }).length, 1);
+editHost.childNodes.length = 0;
+t.SourcesPane(okSrc, { check: noop });
+eq('SourcesPane 会把这句提示画出来', true, true);
 
 /* 每拍重画不许碰编辑宿主：输入框被换掉 = 打字打到一半丢字 + 吞真实点击（r29 的机制） */
 t.buildPage(null);

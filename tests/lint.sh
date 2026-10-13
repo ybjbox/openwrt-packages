@@ -673,7 +673,7 @@ fi
 #      改一处、存另一处 —— 页面显示的和引擎读到的不是一份清单；
 #   2) 引擎的 check_sources 从 UCI 读清单，所以没保存就检测 = 拿旧清单的结果骗人。
 # 这两条都是"看起来好好的、数值却对不上"的类型，静态钉住。
-echo "=== [15/15] Red line 15: source editor has one home; check implies save ==="
+echo "=== [15/15] Red line 15: source editor has one home; the check never writes ==="
 if [ -f "$VIEW" ]; then
     rl15=0
     # 这一项在全文只能声明一次（两张 Map 各一份 = 两个出处，改一处存另一处）
@@ -707,19 +707,32 @@ if [ -f "$VIEW" ]; then
         echo "[FAIL] edit: 源面板的重画还在清整个容器 —— 输入框会被连带换掉（r29 的吞点机制）"
         rl15=1
     fi
-    # 保存必须先于检测：比较两处调用的行号
-    sv=$(grep -n "P.srcForm.save" "$VIEW" | head -1 | cut -d: -f1)
-    ck=$(grep -n "runCmd(\[ 'check-sources' \])" "$VIEW" | head -1 | cut -d: -f1)
-    if [ -n "$sv" ] && [ -n "$ck" ] && [ "$sv" -lt "$ck" ]; then
-        echo "[PASS] save: 检测之前先保存（srcForm.save 在 runCmd('check-sources') 之前，行 $sv < $ck）"
-    else
-        echo "[FAIL] save: 没找到「先 srcForm.save 再 check-sources」的顺序 —— 检的会是配置文件里的旧清单"
+    # 检测这一步必须【只读不写】：真机量过 rpcd 的 uci.set 留在自己进程内存里，
+    # 引擎（独立进程）读不到 —— "先保存再检测"检到的一定是旧清单，等于骗人。
+    if grep -q "P.srcForm.save" "$VIEW"; then
+        echo "[FAIL] save: 检测路径里还在调 srcForm.save() —— 那份保存引擎看不见，检测到的仍是旧清单"
         rl15=1
+    else
+        echo "[PASS] save: 检测不写配置（提交只走页面底部标准的保存并应用）"
+    fi
+    # 两条路不一致时必须说出来
+    if grep -q "pendingSourceEdits" "$VIEW"; then
+        echo "[PASS] diff: 编辑框与已应用清单不一致时页面会点名哪几条还没生效"
+    else
+        echo "[FAIL] diff: 缺了 pendingSourceEdits —— 用户会以为检的是自己刚敲的那份"
+        rl15=1
+    fi
+    # 文案里不能再出现"保存并检测"这种承诺
+    if grep -q "保存并检测" "$VIEW"; then
+        echo "[FAIL] copy: 视图里还留着「保存并检测」字样（这条承诺做不到）"
+        rl15=1
+    else
+        echo "[PASS] copy: 视图里没有「保存并检测」这种做不到的承诺"
     fi
     if [ "$rl15" = 1 ]; then
         fail=1
     else
-        echo "[PASS] red-line-15: source editor has one home; check implies save"
+        echo "[PASS] red-line-15: source editor has one home; the check never writes"
     fi
 fi
 

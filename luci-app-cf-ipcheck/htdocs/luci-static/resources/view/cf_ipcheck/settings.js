@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r42';
+var VIEW_BUILD = 'r43';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -349,7 +349,7 @@ function stateWord(st) {
 function why(reason) {
 	switch (reason) {
 		case 'empty_pool':
-			return T('候选池是空的：社区源一条都没拉到，官方网段又关着。到「源与检测」页补几条源并点「保存并检测」，看是不是哪些源改了路径；或临时打开「Cloudflare 官方网段」。');
+			return T('候选池是空的：社区源一条都没拉到，官方网段又关着。到「源与检测」页补几条源（补完要「保存并应用」才生效），再点检测，看是不是哪些源改了路径；或临时打开「Cloudflare 官方网段」。');
 		case 'missing_curl':
 			return T('这台机器上没有 curl。所有探测都由 curl --resolve 发起，请安装 curl 与 ca-bundle。');
 		case 'missing_bin':
@@ -1278,38 +1278,61 @@ function SourceMatrix(rows) {
 	]);
 }
 
+/* 编辑框里那些"还没生效"的条：检测结果里没有它们的行，就说明它们没在配置里。
+ * 只在已经有结果（state=ok）时才比 —— 没结果时拿"编辑框非空"当"未应用"是冤枉人。
+ * 读的是编辑框里那批 hidden input（LuCI 的 DynamicList 就是靠它们采值），
+ * 我们只读不写，也不换掉任何节点。 */
+function pendingSourceEdits(src) {
+	if (!src || src.state !== 'ok' || !P.srcEdit || !P.srcEdit.querySelectorAll)
+		return [];
+	var edited = [];
+	try {
+		var hiddens = P.srcEdit.querySelectorAll('input[type="hidden"]');
+		Array.prototype.forEach.call(hiddens, function (i) {
+			if (i && i.value)
+				edited.push(String(i.value));
+		});
+	} catch (e) {
+		return [];
+	}
+	if (!edited.length)
+		return [];
+	var checked = {};
+	(src.rows || []).forEach(function (r) { if (r && r.url) checked[String(r.url)] = 1; });
+	return edited.filter(function (u) { return !checked[u]; });
+}
+
 function SourcesPane(src, actions) {
 	var kids = [];
 
 	kids.push(Section(T('逐源检测'), Button({
-		label: T('保存并检测'), icon: '\u2315',
+		label: T('检测源可用性'), icon: '\u2315',
 		disabled: store.get().busy && store.get().busy.check,
 		busy: store.get().busy && store.get().busy.check,
-		title: T('先把上面「源清单」的改动存进配置（只保存、不应用，因此不会重启服务，也不会顺手起一轮），再逐条实拉一次。'),
+		title: T('逐条实拉【已经生效】的那份清单。上面编辑框里改过的内容，要先点页面底部的「保存并应用」才会生效。'),
 		onClick: actions.check
 	})));
 
 	kids.push(el('p', { class: 'note' },
-		T('改完点「保存并检测」：只把【这一项】源清单写进配置，再逐条实拉，不会顺带动到配置页里其他还没应用的改动。它只【保存】、不【应用】，所以不重启服务、也不会顺手起一轮；但因为没走「应用」，设备重启后会回到上次应用的那份清单 —— 要长期生效请再到「配置」页点一次「保存并应用」。')));
+		T('这一步只读、不写：检测拉的是配置文件里那份清单。你在上面编辑框里的改动要点页面底部的「保存并应用」才生效 —— 本插件有周期守门，应用只会重载服务，不会顺手起一轮。')));
+
+	/* 两条路不一致时必须说出来，别让人以为检的是自己刚敲的那份。
+	 * 判据是实打实的集合差：编辑框里的条 vs 结果表里的条。 */
+	var pend = pendingSourceEdits(src);
+	if (pend.length)
+		kids.push(el('p', { class: 'note warn' },
+			T('编辑框里有 %d 条还没生效（结果里没有它们）：%s —— 要检它们请先「保存并应用」再点一次检测。')
+				.format(pend.length, pend.slice(0, 3).join('、') + (pend.length > 3 ? ' …' : ''))));
 
 	if (!src) {
 		/* 还没点过检测：说清这一页是干嘛的，并给按钮 */
 		kids.push(EmptyBox({
 			title: T('还没有检测过'),
-			detail: T('「保存并检测」会逐条实拉你在上面源清单里填的地址，列出 HTTP 状态、提取到的 IPv4 数量，以及其中落在 Cloudflare 官方网段内的比例。段内占比掉到 90% 以下，通常说明这个源换了内容。'),
+			detail: T('「检测源可用性」逐条实拉配置里那份社区源清单，列出 HTTP 状态、提取到的 IPv4 数量，以及其中落在 Cloudflare 官方网段内的比例。段内占比掉到 90% 以下，通常说明这个源换了内容。'),
 			action: Button({
-				kind: 'primary', label: T('保存并检测'), icon: '\u2315',
+				kind: 'primary', label: T('开始检测'), icon: '\u2315',
 				onClick: actions.check
 			})
-		}));
-		return el('div', {}, kids);
-	}
-
-	if (src.state === 'saving') {
-		kids.push(EmptyBox({
-			spin: true,
-			title: T('正在保存源清单'),
-			detail: T('检测用的是配置文件里的那份清单，所以先把页面上刚改的内容写进 UCI —— 只保存、不应用，因此既不重启服务也不起轮。')
 		}));
 		return el('div', {}, kids);
 	}
@@ -1341,10 +1364,6 @@ function SourcesPane(src, actions) {
 
 function srcMessage(src) {
 	switch (src.state) {
-		case 'save_failed':
-			/* 保存没成就别去检测：引擎读的是配置文件，检测出来的会是上一份清单，
-			 * 那比报错更误导人。这里把 LuCI 的校验原因原样搬出来（它已经说了是哪个字段）。 */
-			return T('源清单没有存进去，所以这次没有检测：%s。检查完再点一次「保存并检测」。').format(String(src.reason || '未知原因'));
 		case 'unreachable':
 			return whyNoReply(T('检测没跑成'), 'check_sources');
 		case 'hung':
@@ -1352,7 +1371,7 @@ function srcMessage(src) {
 		case 'parse_error':
 			return T('检测返回的内容不是合法 JSON。原文片段：%s').format(String(src.raw || '').slice(0, 160));
 		case 'empty':
-			return T('一条源都没检出：上面「源清单」是空的。展开它填几条 HTTPS 地址，再点「保存并检测」。');
+			return T('一条源都没检出：配置里的「社区优选源 URL」是空的。在上面展开「源清单」填几条 HTTPS 地址，点页面底部「保存并应用」，再回来点检测。');
 		default:
 			return T('没有可用的检测结果。');
 	}
@@ -1716,11 +1735,16 @@ function regroupForm(mapnode) {
  * 原因是 CBI 的 option 把自己渲染到哪棵子树记在内部，行被搬走之后 LuCI 后续填值
  * 的对象已经不是页上这一颗了 —— 于是"看得见、存不进"。
  * 现在改成正经做法：给这一项单开一张 form.Map（同一份 uci config、同一个 section），
- * 由它自己渲染、自己采值、自己保存；我们只搬【整张 map 节点】进源页的宿主，
- * 而"搬整张 map 节点不坏存值"这条是 r26 真机 A/B 验过的（配置页那张 map 本身
- * 也是被搬进面板宿主的）。
- * 顺带两个好处：保存只写这一项（不会把配置页其他未应用的改动一起写进去），
- * 以及全文只有这一份 DynamicList（不会有同 cbid 的两个控件）。
+ * 由它自己渲染、自己采值；我们只搬【整张 map 节点】进源页的宿主，而"搬整张 map
+ * 节点不坏存值"这条是 r26 真机 A/B 验过的（配置页那张 map 本身也是搬进面板宿主的）。
+ * 全文只有这一份 DynamicList，不可能出现两个出处。
+ *
+ * r43 再定一件事：这一页的【检测按钮不写配置】。理由是真机量出来的 ——
+ * LuCI 的 Map.save() → rpcd 的 uci.set 把改动留在 rpcd 进程内存里（页面自己 uci.get
+ * 读得到，CLI 读不到、/tmp/.uci 0 行、配置文件 md5 不变），而引擎是独立进程，
+ * 只看配置文件 + 文件 delta。所以"顺手保存再检测"检到的一定是旧清单。
+ * 提交路径就是页面底部那颗标准的「保存并应用」（apply 才落盘）；两条路不一致时
+ * 由 pendingSourceEdits() 明说哪几条还没生效。
  */
 var SRC_EDIT_OPEN_KEY = GROUPS_KEY + 'srcedit';
 
@@ -1729,10 +1753,10 @@ function sourcesMap() {
 	var ms = new form.Map('cf_ipcheck', null, null);
 	var s = ms.section(form.TypedSection, 'global', null);
 	s.anonymous = true;
-	var o = s.option(form.DynamicList, 'community_sources', _('社区优选源 URL'), _('每行一个 HTTPS 文本地址；改完点下面的「保存并检测」。'));
+	var o = s.option(form.DynamicList, 'community_sources', _('社区优选源 URL'), _('每行一个 HTTPS 文本地址；改完点页面底部「保存并应用」。'));
 	o.description = help('community_sources',
-		_('每行一个 HTTPS 文本地址；改完点下面的「保存并检测」。'),
-		_('这些地址返回纯文本，里面夹着一堆 IPv4；引擎逐行提取、去重后进候选池。没有格式要求，只要 IP 出现在文本里就行（HTML 注释、Markdown、纯列表都能读）。要确认某个源还在不在提供真正的 CF 地址，就在下面点「保存并检测」看它的「段内占比」—— 掉到 90% 以下通常说明它换了内容。'));
+		_('每行一个 HTTPS 文本地址；改完点页面底部「保存并应用」。'),
+		_('这些地址返回纯文本，里面夹着一堆 IPv4；引擎逐行提取、去重后进候选池。没有格式要求，只要 IP 出现在文本里就行（HTML 注释、Markdown、纯列表都能读）。改完必须点页面底部的「保存并应用」才会写进配置文件 —— 只有写进配置文件，引擎和这一页的检测才看得见（LuCI 的「保存」把改动留在 rpcd 进程内存里，引擎读不到，这一条是真机量出来的）。要确认某个源还在不在提供真正的 CF 地址，就点下面的检测看它的「段内占比」—— 掉到 90% 以下通常说明它换了内容。'));
 	return ms;
 }
 
@@ -1755,7 +1779,7 @@ function mountSourcesForm(mapnode, srcEdit) {
 	}, [
 		el('i', { class: 'chev' }),
 		el('span', { class: 'grp-t', text: T('源清单') }),
-		el('span', { class: 'grp-x', text: T('每行一个 HTTPS 地址；改完点下面的「保存并检测」') })
+		el('span', { class: 'grp-x', text: T('每行一个 HTTPS 地址；改完点页面底部「保存并应用」才生效') })
 	]);
 	var box = el('div', { class: 'grp src-edit' + (open ? ' open' : '') }, [ head, body ]);
 
@@ -2068,36 +2092,18 @@ function actCheck(btn) {
 	 * 否则结果落在另一个隐藏面板里，看着像点了没反应。 */
 	gotoTab('sources');
 	setBusy(btn, true);
-	/* 先保存再检测：引擎的 check_sources 从 UCI 读清单（`cfg_list community_sources`），
-	 * 页面上刚敲进去的那几条不存进去就检不到。
-	 * 为什么只 save 不 apply：form.js 里 Map.save() = parse() → 逐条写 UCI → load()，
-	 * 不跑 procd 的 reload；而这个包的 init.d 是 `reload_service(){ stop; start; }`，
-	 * 走 apply 会把 daemon 重启一遍（r41 之前那还会当场多吃一轮 ≈100MB）。
-	 * 引擎每轮都重新 load_config，所以"存进去"就已经对下一轮生效了。
-	 * 这里用的是那张【只含 community_sources】的 Map，所以不会把配置页里其他
-	 * 还没应用的改动一起顺手写进去（这是 r41 第一版没做到的，见 6b 注释）。
-	 * 代价：这一存是未提交的 delta，设备重启会回到上次「保存并应用」的那份 ——
-	 * 要长期生效仍然要去配置页点标准的保存并应用。 */
+	/* 这一步【只读不写】。为什么不在这里顺手保存（r42 试过，真机量死了）：
+	 * LuCI 的 Map.save() 走 rpcd 的 uci.set，而 rpcd 把改动留在【自己进程的内存】里 ——
+	 * 页面自己再 uci.get 读得到（返回 visible-test），但 CLI 读不到、
+	 * /tmp/.uci/cf_ipcheck 是 0 行、配置文件 md5 不变。引擎是独立进程，
+	 * 只能读配置文件 + 文件 delta，所以"保存后立刻检测"检到的仍是旧的那份。
+	 * 要生效只有一条路：页面底部标准的「保存并应用」（apply 才落盘 + 触发 reload）。
+	 * 这一页因此改为：编辑区 + 只读检测 并排，并在两者不一致时明说（pendingSourceEdits）。 */
 	store.set({
-		sources: { state: 'saving' },
+		sources: { state: 'checking' },
 		busy: Object.assign({}, store.get().busy, { check: true })
 	});
-	var chain = Promise.resolve();
-	if (P.srcForm && typeof P.srcForm.save === 'function')
-		chain = Promise.resolve(P.srcForm.save(null, true));
-	chain.then(function () {
-		store.set({ sources: { state: 'checking' } });
-		return runCmd([ 'check-sources' ]);
-	}, function (err) {
-		/* 存都没存成，就不能去检测：那样检出来的是配置文件里的旧清单，
-		 * 页面会拿着"你没填过的那几条"的健康度骗人。 */
-		store.set({
-			sources: { state: 'save_failed', reason: (err && err.message) ? err.message : '保存源清单时出错' },
-			busy: Object.assign({}, store.get().busy, { check: false })
-		});
-	}).then(function (out) {
-		if (store.get().sources && store.get().sources.state === 'save_failed')
-			return;
+	runCmd([ 'check-sources' ]).then(function (out) {
 		store.set({
 			sources: parseSources(out),
 			busy: Object.assign({}, store.get().busy, { check: false })
@@ -2801,7 +2807,7 @@ return view.extend({
 			P.unsub = null;
 		}
 		/* 表单把手与源页宿主一起清掉：teardown 之后 DOM 已经不在文档里，
-		 * 留着旧 Map 实例会让下次进页面的「保存并检测」写到一份废弃的表单上。 */
+		 * 留着旧 Map 实例会让下次进页面时把值写到一份废弃的表单上。 */
 		P.form = null;
 		P.srcForm = null;
 		P.mapnode = null;
