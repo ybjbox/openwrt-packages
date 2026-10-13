@@ -28,7 +28,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r35';
+var VIEW_BUILD = 'r36';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -369,24 +369,37 @@ function why(reason) {
 /* ==========================================================================
  * 5. IPC —— 与引擎的唯一通道
  * ==========================================================================
- * expect:{stdout:''} 会让 rpc 把 stdout 直接解包成返回值，所以这里拿到的是字符串
- * 本身而不是 out.stdout。三种结果各说各的事，绝不混为一谈：
- *   字符串 → 执行成功（空串是「跑完了但没结果」，上层按 never_run 处理）
- *   null   → 执行被拒（ACL 没放开、可执行文件缺失）
+ * 通道是 rpcd 的 ucode 插件（包内 root/usr/share/rpcd/ucode/luci.cf-ipcheck，
+ * 注册成 ubus 对象 luci.cf-ipcheck）。早先这里是 `file.exec` + ACL 放行
+ * 「用任意参数执行 /usr/bin/cf-ipcheck」—— 能跑什么由请求方说了算；现在收窄成
+ * 五个具名方法，每个都不带参数，能做什么由插件里那张表说了算。树内带逻辑的应用
+ * （upnp / ddns / wol / mosdns）都是这个路子，file.exec 留给固定的一次性命令。
+ *
+ * 每个方法回 `{ ok, text }`，text 就是引擎那一份原样输出 —— **解析只在这一层做**：
+ * 引擎输出的字段契约属于引擎（status.json / result.json 的键），在 ucode 里再抄
+ * 一份就等于同一份契约有两个出处，正是 lint red-line-6 防的那类漂移。
+ *
+ * 三种结果各说各的事，绝不混为一谈：
+ *   字符串 → 调用成功（空串是「跑完了但没结果」，上层按 never_run 处理）
+ *   null   → 调用被拒（ACL 没放开、rpcd 没这个对象、缺 rpcd-mod-ucode、
+ *            或插件没加载 —— 装/升级后要 rpcd reload，luci.mk 的 postinst 会做）
  *   HUNG   → 等太久没回（uhttpd/rpcd 挂住，或这台电脑到路由器的路被劫持）
  * 挂住单独成一态而不是收敛成 null：照 null 去查「包没装好」是白费劲，真相是没回应。
  */
-var rpcExec = rpc.declare({
-	object: 'file',
-	method: 'exec',
-	params: [ 'command', 'params' ],
-	expect: { stdout: '' }
-});
+var RPC_OBJECT = 'luci.cf-ipcheck';
+
+var RPC_METHODS = {
+	status: rpc.declare({ object: RPC_OBJECT, method: 'status' }),
+	logs: rpc.declare({ object: RPC_OBJECT, method: 'logs' }),
+	'run-now': rpc.declare({ object: RPC_OBJECT, method: 'run' }),
+	stop: rpc.declare({ object: RPC_OBJECT, method: 'stop' }),
+	'check-sources': rpc.declare({ object: RPC_OBJECT, method: 'check_sources' })
+};
 
 var HUNG = { hung: true };
 
-/* 等待上限按命令给：status 只读一个本地文件，8 秒嫌久；sources 要引擎逐条联网实拉，
- * 十几个源 120 秒都不算多，别把它误判成挂住。 */
+/* 等待上限按命令给：status 只是读一个本地文件，8 秒都嫌宽；check-sources 要引擎
+ * 逐条联网实拉，给到 45 秒（引擎自己把最坏耗时压在 30 秒内，理由见下面那条注释）。 */
 var CMD_LIMIT = {
 	status: 8000,
 	/* 一轮跑着的时候把 status 放宽到 20 秒。为什么分开给：这时页面在持续轮询，
@@ -398,9 +411,10 @@ var CMD_LIMIT = {
 	status_running: 20000,
 	'run-now': 10000,
 	stop: 8000,
-	/* 逐条实拉确实慢，但上限不能随口给大数：rpcd 对**每一次** exec 有平台级超时
-	 * （真机 /etc/config/rpcd 的 option timeout 30，rpcd 源码里可调到最大 600），
-	 * 到点它就把命令掐了并回一个响应，所以客户端等再久也等不到「更完整的结果」。
+	/* 逐条实拉确实慢，但上限不能随口给大数：rpcd 对外部执行有平台级超时
+	 * （真机 /etc/config/rpcd 的 option timeout 30，rpcd 源码里可调到最大 600，
+	 * file.exec 和 ucode 方法共用同一个 rpc_exec_timeout），到点它就把命令掐了并回一个
+	 * 响应，所以客户端等再久也等不到「更完整的结果」。
 	 * 引擎那边已经把最坏耗时压进 30 秒（段表 4 秒 + 一批 8 秒），这里给 45 秒
 	 * 只是给这条连接留出抖动余量，不是指望它跑一分钟。 */
 	'check-sources': 45000,
@@ -413,11 +427,14 @@ var CMD_LIMIT = {
 };
 
 function runCmd(args, ms) {
-	var call = rpcExec(CMD, args).then(function (out) {
-		return (typeof out === 'string') ? out : null;
+	var fn = RPC_METHODS[args && args[0]];
+	/* 认不出的子命令一律按「调用被拒」处理：宁可是 null 让页面说清读不到，
+	 * 也不要悄悄发一个不存在的 ubus 方法出去。 */
+	var call = fn ? fn().then(function (obj) {
+		return (obj && typeof obj.text === 'string') ? obj.text : null;
 	}, function () {
 		return null;
-	});
+	}) : Promise.resolve(null);
 	/* 没有定时器的环境（单测桩）不加超时，保持同步语义 */
 	if (typeof setTimeout !== 'function')
 		return call;
@@ -676,6 +693,16 @@ function HelpMark(full) {
 			toggle(ev);
 	});
 	return mark;
+}
+
+/* 「调不到引擎」的排查话术，几条命令共用一句。以前每条各写一遍「ACL 没放开 exec」，
+ * 换成 ucode 插件之后成因变了（对象没注册 / 缺 rpcd-mod-ucode / 装完没 reload），
+ * 集中一处写才不会改漏。 */
+function whyNoReply(what, method) {
+	return T('%s：调不到 %s 的 %s 方法。按可能性排：本包没装好或 /usr/bin/cf-ipcheck 的可执行位丢了；' +
+		'缺 rpcd-mod-ucode（本包已声明依赖）；装完或升级后 rpcd 没 reload（luci.mk 的 postinst 会自动做，' +
+		'手工排查可以跑一次 /etc/init.d/rpcd reload）；或 rpcd 的 ACL 没放开这个对象。')
+		.format(what, RPC_OBJECT, method);
 }
 
 /* 读数单元：标签 / 值 / 单位 / 副行 */
@@ -1044,7 +1071,7 @@ function RunProgress(st) {
 		return EmptyBox({
 			spin: true,
 			title: head,
-			detail: T('这一轮还在跑，完成后本页会自动更新。（这一版引擎没回环节进度，只能给这一句）')
+			detail: T('这一轮还在跑，完成后本页会自动更新。（还没读到环节进度：第一次读取一到，下面的清单就会补上）')
 		});
 	}
 
@@ -1123,7 +1150,7 @@ function BoardPane(st, actions) {
 			detail: hung
 				? T('连着几次都没等到 %s 的返回，这通常不是插件的问题。先确认这台电脑能打开路由器后台（本机代理/TUN 接管会把到 10.0.0.0/8 的流量吞掉），再看 LuCI 会话是不是已经过期。页面仍在后台每隔一会儿重试，恢复了会自己跟上；等不及就点「重新读取」。').format(CMD)
 				: (st.state === 'unreachable'
-					? T('无法执行 %s。多半是包没装好，或 rpcd 的 ACL 没放开 exec。').format(CMD)
+					? whyNoReply(T('读不到引擎的输出'), 'status')
 					: T('拿到的不是合法 JSON，无法解析。原文片段：%s').format(String(st.raw || '').slice(0, 160))),
 			action: Button({
 				label: T('重新读取'), icon: '\u21bb',
@@ -1290,7 +1317,7 @@ function SourcesPane(src, actions) {
 function srcMessage(src) {
 	switch (src.state) {
 		case 'unreachable':
-			return T('检测没跑成：无法执行 %s（包没装好、可执行位丢失，或 rpcd 的 ACL 没放开 exec）。').format(CMD);
+			return whyNoReply(T('检测没跑成'), 'check_sources');
 		case 'hung':
 			return T('检测没有回应：路由器在 %s 秒内没返回。引擎这一项最坏约 12 秒（每条源 8 秒上限、13 条一批并发），比这更慢就是这台电脑到路由器的路有问题；另外平台侧 rpcd 的 exec 超时是 30 秒，真超了会被掐断，那时页面会报「输出不是合法 JSON」而不是这一句。').format(Math.round(CMD_LIMIT['check-sources'] / 1000));
 		case 'parse_error':
@@ -1333,7 +1360,7 @@ function LogBlock(text) {
 function logMessage(lg) {
 	switch (lg.state) {
 		case 'unreachable':
-			return T('读不到日志：无法执行 %s logs（包没装好，或 rpcd 的 ACL 没放开 exec）。').format(CMD);
+			return whyNoReply(T('读不到日志'), 'logs');
 		case 'hung':
 			return T('读取没有回应：路由器在 %s 秒内没返回。先确认这台电脑能正常打开路由器后台。').format(Math.round(CMD_LIMIT.logs / 1000));
 		case 'empty':
@@ -1805,7 +1832,7 @@ function actRun(btn) {
 			return;
 		}
 		if (out === null) {
-			flash(T('无法启动'), T('执行 %s 失败：包没装好，或 rpcd 的 ACL 没放开 exec。').format(CMD), 'bad');
+			flash(T('无法启动'), whyNoReply(T('启动命令没跑成'), 'run'), 'bad');
 			return;
 		}
 		if (isRunningReply(out))
@@ -1842,14 +1869,14 @@ function actStop(btn) {
 		if (out === HUNG)
 			flash(T('停止命令没有回应'), T('%s 秒内没等到返回。停止信号可能已经写进去了，本轮收尾后自停。').format(Math.round(CMD_LIMIT.stop / 1000)), 'warn');
 		else if (out === null)
-			flash(T('无法请求停止'), T('执行 %s 失败。').format(CMD), 'bad');
+			flash(T('无法请求停止'), whyNoReply(T('停止命令没跑成'), 'stop'), 'bad');
 		else
 			flash(T('已请求停止'), T('当前这轮收尾后不再继续探测。'), 'warn');
 		refresh();
 	}, function () {
 		setBusy(btn, false);
 		store.set({ busy: Object.assign({}, store.get().busy, { stop: false }) });
-		flash(T('无法请求停止'), T('执行 %s 失败。').format(CMD), 'bad');
+		flash(T('无法请求停止'), whyNoReply(T('停止命令没跑成'), 'stop'), 'bad');
 	});
 }
 

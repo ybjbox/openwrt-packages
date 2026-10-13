@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-cf-ipcheck
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=35
+PKG_RELEASE:=36
 
 # 许可证与维护者是 openwrt/packages 审稿的硬要求（CONTRIBUTING.md：
 # 「A (PKG_)MAINTAINER definition」「A PKG_LICENSE tag ... use SPDX identifiers」，
@@ -14,7 +14,10 @@ PKG_LICENSE:=Apache-2.0
 LUCI_TITLE:=Cloudflare preferred-IP local checker
 LUCI_DESCRIPTION:=Measures Cloudflare edge IPs from the router itself and publishes a ranked best-ip list.
 LUCI_PKGARCH:=all
-LUCI_DEPENDS:=+curl +jq +ca-bundle
+# rpcd-mod-ucode：页面与引擎之间那条通道就是包里的 ucode 插件（root/usr/share/rpcd/ucode/），
+# 没有它 rpcd 根本不认 luci.cf-ipcheck 这个对象，页面会整页「读不到引擎的输出」。
+# 雅典娜这台机器本来就装了它，写出来是为了换固件时不靠运气。
+LUCI_DEPENDS:=+curl +jq +ca-bundle +rpcd-mod-ucode
 
 # conffiles 必须自己写：luci.mk 完全不探测 root/etc/config（grep 过，零处 conffiles 逻辑），
 # 而 include/package-pack.mk 只吃 Package/<name>/conffiles —— 声明之后才会生成

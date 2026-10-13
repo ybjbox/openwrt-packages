@@ -1,10 +1,12 @@
 {
     "luci-app-cf-ipcheck": {
-        "description": "Grant access to cf-ipcheck (exec only) and its UCI config",
+        "description": "Grant access to the cf-ipcheck ucode RPC methods and its UCI config",
         "read": {
-            "file": {
-                "/usr/bin/cf-ipcheck": [
-                    "exec"
+            "ubus": {
+                "luci.cf-ipcheck": [
+                    "status",
+                    "logs",
+                    "check_sources"
                 ]
             },
             "uci": [
@@ -12,6 +14,12 @@
             ]
         },
         "write": {
+            "ubus": {
+                "luci.cf-ipcheck": [
+                    "run",
+                    "stop"
+                ]
+            },
             "uci": [
                 "cf_ipcheck"
             ]

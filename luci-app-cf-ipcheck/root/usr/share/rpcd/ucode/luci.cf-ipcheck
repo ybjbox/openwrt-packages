@@ -1,0 +1,63 @@
+// rpcd ucode 插件：把 /usr/bin/cf-ipcheck 的几个子命令包成**具名方法**。
+//
+// 为什么要这一层，而不是让页面直接 rpcd file.exec 那个脚本：
+//   file.exec 的 ACL 语义是「允许用任意参数执行这个绝对路径」（真机现在的写法），
+//   而这里收窄成「只能调这五个方法、每个方法不带参数」—— 能做什么由下面的
+//   methods 表决定，不由请求方决定。树内带逻辑的应用（upnp / ddns / wol / mosdns）
+//   都走这条路，file.exec 留给固定的一次性命令。
+//
+// 为什么不把引擎输出的 JSON 在这里 parse 成 blobmsg 再回给页面：
+//   那份 JSON 的字段契约属于引擎（result.json / status.json 的键），在 ucode 里
+//   再抄一份就等于同一份契约有两个出处 —— 正是 lint red-line-6 防的那类漂移。
+//   所以这里只回 { text: "引擎原样输出" }，解析留在视图那一层。
+//
+// 装完要注意：rpcd 是在启动时加载 /usr/share/rpcd/ucode/ 下的脚本的，
+// 新装/更新这个文件后必须重启 rpcd 才生效（本包的 postinst 负责这件事）。
+'use strict';
+
+import { popen } from 'fs';
+
+const CMD = '/usr/bin/cf-ipcheck';
+
+/* 跑一条固定的子命令，把它 stdout 的整份内容原样带回。
+ * 子命令是写死的字面量，任何一段都不来自请求方 —— 这里没有拼接外部输入的地方。
+ * 必须把管道读到尽头再 close：rpcd 会等这条 popen 的 EOF，留着一根没读完的
+ * 管道就等于把整个请求挂住（引擎侧 run-now 已经自己关掉继承的 fd，见该分支注释）。 */
+function sh(sub) {
+	const h = popen(CMD + ' ' + sub + ' 2>/dev/null');
+
+	if (!h)
+		return { ok: false, text: '' };
+
+	let out = '';
+	const all = h.read('all');
+
+	if (all != null)
+		out = all;
+	else
+		out = '';
+
+	h.close();
+
+	return { ok: true, text: trim(out) };
+}
+
+const methods = {
+	status: {
+		call: () => sh('status')
+	},
+	logs: {
+		call: () => sh('logs')
+	},
+	run: {
+		call: () => sh('run-now')
+	},
+	stop: {
+		call: () => sh('stop')
+	},
+	check_sources: {
+		call: () => sh('check-sources')
+	}
+};
+
+return { 'luci.cf-ipcheck': methods };

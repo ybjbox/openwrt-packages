@@ -48,7 +48,7 @@ const hook = "\nglobalThis.__cf_t = {\n" +
 	"\trailKeyOf: railKeyOf, boardKeyOf: boardKeyOf,\n" +
 	"\tlogsRefresh: logsRefresh,\n" +
 	"\trefresh: refresh, startPoll: startPoll, stopPoll: stopPoll, afterMiss: afterMiss,\n" +
-	"\tflash: flash,\n" +
+	"\tflash: flash, whyNoReply: whyNoReply,\n" +
 	"\tget pollFail() { return pollFail; }, pollGap: pollGap,\n" +
 	"\tPOLL_MS: POLL_MS, POLL_SLOW_MS: POLL_SLOW_MS,\n" +
 	"\tFAIL_STALE: FAIL_STALE, FAIL_GIVEUP: FAIL_GIVEUP,\n" +
@@ -280,9 +280,17 @@ const windowStub = {
 };
 
 const _ = s => String(s);
-/* rpc 走一个可替换的实现：默认照常回空串，要造「永不返回」时由测试改写 rpcImpl */
+/* rpc 桩：视图走的已经是 rpcd 的 ucode 具名方法，真机回包形状是 { ok, text }
+ * （text = 引擎原样输出）。测试里仍然按「引擎那份文本」写桩，可读性高，
+ * 这里统一包一层成真实形状 —— 少了这层，桩就把视图的解包代码测成了摆设。 */
 let rpcImpl = async () => '';
-const rpcStub = { declare: () => (...a) => rpcImpl(a) };
+const rpcStub = {
+	declare: (decl) => (...a) => Promise.resolve(rpcImpl(decl, a)).then((v) => {
+		if (typeof v === 'string')
+			return { ok: true, text: v };
+		return v;
+	})
+};
 const viewStub = { extend: o => o };
 function MapStub() { this.sections = []; }
 MapStub.prototype.section = function () {
@@ -516,7 +524,7 @@ ok('运行态有转圈指示', byClass(pane, 'spin').length >= 1);
 hasNot('运行态不画空榜单表', pane, '按总耗时升序');
 
 pane = t.BoardPane(t.parseStatus(null), noActions);
-has('unreachable 明说执行不了什么', pane, '无法执行 /usr/bin/cf-ipcheck');
+has('unreachable 点名是哪个方法，并给出 ucode 这条路的排查项', pane, '调不到 luci.cf-ipcheck 的 status 方法');
 has('unreachable 给出重新读取', pane, '重新读取');
 
 pane = t.BoardPane(t.parseStatus('not json at all'), noActions);
@@ -564,7 +572,7 @@ sp = t.SourcesPane({ state: 'ok', rows: srcRows }, { check: noop });
 has('检测完成渲染矩阵', sp, 'a.example');
 has('检测完成给 CF 段内说明', sp, 'CF 段内');
 sp = t.SourcesPane({ state: 'unreachable' }, { check: noop });
-has('检测执行不了说明原因', sp, '无法执行');
+has('检测执行不了说明原因', sp, '调不到 luci.cf-ipcheck 的 check_sources 方法');
 sp = t.SourcesPane({ state: 'empty' }, { check: noop });
 has('空源清单指向配置页', sp, '候选池来源');
 sp = t.SourcesPane({ state: 'parse_error', raw: 'oops' }, { check: noop });
@@ -909,7 +917,7 @@ hasNot('被拒的空态不说「没有回应」', t.BoardPane(t.parseStatus(null
 
 eq('源检测超时 → hung 态', t.parseSources(t.HUNG).state, 'hung');
 has('源检测 hung 文案说没有回应', t.srcMessage({ state: 'hung' }), '没有回应');
-has('源检测被拒文案说无法执行', t.srcMessage({ state: 'unreachable' }), '无法执行');
+has('源检测被拒文案点名 check_sources', t.srcMessage({ state: 'unreachable' }), '调不到 luci.cf-ipcheck 的 check_sources 方法');
 
 ok('run-now 回 running 判为「还在跑」', t.isRunningReply('{"state":"running"}') === true);
 ok('run-now 回 done 不算还在跑', t.isRunningReply('{"state":"done"}') === false);
@@ -970,7 +978,7 @@ has('超时说没有回应', lp, '没有回应');
 hasNot('超时说不上「读不到」', lp, '读不到');
 
 lp = t.LogsPane({ state: 'unreachable' }, { refresh: noop, copy: noop });
-has('被拒明说是执行不了 logs', lp, '无法执行');
+has('被拒明说是 logs 方法调不到', lp, '调不到 luci.cf-ipcheck 的 logs 方法');
 
 lp = t.LogsPane({ state: 'ok', text: '一行\n二行\n三行失败\n' }, { refresh: noop, copy: noop });
 eq('日志按行渲染（尾部空行不占一行）', byClass(lp, 'lline').length, 3);
@@ -1014,7 +1022,7 @@ eq('环节顺序按 do_run 的真实走法（先建池，再做出口自检）',
 	t.STAGES.map(s => s.id).join(','), 'fetch,canary,probe,rank,colo,speed,upload');
 
 let rp = t.RunProgress({ state: 'running' });
-has('没给环节时不画半截清单', rp, '没回环节进度');
+has('没给环节时不画半截清单', rp, '还没读到环节进度');
 eq('没给环节时一条步骤都不出', byClass(rp, 'pstep').length, 0);
 
 rp = t.RunProgress({ state: 'running', stage: 'probe', stage_done: 40, stage_total: 100, upload: 1 });
@@ -1079,7 +1087,9 @@ rpcImpl = () => {
 };
 t.store.set({ status: { state: 'done', items: [] }, busy: {} });
 const runP = t.actRun(null);          // 第二次 rpc（refresh 的 status）永不返回，runP 不会 settle
-await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+/* 等真实链路走完：桩里 runCmd 多包了一层 Promise.resolve(回).then(解包)，
+   手工数微任务个数太脆，直接排空到宏任务再断言。 */
+await new Promise((r) => setImmediate(r));
 eq('命令一返回，本地状态已是 running', t.store.get().status.state, 'running');
 eq('忙碌标记同时被清掉', String(t.store.get().busy.run), 'false');
 
@@ -1243,6 +1253,34 @@ eq('退回的横幅照样带上语义色', t.store.get().flash.tone, 'warn');
 notifyImpl = function (title, body, ms, cls) {
 	notifications.push({ title: String(title), text: textOf(body), ms: ms, cls: cls });
 };
+
+/* ================================================================== *
+ * 23. 通道换成 rpcd 的 ucode 具名方法（不再是 file.exec）
+ * file.exec 的 ACL 语义是「允许用任意参数执行这个绝对路径」；换成具名方法后，
+ * 能做什么由插件里那张表决定。回包形状 { ok, text }，text 是引擎原样输出，
+ * 解析仍然只在视图这一层（字段契约不在两处各写一遍）。
+ * ================================================================== */
+ok('视图不再走 rpcd 的 file.exec', !/method: 'exec'/.test(src0) && !/object: 'file'/.test(src0));
+ok('视图声明了 ucode 对象名', /var RPC_OBJECT = 'luci\.cf-ipcheck'/.test(src0));
+rpcImpl = async (decl) => { lastDecl = decl; return '{"state":"done","items":[]}'; };
+let lastDecl = null;
+eq('runCmd 把 {ok,text} 里的 text 交出来', await t.runCmd([ 'status' ]), '{"state":"done","items":[]}');
+eq('status 走的是插件的 status 方法', lastDecl.object + '/' + lastDecl.method, 'luci.cf-ipcheck/status');
+await t.runCmd([ 'check-sources' ]);
+eq('check-sources 走的是插件的 check_sources 方法（下划线）', lastDecl.object + '/' + lastDecl.method, 'luci.cf-ipcheck/check_sources');
+await t.runCmd([ 'run-now' ]);
+eq('run-now 走的是插件的 run 方法', lastDecl.method, 'run');
+rpcImpl = async () => { throw new Error('ubus 拒绝'); };
+eq('调用被拒 → null（不是 HUNG）', await t.runCmd([ 'status' ]), null);
+rpcImpl = async () => ({ ok: true });          /* 少了 text，形状不对就当没读到 */
+eq('回包形状不对时按「读不到」处理，不猜', await t.runCmd([ 'status' ]), null);
+rpcImpl = async () => '';
+eq('认不出的子命令一律 null，绝不发一个不存在的 ubus 方法', await t.runCmd([ 'bogus-cmd' ]), null);
+/* 「调不到引擎」的排查话术集中在一处，成因要带上 ucode 这条路特有的两种可能 */
+const why = t.whyNoReply ? t.whyNoReply('读不到日志', 'logs') : '';
+ok('排查话术提到 rpcd-mod-ucode', /rpcd-mod-ucode/.test(why));
+ok('排查话术提到 rpcd reload', /reload/.test(why));
+ok('排查话术点名是哪个方法', /logs/.test(why));
 
 console.log(fails === 0 ? '=== view 渲染断言全部通过' : `=== view 渲染断言失败 ${fails} 项`);
 process.exit(fails === 0 ? 0 : 1);
