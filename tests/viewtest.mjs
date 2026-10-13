@@ -31,7 +31,7 @@ const hook = "\nglobalThis.__cf_t = {\n" +
 	"\tnum: num, ms: ms, mbps: mbps, ago: ago, clock: clock,\n" +
 	"\tstale: stale, scheduleLine: scheduleLine, DASH: DASH,\n" +
 	"\tLeaderboard: Leaderboard, COLS: COLS, domainKinds: domainKinds,\n" +
-	"\tRunProgress: RunProgress, STAGES: STAGES,\n" +
+	"\tRunProgress: RunProgress, STAGES: STAGES, SRC_COLS: SRC_COLS,\n" +
 	"\tSummaryStrip: SummaryStrip, BoardPane: BoardPane,\n" +
 	"\tSourceMatrix: SourceMatrix, SourcesPane: SourcesPane, srcMessage: srcMessage,\n" +
 	"\tparseLog: parseLog, LogsPane: LogsPane, LogBlock: LogBlock, logTone: logTone,\n" +
@@ -1255,8 +1255,19 @@ eq('总数变了 → 指纹必须变', t.boardKeyOf(pf) ===
 	t.boardKeyOf(Object.assign({}, pf, { stage_total: 14 })), false);
 eq('上传开关变了 → 指纹必须变（那一条要标灰）', t.boardKeyOf(pf) ===
 	t.boardKeyOf(Object.assign({}, pf, { upload: 0 })), false);
-eq('无关字段变了 → 指纹不变（别白白重建面板）', t.boardKeyOf(pf),
-	t.boardKeyOf(Object.assign({}, pf, { pool: 999, qualified: 5 })));
+/* 这条在 r33 是反的（当时断言 pool/qualified 不该进指纹）。r39 复查时被抓出来：
+ * SummaryStrip 确实读它们，指纹里没有就等于允许面板停在旧数字上 —— 改了「定时周期」
+ * 后那格「完成于」的滞留告警永远不刷新。现在按它该有的样子钉：读到的就得进指纹。 */
+eq('SummaryStrip 读的字段变了 → 指纹必须变', t.boardKeyOf(pf) ===
+	t.boardKeyOf(Object.assign({}, pf, { pool: 999, qualified: 5 })), false);
+['interval', 'started', 'usable', 'domains'].forEach(function (k) {
+	const patch = {};
+	patch[k] = 'zzz';
+	eq(k + ' 变了 → 指纹必须变（它被 SummaryStrip/看板读）', t.boardKeyOf(pf) ===
+		t.boardKeyOf(Object.assign({}, pf, patch)), false);
+});
+eq('面板不读的字段变了 → 指纹不变（别白白重建面板）', t.boardKeyOf(pf),
+	t.boardKeyOf(Object.assign({}, pf, { some_field_nobody_reads: 12345 })));
 eq('滞留跨 10 秒档 → 指纹变（横幅上的秒数要能更新）',
 	t.boardKeyOf(Object.assign({}, pf, { staleFor: 3 })) ===
 	t.boardKeyOf(Object.assign({}, pf, { staleFor: 12 })), false);
@@ -1357,6 +1368,117 @@ ok('pollTick 把 promise 交回给 L.poll（守卫才有东西可判）',
 	!!tickRet && typeof tickRet.then === 'function');
 await tickRet;
 eq('这一拍确实读到了新进度', t.store.get().status.stage_done, 2);
+
+/* ================================================================== *
+ * 25. r39：审查确认的八条 bug，逐条钉住
+ * ================================================================== */
+/* 25a 插件说「没执行成」时，绝不能再被当成「跑完了但没结果」 */
+rpcImpl = async () => ({ ok: false, text: null });
+eq('ok:false + text:null → 按「没执行成」交回 null', await t.runCmd([ 'status' ]), null);
+rpcImpl = async () => ({ ok: false, text: '' });
+eq('ok:false + 空串也按「没执行成」（run-now 不再报绿色的假成功）', await t.runCmd([ 'run-now' ]), null);
+rpcImpl = async () => ({ ok: true, text: '{"state":"never_run","items":[]}' });
+eq('引擎真的回 never_run 时仍按 never_run（两条路没被混掉）',
+	t.parseStatus(await t.runCmd([ 'status' ])).state, 'never_run');
+rpcImpl = async () => '';
+
+/* 25b busy.refresh 只服务手动刷新：它进了 railKeyOf，轮询每拍翻两次就等于
+ * 每拍重建读数条，而重建会换掉按钮节点 —— 真实鼠标点击会被吞（r29 的教训）。 */
+let releaseStatus = null;
+rpcImpl = () => new Promise((res) => { releaseStatus = () => res({ ok: true, text: '{"state":"never_run","items":[]}' }); });
+t.store.set({ status: { state: 'never_run', items: [] }, busy: {} });
+const pm25 = t.refresh(true);
+eq('手动点刷新时置 busy.refresh（按钮该有转圈）', t.store.get().busy.refresh, true);
+releaseStatus();
+await pm25;
+eq('手动刷新结束后把标记清掉', String(t.store.get().busy.refresh), 'false');
+releaseStatus = null;
+const pa25 = t.refresh();
+eq('轮询那一拍不碰 busy.refresh', String(t.store.get().busy.refresh), 'false');
+releaseStatus();
+await pa25;
+rpcImpl = async () => '';
+
+/* 25c 人手动试探失败不该往「连着几次没读到」里记账 */
+const failBefore = t.pollFail;
+t.afterMiss({ state: 'running', items: [] }, true, true);
+eq('手动刷新失败：pollFail 不涨', t.pollFail, failBefore);
+t.afterMiss({ state: 'running', items: [] }, true, false);
+eq('轮询失败才计入连续失败', t.pollFail, failBefore + 1);
+t.afterMiss({ state: 'running', items: [] }, true, false);
+
+/* 25d 跑着的时候不许复制上一轮的榜单（页面上根本没显示列表） */
+const railRunning = t.StatusRail({ state: 'running', items: [ { ip: '1.1.1.1' } ] }, {}, noActions);
+const copyBtn = byTag(railRunning, 'button').find((b) => textOf(b).includes('复制榜单'));
+ok('运行中「复制榜单 IP」是禁用的', copyBtn && copyBtn.disabled === true);
+ok('并且说清为什么禁用', copyBtn && String(copyBtn.attrs.title || '').includes('还在跑'), false);
+const railDone = t.StatusRail({ state: 'done', items: [ { ip: '1.1.1.1' } ] }, {}, noActions);
+const copyBtn2 = byTag(railDone, 'button').find((b) => textOf(b).includes('复制榜单'));
+ok('跑完了就能复制', copyBtn2 && !copyBtn2.disabled);
+
+/* 25e 表格的列数必须等于它自己那套网格的轨道数。
+ * 真机踩过：源清单只有 5 列却套了榜单的 9 条轨道 —— URL 列被压到 34px
+ * （文字溢出到自己的框外）、HTTP 列反而占 708px，右边还挂 4 条空轨道。 */
+function trackCount(spec) {
+	/* 轨道之间是空格分隔；逗号只出现在 minmax(0,1fr) / clamp(...) 这类函数里面，
+	 * 所以要在括号深度为 0 时才把空白当分隔符。 */
+	let depth = 0, n = 0, pending = false;
+	for (const ch of String(spec)) {
+		if (ch === '(') depth++;
+		else if (ch === ')') depth--;
+		else if (/\s/.test(ch) && depth === 0) { if (pending) { n++; pending = false; } continue; }
+		pending = true;
+	}
+	if (pending) n++;
+	return n;
+}
+const lbRule = /\.cfp \.brow\{[^}]*?grid-template-columns:([^;]+);/.exec(css);
+const srcRule = /\.cfp \.board\.src \.brow\{[^}]*?grid-template-columns:([^;]+);/.exec(css);
+ok('CSS 里两条网格模板都在', !!lbRule && !!srcRule);
+eq('榜单：列定义数 = 自己的轨道数', t.COLS.length, trackCount(lbRule[1]));
+eq('源清单：列定义数 = 自己的轨道数（不再共用榜单的）', t.SRC_COLS.length, trackCount(srcRule[1]));
+const srcBoard = t.SourceMatrix([ { url: 'https://x/y.txt', http: '200', rc: 0, ips: 12, cf_in: 12 } ]);
+ok('源清单的容器带上了 board src 这个类', String(srcBoard.attrs['class'] || '').includes('board src'));
+eq('源清单渲染出来的单元格数与列定义一致',
+	byClass(srcBoard, 'brow')[1].childNodes.length, t.SRC_COLS.length);
+
+/* 25f pollTick 必须把 promise 交回去，且同步抛错不能让心跳永久卡死 */
+ok('pollTick 返回 promise（L.poll 的重入守卫靠它复位）',
+	(() => {
+		t.store.set({ status: { state: 'never_run', items: [] }, busy: {} });
+		const r = t.pollTick();
+		return !!r && typeof r.then === 'function';
+	})());
+
+/* 25g ARIA：屏幕阅读器要能看懂这棵树 */
+const lbAria = t.Leaderboard([ { ip: '1.1.1.1', code: 200 } ]);
+eq('榜单容器带 role=table（行是 role=row、格是 cell/columnheader，缺祖先就是噪声）',
+	(byClass(lbAria, 'board')[0].attrs || {}).role, 'table');
+const smAria = t.SourceMatrix([ { url: 'https://x', http: '200', rc: 0, ips: 1, cf_in: 1 } ]);
+eq('源清单容器也带 role=table', (smAria.attrs || {}).role, 'table');
+const panesOk = [ 'board', 'sources', 'logs', 'config' ].every((k) => {
+	const p = t.P.panes && t.P.panes[k];
+	return p && p.attrs.role === 'tabpanel' && p.attrs.tabindex === '0' &&
+		p.attrs['aria-labelledby'] === 'cfp-tab-' + k;
+});
+ok('四个面板都是 role=tabpanel + tabindex=0 + aria-labelledby 指回自己的标签', panesOk);
+const tabIds = [ 'board', 'sources', 'logs', 'config' ].every((k) =>
+	(t.P.tabs ? String(textOf(t.P.tabs)).length > 0 : true) && t.P.panes[k].attrs.id === 'cfp-pane-' + k);
+ok('面板各自的 id 与标签的 aria-controls 对得上', tabIds);
+const lfMap = fakeForm([ 'enabled', 'totally_unknown_option_xyz' ]);
+const lfWrap = t.regroupForm(lfMap);
+const lfGrps = byClass(lfWrap, 'grp');
+const leftover = lfGrps.find((g) => textOf(g).includes('其它'));
+ok('认不出归属的字段落到「其它」兜底组', !!leftover);
+ok('兜底组也交了 __apply（顶部「全部展开 / 收起」管得到它）',
+	leftover && typeof leftover.__apply === 'function');
+const lfHead = leftover ? byClass(leftover, 'grp-h')[0] : null;
+ok('兜底组的标题可键盘操作（tabindex + role=button + aria-expanded）',
+	!!lfHead && lfHead.attrs.tabindex === '0' && lfHead.attrs.role === 'button' &&
+	lfHead.attrs['aria-expanded'] === 'true');
+leftover.__apply(false);
+eq('调 __apply(false) 真的会收起', leftover.className.indexOf('open') >= 0, false);
+eq('同时把 aria-expanded 改掉', lfHead.attrs['aria-expanded'], 'false');
 
 console.log(fails === 0 ? '=== view 渲染断言全部通过' : `=== view 渲染断言失败 ${fails} 项`);
 process.exit(fails === 0 ? 0 : 1);

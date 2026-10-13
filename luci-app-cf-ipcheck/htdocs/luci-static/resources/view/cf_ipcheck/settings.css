@@ -182,6 +182,12 @@
   grid-template-columns:2.4em minmax(9em,1.5fr) 3.6em 4.6em 4.6em 4.8em 5em 3.8em 5.6em;
   border-bottom:1px solid var(--rule-soft);min-width:max-content}
 .cfp .brow:last-child{border-bottom:0}
+/* 源清单只有 5 列，绝不能沿用上面榜单那 9 条轨道 —— 真机实测：URL 列被分到 34px
+   （文字溢出到自己的框外），HTTP 列反而占 708px，右边还挂 4 条空轨道，
+   最后一列贴不到右边缘。min-width 也要放开，否则 max-content 让 1fr 收不下去，
+   长 URL 的省略号永远出不来（完整地址在 title 里，鼠标停上去能看到）。 */
+.cfp .board.src .brow{grid-template-columns:minmax(0,1fr) 5.5em 7.5em 7.5em 8.5em;min-width:0}
+.cfp .board.src .bc.l{overflow:hidden;text-overflow:ellipsis}
 .cfp .brow.head{position:sticky;top:0;z-index:2;background:var(--panel-2);
   border-bottom:1px solid var(--rule)}
 .cfp .brow.head .bc{font-size:var(--t-xs);font-weight:700;letter-spacing:.04em;text-transform:uppercase;

@@ -22,20 +22,22 @@ const CMD = '/usr/bin/cf-ipcheck';
 /* 跑一条固定的子命令，把它 stdout 的整份内容原样带回。
  * 子命令是写死的字面量，任何一段都不来自请求方 —— 这里没有拼接外部输入的地方。
  * 必须把管道读到尽头再 close：rpcd 会等这条 popen 的 EOF，留着一根没读完的
- * 管道就等于把整个请求挂住（引擎侧 run-now 已经自己关掉继承的 fd，见该分支注释）。 */
+ * 管道就等于把整个请求挂住（引擎侧 run-now 已经自己关掉继承的 fd，见该分支注释）。
+ *
+ * 失败时 text 必须是 **null** 而不是空串：视图把「空串」解释成「引擎跑完了但没有结果」
+ * （也就是从未跑过一轮），而 popen 起不来是「压根没执行成」—— 两者混起来的话，
+ * 页面会在引擎根本没启动的情况下说「已启动一轮测速」（绿色的假成功）。 */
 function sh(sub) {
 	const h = popen(CMD + ' ' + sub + ' 2>/dev/null');
 
 	if (!h)
-		return { ok: false, text: '' };
+		return { ok: false, text: null };
 
 	let out = '';
 	const all = h.read('all');
 
 	if (all != null)
 		out = all;
-	else
-		out = '';
 
 	h.close();
 

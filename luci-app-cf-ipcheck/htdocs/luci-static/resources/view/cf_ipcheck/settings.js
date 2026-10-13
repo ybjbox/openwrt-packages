@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r38';
+var VIEW_BUILD = 'r40';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -178,8 +178,6 @@ function el(tag, props, kids) {
 				n.className = String(v);
 			else if (k === 'text')
 				n.textContent = String(v);
-			else if (k === 'html')
-				n.innerHTML = String(v);
 			else if (k === 'style') {
 				if (typeof v === 'string')
 					n.setAttribute('style', v);
@@ -432,7 +430,10 @@ function runCmd(args, ms) {
 	/* 认不出的子命令一律按「调用被拒」处理：宁可是 null 让页面说清读不到，
 	 * 也不要悄悄发一个不存在的 ubus 方法出去。 */
 	var call = fn ? fn().then(function (obj) {
-		return (obj && typeof obj.text === 'string') ? obj.text : null;
+		/* ok:false 是「压根没执行成」（popen 起不来），跟「跑完了但没输出」是两回事。
+		 * 早先这里只看 text 是不是字符串，于是插件失败回落的空串被当成 never_run，
+		 * run-now 还会报绿色的「已启动一轮测速」—— 假成功。 */
+		return (obj && obj.ok !== false && typeof obj.text === 'string') ? obj.text : null;
 	}, function () {
 		return null;
 	}) : Promise.resolve(null);
@@ -829,10 +830,14 @@ function StatusRail(st, busy, actions) {
 		disabled: busy.refresh, busy: busy.refresh,
 		onClick: actions.refresh
 	});
+	var copyable = !!(st.items && st.items.length) && st.state !== 'running';
 	var btnCopy = Button({
 		icon: '\u29c9', label: T('复制榜单 IP'),
-		disabled: !(st.items && st.items.length),
-		title: (st.items && st.items.length) ? null : T('榜单是空的，没有可复制的 IP'),
+		disabled: !copyable,
+		/* 跑着的时候手上那份 items 是**上一轮**的（这一轮还没出榜单），
+		 * 让它可点就等于悄悄把人没看见的东西复制到剪贴板里去了。 */
+		title: st.state === 'running' ? T('这一轮还在跑，等它结束再复制这一轮的榜单')
+			: ((st.items && st.items.length) ? null : T('榜单是空的，没有可复制的 IP')),
 		onClick: actions.copy
 	});
 
@@ -969,7 +974,7 @@ function Leaderboard(items) {
 	for (var j = 0; j < items.length; j++)
 		rows.push(boardRow(items[j], j, cols, maxSpeed));
 
-	return el('div', { class: 'board' + (cols.length > COLS.length ? ' multi' : '') }, [
+	return el('div', { class: 'board' + (cols.length > COLS.length ? ' multi' : ''), role: 'table' }, [
 		el('div', { class: 'board-scroll' }, rows)
 	]);
 }
@@ -1262,7 +1267,9 @@ function SourceMatrix(rows) {
 			return el('div', { class: 'bc ' + c.cls, role: 'columnheader', text: c.h });
 		}));
 	var body = rows.map(SourceRow);
-	return el('div', { class: 'board' }, [
+	/* role=table 不能省：行是 role=row、格是 columnheader/cell，
+	 * 没有 table 祖先的话屏幕阅读器会把这棵树当噪声。 */
+	return el('div', { class: 'board src', role: 'table' }, [
 		el('div', { class: 'board-scroll' }, [ head ].concat(body))
 	]);
 }
@@ -1445,6 +1452,9 @@ function TabBar(defs, current, onPick) {
 		var b = el('button', {
 			class: 'tab' + (on ? ' on' : ''),
 			type: 'button',
+			/* tabpanel 靠这两条和标签配对；面板那边也各有一个 id。 */
+			id: 'cfp-tab-' + d.id,
+			'aria-controls': 'cfp-pane-' + d.id,
 			role: 'tab',
 			'aria-selected': on ? 'true' : 'false',
 			tabindex: on ? '0' : '-1',
@@ -1625,14 +1635,27 @@ function regroupForm(mapnode) {
 	if (leftovers.length) {
 		var lb = el('div', { class: 'grp-b' });
 		leftovers.forEach(function (r) { lb.appendChild(r); });
-		wrap.appendChild(el('div', { class: 'grp open' }, [
-			el('div', { class: 'grp-h' }, [
-				el('i', { class: 'chev' }),
-				el('span', { class: 'grp-t', text: T('其它') }),
-				el('span', { class: 'grp-x', text: T('未归类字段') })
-			]),
-			lb
-		]));
+		/* 这一组以前既没有 tabindex/role，也没交 __apply —— 于是顶部
+		 * 「全部展开 / 收起」从来不管它，键盘也进不去。现在和其他组一样对待。 */
+		var lhead = el('div', { class: 'grp-h', tabindex: '0', role: 'button', 'aria-expanded': 'true' }, [
+			el('i', { class: 'chev' }),
+			el('span', { class: 'grp-t', text: T('其它') }),
+			el('span', { class: 'grp-x', text: T('未归类字段') })
+		]);
+		var lbox = el('div', { class: 'grp open' }, [ lhead, lb ]);
+		function lapply(v) {
+			lbox.className = 'grp' + (v ? ' open' : '');
+			lhead.setAttribute('aria-expanded', v ? 'true' : 'false');
+		}
+		lbox.__apply = lapply;
+		lhead.addEventListener('click', function () { lapply(!(lbox.className.indexOf('open') >= 0)); });
+		lhead.addEventListener('keydown', function (ev) {
+			if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') {
+				ev.preventDefault();
+				lapply(!(lbox.className.indexOf('open') >= 0));
+			}
+		});
+		wrap.appendChild(lbox);
 	}
 
 	/* 搬空之后把 form.js 那几个 section 壳子摘掉，避免留下一堆空标题 */
@@ -1729,8 +1752,11 @@ function pollGapSec() {
  * 绝不返回一个把榜单抹空的空壳 —— 除非手上本来就没东西可保。
  * gaveUp 之后 staleFor 归零且不再变，指纹就不会一直变、面板不会反复重建
  * （重建会换掉「重新读取」按钮节点，真实鼠标的点击有概率被吞掉）。 */
-function afterMiss(prev, hung) {
-	pollFail++;
+function afterMiss(prev, hung, manual) {
+	/* 用户亲手点一次「刷新」失败不该往「连着几次没读到」里记账：
+	 * 那是人在试探，不是链路在抖。不分开的话，多点四下就自己判了认输。 */
+	if (!manual)
+		pollFail++;
 	var worth = prev.state === 'running' || !!(prev.items && prev.items.length);
 	if (!worth || pollFail >= FAIL_GIVEUP) {
 		if (worth)
@@ -1758,18 +1784,25 @@ function afterMiss(prev, hung) {
  * 两次刷新叠在一起本身不会出错（写 store 是幂等的），但会把 ubus 请求翻倍。
  * 共享的前提是 inflight 一定会复位 —— runCmd 现在保证 settle（成功/被拒/超时三态），
  * 不会再出现一次 rpc 永不返回、之后所有刷新都拿到同一个死 promise 的情况。 */
-function refresh() {
+function refresh(manual) {
 	if (inflight)
 		return inflight;
 	var wasRunning = (store.get().status || {}).state === 'running';
-	store.set({ busy: Object.assign({}, store.get().busy, { refresh: true }) });
-	inflight = runCmd([ 'status' ], wasRunning ? CMD_LIMIT.status_running : 0).then(function (out) {
+	/* busy.refresh 只在**用户亲手点刷新**时置。轮询每一拍都翻它的话，
+	 * railKeyOf 里的 !!busy.refresh 会让读数条每拍重建两次 —— 重建换掉按钮节点，
+	 * 而 mousedown/mouseup 落在两颗节点上 Chromium 就不合成 click（r29 立的规矩）。
+	 * 真机打标实测过：轮询中每 2 秒采一次，按钮/灯/日志框十次里全都不是同一颗。 */
+	if (manual)
+		store.set({ busy: Object.assign({}, store.get().busy, { refresh: true }) });
+	/* 上限按「我们是否还在等这一轮」给，不按本地状态：认输之后本地状态被写成
+	 * unreachable，若因此退回 8 秒上限，慢链路上就会一直判超时（自我强化）。 */
+	inflight = runCmd([ 'status' ], (wasRunning || pollOn) ? CMD_LIMIT.status_running : 0).then(function (out) {
 		inflight = null;
 		var busy = Object.assign({}, store.get().busy, { refresh: false });
 		if (out === HUNG || out === null || out === undefined) {
 			/* 这里重新读一次 store 而不是用发请求前那份：等返回的这几秒里
 			 * actRun 可能已经把本地状态置成 running 了，用旧的会把它盖回去。 */
-			var miss = afterMiss(store.get().status || {}, out === HUNG);
+			var miss = afterMiss(store.get().status || {}, out === HUNG, !!manual);
 			store.set({ status: miss, busy: busy });
 			/* 关键：不停轮询。慢节奏心跳让页面在路由器恢复后自己跟上，
 			 * 而不是停在错误态等人按 F5。 */
@@ -1805,6 +1838,10 @@ function stopPoll() {
  * 为什么从 5 秒收到 3 秒：一轮实测约 140 秒（取源 45 / 探测 52 / 机房+吞吐 44），
  * 5 秒只能跳 28 下，进度条看着像卡住；一次 status 只是读文件加两次 fork，代价可忽略。 */
 function pollTick() {
+	/* L.poll 是 `e.r = false; Promise.resolve(fn()).finally(...)` —— 抛在返回之前
+	 * 就永远没有 finally，这一项从此不再被调用，而我们的 pollOn 还是 true，
+	 * startPoll 会早退不重登记：表现就是页面再也不刷新（r32 那个症状的另一种成因）。 */
+	try {
 	/* 测速期间把日志也一起带上：这一轮正在进行到哪一步，不该要人点一下才看到。
 	 * 轮询的生死全交给 refresh() 判：这里绝不能再「看到不是 running 就停机」——
 	 * 一次读不到就把心跳掐死，页面就永远回不来了（r32 的病根之一）。 */
@@ -1815,7 +1852,10 @@ function pollTick() {
 	/* 必须把 refresh 的 promise 交回去：L.poll 的重入守卫是
 	 * `Promise.resolve(fn()).finally(...)` 判的，返回 undefined 就等于让那个守卫
 	 * 空转 —— 它以为这一拍瞬间就完成了，下一照发，慢响应时请求会叠起来。 */
-	return refresh();
+		return refresh();
+	} catch (e) {
+		return Promise.resolve();
+	}
 }
 
 function startPoll() {
@@ -1905,7 +1945,7 @@ function actStop(btn) {
 
 function actRefresh(btn) {
 	setBusy(btn, true);
-	refresh().then(function () { setBusy(btn, false); },
+	refresh(true).then(function () { setBusy(btn, false); },
 		function () { setBusy(btn, false); });
 }
 
@@ -2157,6 +2197,9 @@ function boardKeyOf(st) {
 		 * 那一帧：r32 真机实测进度停在「拉取社区源 1/13」30 秒不动，而同一时刻引擎
 		 * 已经跑到 12/13 —— 看着就像「点了没反应 / 页面卡住」。 */
 		st.stage, st.stage_done, st.stage_total, st.upload,
+		/* SummaryStrip 读这几样，指纹里没有它们就等于允许面板停在旧数字上：
+		 * 改了「定时周期」后那格「完成于」的滞留告警永远不会刷新。 */
+		st.interval, st.started, st.pool, st.qualified, st.usable, st.domains,
 		/* 滞留秒数按 10 秒一档进指纹：横幅能更新，又不会每拍都重建面板；
 		 * 认输之后 staleFor 是 null，指纹彻底稳定，「重新读取」按钮不会被反复换掉。 */
 		Math.floor((st.staleFor || 0) / 10), st.gaveUp ? 1 : 0 ].join('|');
@@ -2164,6 +2207,10 @@ function boardKeyOf(st) {
 
 function buildPage(mapnode) {
 	var root = el('div', { class: 'cfp' });
+	/* 新的一次进页面，容错计数从零开始：否则上一次会话里攒下的失败会让这一页
+	 * 一打开就处在「快认输」的状态上。 */
+	pollFail = 0;
+	lastGoodAt = 0;
 	/* 建好就立刻判一次明暗：浅色那套令牌挂在 .cfp.is-light 上，
 	 * 类名晚一步加就会先闪一下暗底（首帧就在用户眼前）。 */
 	P.root = root;
@@ -2225,7 +2272,8 @@ function buildPage(mapnode) {
 	};
 
 	/* ---- 面板 1：榜单 ---- */
-	var boardPane = el('div', { class: 'pane' });
+	var boardPane = el('div', { class: 'pane', id: 'cfp-pane-board', role: 'tabpanel', tabindex: '0',
+		'aria-labelledby': 'cfp-tab-board' });
 	var boardKey = '';
 	function drawBoard(state) {
 		var key = boardKeyOf(state.status);
@@ -2239,7 +2287,8 @@ function buildPage(mapnode) {
 	}
 
 	/* ---- 面板 2：源与检测 ---- */
-	var srcPane = el('div', { class: 'pane' });
+	var srcPane = el('div', { class: 'pane', id: 'cfp-pane-sources', role: 'tabpanel', tabindex: '0',
+		'aria-labelledby': 'cfp-tab-sources' });
 	var lastSources = null;
 	var lastCheck = null;
 	var sourcesDrawn = false;
@@ -2256,13 +2305,13 @@ function buildPage(mapnode) {
 	}
 
 	/* ---- 面板 3：日志 ---- */
-	var logsPane = el('div', { class: 'pane' });
+	var logsPane = el('div', { class: 'pane', id: 'cfp-pane-logs', role: 'tabpanel', tabindex: '0',
+		'aria-labelledby': 'cfp-tab-logs' });
 	/* 日志现在是主动刷新的（进页面取一次、测速中每轮询一次再取），所以两件事都得处理：
 	 *   1) 内容和忙碌标记都没变就别动 DOM，别每 5 秒白白重画一次；
 	 *   2) 真有新内容进来时保住阅读位置 —— 原本贴着底就跟着新行继续贴底（像 tail -f），
 	 *      在中间看着的就不弹回顶部。 */
 	var lastLogsKey = null;
-	var lastLogsBusy = null;
 	var logsDrawn = false;
 	function logsKeyOf(lg) {
 		if (!lg)
@@ -2272,9 +2321,14 @@ function buildPage(mapnode) {
 		return 'ok:' + lg.text.length + ':' + lg.text.slice(-60);
 	}
 	function drawLogs(state) {
-		var busyLogs = !!(state.busy && state.busy.logs);
 		var key = logsKeyOf(state.logs);
-		if (logsDrawn && key === lastLogsKey && busyLogs === lastLogsBusy)
+		if (logsDrawn && key === lastLogsKey)
+			return;
+		/* 面板不在眼前就别重画。两个理由：一是白重画（看不见，日志一屏上千个节点）；
+		 * 二是隐藏时 scrollTop/clientHeight 都读成 0，「贴底就跟着贴底」的判断会恒真，
+		 * 把用户之前读到的位置冲掉。这里**不**更新 lastLogsKey，所以切回这一页时
+		 * store 一变就会再进来画一次。 */
+		if (String(logsPane.className).indexOf('on') < 0)
 			return;
 		var box = logsPane.querySelector ? logsPane.querySelector('.logbox') : null;
 		var keepTop = 0;
@@ -2285,7 +2339,6 @@ function buildPage(mapnode) {
 		}
 		logsDrawn = true;
 		lastLogsKey = key;
-		lastLogsBusy = busyLogs;
 		clear(logsPane);
 		logsPane.appendChild(LogsPane(state.logs, { refresh: actLogs, copy: actCopyLogs }));
 		var fresh = logsPane.querySelector ? logsPane.querySelector('.logbox') : null;
@@ -2294,7 +2347,8 @@ function buildPage(mapnode) {
 	}
 
 	/* ---- 面板 4：配置 ---- */
-	var cfgPane = el('div', { class: 'pane' });
+	var cfgPane = el('div', { class: 'pane', id: 'cfp-pane-config', role: 'tabpanel', tabindex: '0',
+		'aria-labelledby': 'cfp-tab-config' });
 	var cfg = ConfigPane();
 	cfgPane.appendChild(cfg.node);
 

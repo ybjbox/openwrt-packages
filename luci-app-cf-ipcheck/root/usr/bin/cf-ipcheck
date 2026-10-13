@@ -38,6 +38,15 @@ RESULT_KEEP=$ETC_DIR/result.json
 # 最坏耗时就会顶穿 rpcd 对 file.exec 的超时（页面表现是"检测失败"）。
 CFNETS=$ETC_DIR/cf-nets.txt
 CFNETS_TTL=21600
+
+# 单源聚合闸（见 pool_community 的注释）。expand_prefixes 自己限住了"一条前缀最多
+# 展开成多少个 /24"，但那只是**逐条**的闸：一条被换掉或伪造的源可以列几百条 /12，
+# 逐条合规、加起来是几百万行，全灌进一个 shell 变量 —— 路由器会被自己的候选池撑爆，
+# 表现是这一轮莫名失败，而日志里看不出为什么。所以再加两道总量闸：响应字节、
+# 展开行数。取样均匀性由后面的 sample_lines 负责，这里只管把最坏情况钉死。
+CF_SRC_MAXBYTES=2097152
+CF_SRC_MAXPREFIX=512
+CF_SRC_MAXLINES=8000
 LOG=$RUN_DIR/cf-ipcheck.log
 # 运行进度：单行 `<阶段> 已完成 总数`，页面画分环节清单时只在 state=running 时读它。
 # 只在本来就便宜的地方写（每条源一次、每批探测一次、每个 colo/吞吐一次）；
@@ -530,7 +539,9 @@ pool_community() {
 	pdone=0
 	for s in $SOURCES; do
 		out=$(curl -4 -fsSL --max-time 12 -A 'cf-ipcheck/1.0' "$s" 2>/dev/null | \
-			grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?' | expand_prefixes)
+			head -c "$CF_SRC_MAXBYTES" | \
+			grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?' | \
+			head -n "$CF_SRC_MAXPREFIX" | expand_prefixes | head -n "$CF_SRC_MAXLINES")
 		pdone=$((pdone + 1))
 		progress_set fetch $pdone $ptotal
 		if [ -z "$out" ]; then
@@ -1054,10 +1065,25 @@ upload_gist() {
 		tok=$(cat "$C_TOKEN")
 	fi
 	[ -n "$tok" ] || { log 'token 是空串，跳过上传'; return 1; }
+	# 令牌绝不能出现在 curl 的命令行里：/proc/<pid>/cmdline 在这台机器上是全世界可读的
+	# （真机实测：以 nobody 身份 grep /proc/<pid>/cmdline 能读到测试令牌，而 nobody 正是
+	# 本引擎探测用的身份）。所以走 curl 的 `--config -`，从标准输入喂配置，
+	# 令牌既不进 argv 也不落盘。
+	# 但 curl 的配置文件是 `header = "值"` 这种双引号结构 —— 值里带引号、反斜杠或换行
+	# 就能把结构改掉，那不再只是泄露而是往 curl 的选项里注入东西了。GitHub 的令牌
+	# （经典 40 位十六进制 / fine-grained 的 github_pat_ 前缀）都在「字母数字加 _ . -」里，
+	# 所以先按这个字符集卡一道；卡不住就当没配置，宁可不传也不能拼出一个能被改写的结构。
+	case "$tok" in
+		''|*[!A-Za-z0-9_.-]*)
+			log 'gist 令牌含非法字符（只允许字母、数字和 _ . -），跳过上传'
+			return 1
+			;;
+	esac
 	content=$(json_escape_file "$BEST")
 	payload=$(printf '{"files":{"%s":{"content":%s}}}' "$C_GISTFILE" "$content")
-	if curl -4 -fsS -X PATCH "https://api.github.com/gists/$C_GIST" \
-		-H "Authorization: Bearer $tok" \
+	if printf 'header = "Authorization: Bearer %s"\n' "$tok" | \
+		"${CURL_BIN:-curl}" -4 -fsS -X PATCH "https://api.github.com/gists/$C_GIST" \
+		--config - \
 		-H 'Accept: application/vnd.github+json' \
 		-H 'Content-Type: application/json' \
 		--data-binary "$payload" >/dev/null 2>&1; then
@@ -1718,6 +1744,53 @@ selftest() {
 	rm -f "$LOG"
 	LOG=$log_real
 	rm -f "$RUN_DIR/selftest.log" "$RUN_DIR/selftest.log.tmp"
+
+	# 单源聚合闸：伪造一条「列了 600 个 /12」的源。逐条看每条都合规（4096 个 /24），
+	# 加起来却是两百多万行 —— 没有总量闸时这些全进一个 shell 变量，路由器会被自己的
+	# 候选池撑爆（OOM 杀掉这一轮，页面上只看到「本轮失败」，查不到原因）。
+	flood=''
+	fi=0
+	while [ "$fi" -lt 600 ]; do
+		flood="$flood
+10.$((fi % 250)).0.0/12"
+		fi=$((fi + 1))
+	done
+	floodn=$(printf '%s\n' "$flood" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?' | \
+		head -n "$CF_SRC_MAXPREFIX" | expand_prefixes | head -n "$CF_SRC_MAXLINES" | grep -c .)
+	check '洪水源被聚合闸截到上限内（head 提前关管，awk 随即收手）' \
+		"$([ "$floodn" -gt 0 ] 2>/dev/null && [ "$floodn" -le "$CF_SRC_MAXLINES" ] && echo ok || echo "越界:$floodn")" 'ok'
+	check '洪水源确实被截了（不是闸没生效、恰好展开得少）' \
+		"$([ "$floodn" = "$CF_SRC_MAXLINES" ] && echo truncated || echo "unexpected:$floodn")" 'truncated'
+
+	# 令牌泄露防线。/proc/<pid>/cmdline 在这台机器上是全世界可读的（真机实测：以 nobody
+	# 身份 grep /proc/<pid>/cmdline 能读到测试令牌，而 nobody 正是本引擎探测用的身份），
+	# 所以令牌只能走 `--config -` 从 stdin 进 curl，绝不允许出现在 argv 里。
+	# 用一个假 curl 把 argv 与 stdin 各抄一份来验。
+	STUB_ARGV=$ST_SCRATCH/stub-argv.txt
+	STUB_STDIN=$ST_SCRATCH/stub-stdin.txt
+	export STUB_ARGV STUB_STDIN
+	printf '#!/bin/sh\n: > "$STUB_ARGV"\nfor a in "$@"; do printf "%%s\\n" "$a" >> "$STUB_ARGV"; done\ncat > "$STUB_STDIN"\nexit 0\n' > "$ST_SCRATCH/curl-stub"
+	chmod +x "$ST_SCRATCH/curl-stub" 2>/dev/null
+	tokcnt() { if [ -f "$1" ]; then grep -c -- "$2" "$1"; else echo 0; fi; }
+	printf '1.1.1.1:443\n' > "$BEST"
+	CURL_BIN=$ST_SCRATCH/curl-stub
+	C_GIST=gistidforselftest
+	C_GISTFILE=cf-ip.txt
+	C_TOKEN=$ST_SCRATCH/definitely-no-such-file
+	C_GISTTOK=SUPERSECRETtoken40characters0000000000000
+	upload_gist >/dev/null 2>&1
+	check '令牌不出现在 curl 的 argv 里（cmdline 全世界可读）' "$(tokcnt "$STUB_ARGV" SUPERSECRET)" '0'
+	check '令牌改从 stdin 的配置进（--config - 这条路真的走通）' "$(tokcnt "$STUB_STDIN" SUPERSECRET)" '1'
+	check '上传请求本身确实发了' "$(tokcnt "$STUB_ARGV" PATCH)" '1'
+	# 字符集闸门：curl 配置文件是 header = "值" 的双引号结构，值里带引号/换行能把结构改掉，
+	# 那就不只是泄露而是往 curl 的选项里注入。GitHub 令牌都在「字母数字 _ . -」里，卡住它。
+	C_GISTTOK='bad"token\nx'
+	: > "$STUB_ARGV"
+	upload_gist >/dev/null 2>&1
+	check '含引号/换行的令牌被字符集闸拦住，不交给 curl' "$(tokcnt "$STUB_ARGV" PATCH)" '0'
+	check '被拦下时日志说了原因' "$(grep -c '含非法字符' "$LOG" 2>/dev/null)" '1'
+	unset CURL_BIN
+	C_GISTTOK=''
 
 	if [ -n "$ST_SCRATCH" ]; then
 		rm -rf "$ST_SCRATCH"
