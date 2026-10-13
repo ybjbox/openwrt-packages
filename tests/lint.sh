@@ -627,6 +627,15 @@ if [ -f "$VIEW" ]; then
         echo "[FAIL] poll: 视图没走 L.poll（缺 'require poll' 或没有 poll.add）"
         rl13=1
     fi
+    # luci.js 的 add() 只在「起过表又停了」时才顺手起表，首次登记只入队不起表。
+    # 光 poll.add 不加 poll.start，页面自己那一拍可能根本不跳（真机上是被框架
+    # 别处的 start() 带起来的 —— 那是运气，不是设计）。
+    if grep -vE '^[[:space:]]*[\*/]' "$VIEW" | grep -q 'poll.start('; then
+        echo "[PASS] poll: 登记之后自己调了 poll.start"
+    else
+        echo "[FAIL] poll: 只 poll.add 不 poll.start —— 首次登记不会自己起表"
+        rl13=1
+    fi
     if [ "$rl13" = 1 ]; then
         fail=1
     else

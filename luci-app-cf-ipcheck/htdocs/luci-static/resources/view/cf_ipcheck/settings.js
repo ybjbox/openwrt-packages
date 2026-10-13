@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r37';
+var VIEW_BUILD = 'r38';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -1825,6 +1825,11 @@ function startPoll() {
 	if (pollOn)
 		poll.remove(pollTick);
 	poll.add(pollTick, want);
+	/* 必须显式 start：luci.js 的 add() 只在「已经起过表又停了」的情况下才顺手起，
+	 * 首次登记时 this.tick 还是 undefined，它就只是把条目塞进队列 —— 表不转。
+	 * 我们这次真机上是被框架别处的 poll.start() 带起来的，那不该是依赖。
+	 * start() 对已在跑的表是幂等的（active 就返回 false）。 */
+	poll.start();
 	pollOn = true;
 	pollSec = want;
 }

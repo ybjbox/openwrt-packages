@@ -279,21 +279,47 @@ const windowStub = {
 	isSecureContext: false
 };
 
-/* L.poll 桩：镜像真机 luci.js 里的单例语义 —— 间隔单位是**秒**、按函数身份去重
- * （同一个 fn 重复 add 返回 false）、remove 撤登记、start/stop 是全局暂停。
- * 不镜像这些，测试就测不到「改节奏必须先 remove」这类真会踩的坑。 */
+/* L.poll 桩：镜像真机 luci.js 里那个单例的语义，连**怪癖**一起镜像 ——
+ * add() 只在「起过表又停了」的情况下才顺手起表，首次登记只入队不起表。
+ * 不这样写，视图忘了 poll.start() 也能把测试骗过去（真机上反而是被框架
+ * 别处的 start() 带起来的，那不该是依赖）。间隔单位是秒、按函数身份去重、
+ * remove 撤登记，也都照抄。 */
 const pollEntries = new Map();
-let pollRunning = true;
+let pollTimerOn = false;
+let pollEverStarted = false;
 const pollStub = {
 	add(fn, sec) {
-		if (pollEntries.has(fn)) return false;
+		if (pollEntries.has(fn))
+			return false;
 		pollEntries.set(fn, (sec == null || sec <= 0) ? 5 : sec);
+		if (pollEverStarted && !pollTimerOn)
+			pollTimerOn = true;
 		return true;
 	},
-	remove(fn) { return pollEntries.delete(fn); },
-	start() { pollRunning = true; },
-	stop() { pollRunning = false; },
-	active() { return pollRunning; }
+	remove(fn) {
+		const had = pollEntries.delete(fn);
+		if (!pollEntries.size && pollTimerOn)
+			pollTimerOn = false;
+		return had;
+	},
+	start() {
+		if (pollTimerOn)
+			return false;
+		pollTimerOn = true;
+		pollEverStarted = true;
+		return true;
+	},
+	stop() {
+		if (!pollTimerOn)
+			return false;
+		pollTimerOn = false;
+		return true;
+	},
+	active() { return pollTimerOn; },
+	/* 回到「这个页面从没起过表」的初始态。不起这个的话，前面某次 startPoll 已经把
+	 * pollEverStarted 置真，桩里的 add() 就会顺手起表，"视图忘调 poll.start" 这条
+	 * 断言会被自己的桩蒙混过去。 */
+	__reset() { pollEntries.clear(); pollTimerOn = false; pollEverStarted = false; }
 };
 const pollSecOf = (fn) => (pollEntries.has(fn) ? pollEntries.get(fn) : null);
 const livePolls = () => pollEntries.size;
@@ -1305,13 +1331,17 @@ ok('排查话术点名是哪个方法', /logs/.test(why));
  * 24. 轮询交给官方 L.poll：登记唯一、改节奏不重复、停机后能再开
  * ================================================================== */
 t.store.set({ status: { state: 'running', stage: 'probe', stage_done: 1, stage_total: 9, items: [] }, busy: {} });
-pollEntries.clear();
+pollStub.__reset();
 t.startPoll();
 t.startPoll();
 t.startPoll();
 eq('连着开三次也只登记一份（L.poll 按函数身份去重，我们也自己拦）', livePolls(), 1);
 eq('登记的间隔就是正常节奏', pollSecOf(t.pollTick), t.POLL_SEC);
+ok('startPoll 之后全局表确实在转（视图自己调了 poll.start，不靠框架别处带）',
+	pollStub.active() === true);
 t.stopPoll();
+ok('stopPoll 连表一起停（不留一个空转的全局定时器拖累别的页面）',
+	pollStub.active() === false);
 eq('停轮询是撤登记，不是留着不管', livePolls(), 0);
 t.startPoll();
 eq('停了之后还能重新开起来', pollSecOf(t.pollTick), t.POLL_SEC);
