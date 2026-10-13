@@ -28,7 +28,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r33';
+var VIEW_BUILD = 'r34';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -670,7 +670,12 @@ var CMD_LIMIT = {
 	status_running: 20000,
 	'run-now': 10000,
 	stop: 8000,
-	'check-sources': 120000,
+	/* 逐条实拉确实慢，但上限不能随口给大数：rpcd 对**每一次** exec 有平台级超时
+	 * （真机 /etc/config/rpcd 的 option timeout 30，rpcd 源码里可调到最大 600），
+	 * 到点它就把命令掐了并回一个响应，所以客户端等再久也等不到「更完整的结果」。
+	 * 引擎那边已经把最坏耗时压进 30 秒（段表 4 秒 + 一批 8 秒），这里给 45 秒
+	 * 只是给这条连接留出抖动余量，不是指望它跑一分钟。 */
+	'check-sources': 45000,
 	/* 读日志只是 tail 一个本地文件（真机实测最慢 0.48 秒），6 秒已经很宽裕。
 	 * 这里必须**小于** status 的上限：LuCI 的 rpc 层会把同一拍发出的调用并进一个
 	 * POST（真机抓到过：一个请求体里同时带 logs 与 status），响应要等两条都跑完
@@ -1559,7 +1564,7 @@ function srcMessage(src) {
 		case 'unreachable':
 			return T('检测没跑成：无法执行 %s（包没装好、可执行位丢失，或 rpcd 的 ACL 没放开 exec）。').format(CMD);
 		case 'hung':
-			return T('检测没有回应：路由器在 %s 秒内没返回。逐条实拉本来就慢，若每次都这样，先确认这台电脑能正常打开路由器后台。').format(Math.round(CMD_LIMIT['check-sources'] / 1000));
+			return T('检测没有回应：路由器在 %s 秒内没返回。引擎这一项最坏约 12 秒（每条源 8 秒上限、13 条一批并发），比这更慢就是这台电脑到路由器的路有问题；另外平台侧 rpcd 的 exec 超时是 30 秒，真超了会被掐断，那时页面会报「输出不是合法 JSON」而不是这一句。').format(Math.round(CMD_LIMIT['check-sources'] / 1000));
 		case 'parse_error':
 			return T('检测返回的内容不是合法 JSON。原文片段：%s').format(String(src.raw || '').slice(0, 160));
 		case 'empty':
@@ -1966,7 +1971,7 @@ function afterMiss(prev, hung) {
 		if (worth)
 			flash(T('读取状态没有回应'),
 				T('连着 %s 次都没等到路由器返回。最后一次读到的榜单还在下面，页面每 %s 秒仍会自动重试一次，恢复了会自己跟上。').format(pollFail, Math.round(POLL_SLOW_MS / 1000)),
-				'bad');
+				'bad', 1);
 		return Object.assign({}, prev, {
 			state: 'unreachable',
 			reason: hung ? 'hung' : null,
@@ -1977,7 +1982,7 @@ function afterMiss(prev, hung) {
 	if (pollFail >= FAIL_STALE) {
 		var secs = lastGoodAt ? Math.max(1, Math.round((Date.now() - lastGoodAt) / 1000)) : 1;
 		flash(T('读取状态没有回应'),
-			T('页面停在 %s 秒前的读数上，后台继续重试，不用刷新页面。').format(secs), 'warn');
+			T('页面停在 %s 秒前的读数上，后台继续重试，不用刷新页面。').format(secs), 'warn', 1);
 		return Object.assign({}, prev, { staleFor: secs });
 	}
 	/* 只丢了一拍：什么都不改，也不弹提示（下一拍大概率就回来了，弹一句反而吓人） */
@@ -2216,32 +2221,42 @@ function actCopyLogs(btn) {
 	});
 }
 
-/* 页内提示：这版 LuCI 没有 toast，优先用官方的（若存在），否则写横幅 */
+/* 页内提示。两条通道按「这句话是一次性事件还是一直成立的状态」分：
+ *   一次性事件（点了按钮、复制成功、命令被拒）→ 官方的限时通知条
+ *     `ui.addTimeLimitedNotification(title, node, ms, ...classes)`，它渲染成主题化的
+ *     `.alert-message`、带关闭按钮、自己消失，样式跟着 Argon/bootstrap 走；
+ *   持续状态（读数滞留、这一轮失败）→ 页内横幅，因为它要跟着 store 原地改写，
+ *     而通知条是一次性的、不会随状态变化更新，两条并排还会互相盖掉。
+ * ⚠️ 这里早先试的是 `ui.addToast` / `ui.toast` —— 官方 LuCI（master / 25.12 / 24.10 /
+ * 19.07 全查过）**没有**这两个方法，只有厂商分支才有；真机 ui.js 里 grep 命中 0，
+ * 而 addTimeLimitedNotification 命中 2。也就是说那两条分支永远不会成立，
+ * 页面一直靠兜底横幅在说话。lint 的 red-line-10 现在钉住「视图只许调用官方存在的
+ * ui.* 方法」，防止再照着别的发行版的例子写一个不存在的 API。 */
 var flashTimer = null;
 
-function flash(title, text, tone) {
-	var used = false;
-	try {
-		if (ui && typeof ui.addToast === 'function') {
-			ui.addToast(title, text, tone || 'info');
-			used = true;
-		} else if (ui && typeof ui.toast === 'function') {
-			ui.toast(tone || 'info', title, text);
-			used = true;
+function flash(title, text, tone, sticky) {
+	var banner = {
+		title: title, text: text,
+		tone: tone === 'bad' ? 'bad' : (tone === 'warn' ? 'warn' : (tone === 'ok' ? 'ok' : ''))
+	};
+	if (!sticky && ui && typeof ui.addTimeLimitedNotification === 'function') {
+		try {
+			ui.addTimeLimitedNotification(title, el('span', { text: text }), 6000,
+				tone === 'bad' ? 'danger' : (tone === 'warn' ? 'warning' : (tone === 'ok' ? 'success' : 'info')));
+			return;
+		} catch (e) {
+			/* 官方 API 在个别版本上签名不一致（老版是 showNotification 四参），
+			 * 抛了就退回页内横幅 —— 提示绝不能因为通道挑不上就整个不见。 */
 		}
-	} catch (e) {
-		used = false;
 	}
-	/* 即便有 toast 也写一次横幅：真机那版（26.249）两个 API 都不在，
-	 * 而这两条分支在别的版本上会成功，横幅只是兜底，不冲突。 */
-	store.set({ flash: { title: title, text: text, tone: tone === 'bad' ? 'bad' : (tone === 'warn' ? 'warn' : (tone === 'ok' ? 'ok' : '')) } });
+	store.set({ flash: banner });
 	if (flashTimer)
 		clearTimeout(flashTimer);
 	if (typeof setTimeout === 'function')
 		flashTimer = setTimeout(function () {
 			flashTimer = null;
 			store.set({ flash: null });
-		}, used ? 1000 : 9000);
+		}, 9000);
 }
 
 /* 复制：优先 navigator.clipboard，退回 execCommand（老 LuCI 与 http 下前者常不可用） */

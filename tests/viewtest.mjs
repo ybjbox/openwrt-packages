@@ -46,6 +46,7 @@ const hook = "\nglobalThis.__cf_t = {\n" +
 	"\trailKeyOf: railKeyOf, boardKeyOf: boardKeyOf,\n" +
 	"\tlogsRefresh: logsRefresh,\n" +
 	"\trefresh: refresh, startPoll: startPoll, stopPoll: stopPoll, afterMiss: afterMiss,\n" +
+	"\tflash: flash,\n" +
 	"\tget pollFail() { return pollFail; }, pollGap: pollGap,\n" +
 	"\tPOLL_MS: POLL_MS, POLL_SLOW_MS: POLL_SLOW_MS,\n" +
 	"\tFAIL_STALE: FAIL_STALE, FAIL_GIVEUP: FAIL_GIVEUP,\n" +
@@ -296,7 +297,19 @@ const formStub = {
 	DynamicList: 'DynamicList'
 };
 
-const uiStub = { addToast: noop, toast: noop };
+/* ui 桩只放**官方 LuCI 真有的**方法。早先这里给的是 addToast/toast —— 那两个
+ * 方法官方从来没有（是厂商分支的），桩件照着写就等于替视图把一条永远不成立的分支
+ * 测成"绿的"。现在按真机 ui.js 的实际 API 面来，并且留一个开关（置 undefined）
+ * 用来模拟"这个版本没有该 API"，好测兜底路径。 */
+const notifications = [];
+let notifyImpl = function (title, body, ms, cls) {
+	notifications.push({ title: String(title), text: textOf(body), ms: ms, cls: cls });
+};
+const uiStub = {
+	get addTimeLimitedNotification() { return notifyImpl; },
+	addNotification: function (title, body) { notifications.push({ title: String(title), text: textOf(body), ms: 0, cls: '' }); },
+	showModal: noop, hideModal: noop, showIndicator: noop, hideIndicator: noop
+};
 /* 定时器做成登记表而不是 () => 0：默认依然永不触发（与旧桩行为一致，异步合帧的
  * 订阅在测试里不会莫名跑起来），但「挂住到超时」这类分支能被测试亲手点亮。 */
 const timers = [];
@@ -821,7 +834,8 @@ ok('忙碌态不再只靠降透明度', !/\.cfp button\.busy\{pointer-events:non
  * ================================================================== */
 eq('status 的等待上限是 8 秒', t.CMD_LIMIT.status, 8000);
 eq('run-now 的等待上限是 10 秒', t.CMD_LIMIT['run-now'], 10000);
-eq('check-sources 给到 120 秒（逐条联网实拉，慢是正常的）', t.CMD_LIMIT['check-sources'], 120000);
+eq('check-sources 给 45 秒（引擎最坏约 12 秒；rpcd 的 exec 超时是 30 秒，客户端等更久也等不到更完整的结果）',
+	t.CMD_LIMIT['check-sources'], 45000);
 /* LuCI 的 rpc 会把同一拍的调用并进一个 POST（真机抓到过 logs 与 status 同体），
  * 响应要等两条都跑完；logs 的上限一旦大过 status，一次慢日志就把 status 拖成
  * 「没有回应」。这条大小关系是硬约束，钉住。 */
@@ -1147,6 +1161,36 @@ eq('滞留只影响灯色一次：读数条指纹只认有没有滞留',
 	t.railKeyOf(Object.assign({}, pf, { staleFor: 300 }), {}));
 eq('读数条指纹认得出「开始滞留」', t.railKeyOf(pf, {}) ===
 	t.railKeyOf(Object.assign({}, pf, { staleFor: 3 }), {}), false);
+
+/* ================================================================== *
+ * 22. 提示的通道：瞬时事件走官方通知条，常驻状态走页内横幅
+ * 官方 LuCI 没有 ui.addToast / ui.toast（那是厂商分支的 API，真机 ui.js 命中 0），
+ * 确实存在的是 ui.addTimeLimitedNotification(title, node, ms, ...classes)。
+ * 分通道的理由：通知条是一次性的、不会随状态变化改写，所以「读数滞留」这种
+ * 要原地更新的话必须留在页内横幅里。
+ * ================================================================== */
+t.store.set({ flash: null });
+notifications.length = 0;
+t.flash('已启动一轮测速', '引擎说这一轮开始了', 'ok');
+eq('瞬时事件走官方限时通知', notifications.length, 1);
+eq('通知条标题就是这句话', notifications[0].title, '已启动一轮测速');
+eq('通知条正文是节点不是裸串', notifications[0].text, '引擎说这一轮开始了');
+eq('通知条 6 秒自动消失', notifications[0].ms, 6000);
+eq('语义色翻成主题的样式类', notifications[0].cls, 'success');
+eq('走了通知条就不再占页内横幅', String(t.store.get().flash), 'null');
+
+t.flash('读取状态没有回应', '页面停在 46 秒前的读数上', 'warn', 1);
+eq('常驻状态仍写页内横幅（要能跟着 store 原地更新）', t.store.get().flash.tone, 'warn');
+eq('常驻状态不去挤通知条', notifications.length, 1);
+
+notifyImpl = undefined;         /* 模拟老版本 LuCI 没有这个 API */
+t.store.set({ flash: null });
+t.flash('复制失败', '浏览器不让写剪贴板', 'warn');
+eq('没有官方 API 时退回页内横幅', t.store.get().flash.title, '复制失败');
+eq('退回的横幅照样带上语义色', t.store.get().flash.tone, 'warn');
+notifyImpl = function (title, body, ms, cls) {
+	notifications.push({ title: String(title), text: textOf(body), ms: ms, cls: cls });
+};
 
 console.log(fails === 0 ? '=== view 渲染断言全部通过' : `=== view 渲染断言失败 ${fails} 项`);
 process.exit(fails === 0 ? 0 : 1);

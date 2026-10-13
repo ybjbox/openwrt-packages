@@ -484,14 +484,17 @@ net_cache_fresh() { # $1=写入秒 $2=现在秒 -> 0=还能用
 	[ "$(($2 - $1))" -lt "$CFNETS_TTL" ] 2>/dev/null
 }
 
-# cf_nets -> stdout: 空格分隔的 CIDR（一条都没有时输出空）
+# cf_nets <联网上限秒，默认 8> -> stdout: 空格分隔的 CIDR（一条都没有时输出空）
+# 为什么要能把联网时间调小：页面「源可用性检测」是同步等这个结果的，而 rpcd 的
+# exec 有平台级超时（/etc/config/rpcd 的 option timeout 30，真机实测），
+# 超了就被掐断、页面拿到半截 JSON。调用方按自己的总预算给这个数。
 cf_nets() {
 	now=$(date +%s)
 	if net_cache_fresh "$(head -n 1 "$CFNETS" 2>/dev/null | tr -cd '0-9')" "$now"; then
 		sed -n '2p' "$CFNETS" 2>/dev/null | sed -e 's/[ \t]*$//'
 		return 0
 	fi
-	nets=$(curl -4 -fsS --max-time 8 https://api.cloudflare.com/client/v4/ips 2>/dev/null | \
+	nets=$(curl -4 -fsS --max-time "${1:-8}" https://api.cloudflare.com/client/v4/ips 2>/dev/null | \
 		official_cidrs | tr '\n' ' ' | sed -e 's/[ \t]*$//')
 	if [ -n "$nets" ]; then
 		# 缓存写不下去绝不能拖死这一轮：写重定向失败是 shell 级错误，所以放进
@@ -825,6 +828,11 @@ cf_count_in() {
 # 每条输出 HTTP 状态 / 提取到多少个 IPv4 / 其中多少个落在 CF 官方段内。
 # 段内占比是收录标准 —— 哪条源改路径了、哪条开始吐非 Cloudflare 的中转 IP，
 # 在这里一眼就能看到（页面「源可用性检测」读的就是这个输出）。
+#
+# 总耗时预算（真机量过：13 条源全健康 2.7 秒）：这个命令是页面按钮**同步等**的，
+# 而 rpcd 的 exec 超时是平台级的 30 秒（/etc/config/rpcd option timeout 30），
+# 超了就被掐断，页面拿到的是半截数组 —— 看着像「引擎输出不是合法 JSON」。
+# 所以最坏耗时必须留在 30 秒里：段表 4 秒 + 一批 8 秒 = 12 秒（源数 ≤13 时）。
 check_one_source() { # $1=url $2=序号 —— 结果写进 $RUN_DIR/cs.out.<序号>
 	body=$RUN_DIR/cs.body.$2
 	# max-time 8：这是页面按钮同步等的东西，最坏耗时 = 批大小 × 超时，
@@ -846,12 +854,17 @@ check_one_source() { # $1=url $2=序号 —— 结果写进 $RUN_DIR/cs.out.<序
 }
 
 # 并发是必须的：串行 13 个源最坏要 13×8 秒，页面上转圈转得人怀疑人生。
-# 6 个一批是拿最大耗时换的：13 个源 = 3 批 ≈ 24 秒内一定出结果。
+# 一批 13 条（不是早先的 6）：批大小直接决定最坏耗时 = ceil(源数/批) × 8 秒，
+# 6 条一批时 13 个源要 3 批 = 24 秒，加上段表联网就顶到 rpcd 的 30 秒红线外头；
+# 13 条一批把 13 个源压成一批，最坏 8 秒。同时开 13 条小请求比探测阶段
+# （默认并发 8 条、每条 5 秒超时）还轻，不会把路由器压出别的症状。
 check_sources() {
 	load_config
 	i=0
 	n=0
-	CF_NETS=$(cf_nets)
+	# 段表只给 4 秒：它是这命令里唯一「顺带联网」的一步，拉不到就整列记 -1，
+	# 比因为总耗时超了被 rpcd 掐断、连 13 条源的结果一起丢掉有用。
+	CF_NETS=$(cf_nets 4)
 	export CF_NETS
 	[ -n "$CF_NETS" ] || log '拿不到官方网段（也没有缓存），段内占比一律记 -1'
 	for s in $SOURCES; do
@@ -859,7 +872,7 @@ check_sources() {
 		n=$((n + 1))
 		check_one_source "$s" "$n" &
 		i=$((i + 1))
-		[ "$i" -ge 6 ] && { wait; i=0; }
+		[ "$i" -ge 13 ] && { wait; i=0; }
 	done
 	wait
 
