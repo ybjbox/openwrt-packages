@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r41';
+var VIEW_BUILD = 'r42';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -1290,7 +1290,7 @@ function SourcesPane(src, actions) {
 	})));
 
 	kids.push(el('p', { class: 'note' },
-		T('改完点「保存并检测」：先把清单写进配置，再逐条实拉。这一步只【保存】、不【应用】，所以不重启服务、也不会顺手起一轮；但它没走「应用」，设备重启后会回到上次应用的那份清单 —— 要长期生效请再到「配置」页点一次「保存并应用」。')));
+		T('改完点「保存并检测」：只把【这一项】源清单写进配置，再逐条实拉，不会顺带动到配置页里其他还没应用的改动。它只【保存】、不【应用】，所以不重启服务、也不会顺手起一轮；但因为没走「应用」，设备重启后会回到上次应用的那份清单 —— 要长期生效请再到「配置」页点一次「保存并应用」。')));
 
 	if (!src) {
 		/* 还没点过检测：说清这一页是干嘛的，并给按钮 */
@@ -1547,9 +1547,8 @@ var GROUP_OPTIONS = {
 	gist:  [ 'upload_gist', 'gist_id', 'gist_file', 'gist_token', 'token_file' ]
 };
 
-/* 不参与「配置」分组的字段：源清单的编辑行搬到「源与检测」页去（见 relocateSourceEditor）。
- * 它仍然属于同一张 Map、同一条保存链路，只是长在了另一块面板上。 */
-var EDIT_ONLY_OPTIONS = { community_sources: true };
+/* 注：community_sources 不在上面任何一组 —— 它根本不在配置页那张 Map 里声明，
+ * 而是由 sourcesMap() 单开一张 Map 渲染到「源与检测」页（见 6b 的真机取证注释）。 */
 
 var GROUPS_KEY = 'cf-ipcheck.groups.';
 
@@ -1654,16 +1653,8 @@ function regroupForm(mapnode) {
 	/* 认不出归属的行（以后加了新 option 就会落到这里）单独兜一组，
 	 * 保证「一个字段都不会因为重组而消失」。 */
 	rows.forEach(function (r) {
-		if (used.indexOf(r) >= 0)
-			return;
-		/* 源清单那一行不归配置页管（它要被搬去源面板）：兜进「其它」反而会出现两份。
-		 * 万一宿主不在（比如拼装顺序变了），它就留在 form.js 原来渲染的位置上，
-		 * 字段不会丢 —— 宁可长错地方，不可看不见。 */
-		var lab = r.querySelector('label[for]');
-		var key = lab && lab.htmlFor ? String(lab.htmlFor).split('.').pop() : '';
-		if (EDIT_ONLY_OPTIONS[key])
-			return;
-		leftovers.push(r);
+		if (used.indexOf(r) < 0)
+			leftovers.push(r);
 	});
 	if (leftovers.length) {
 		var lb = el('div', { class: 'grp-b' });
@@ -1716,51 +1707,48 @@ function regroupForm(mapnode) {
 }
 
 /* ==========================================================================
- * 6b. 把「社区优选源 URL」那一行搬到「源与检测」页
+ * 6b. 源清单的编辑：一张【只装这一项的 Map】挂在「源与检测」页里
  * ==========================================================================
- * r41 按 Ryan 的要求把源编辑与源检测并成一页。为什么能这么搬：
- * LuCI 的 Map.parse() 走 this.children → section → option，每个 option 用
- * 【自己持有的控件对象】取值（formvalue() → this.input.get()），不看节点在文档里的
- * 位置 —— 所以行搬到别的面板，保存链路照旧。r26 在真机 A/B 证过同一件事
- * （把整张 map 搬出原位照样存得进）。
- * 反过来说，这份 DynamicList 全程只有这一份：绝不在两个面板各渲染一遍 ——
- * 同 cbid 的控件出现两份就是两个出处，改一处、存另一处。
+ * r41 第一版是把配置页那张 Map 里渲染好的 .cbi-value 整行搬来 —— 真机证明这条路不通：
+ * 搬过来那一行里的 DynamicList 是空的（items=0），点保存时 uci.set 的请求体里
+ * 根本没有 community_sources（r41 真机抓包：4 条 ubus 请求，uci.set 的 values 只有
+ * enabled/use_official_ranges/… 那些，加进去的探针 URL 没进去，delta 里也查不到）。
+ * 原因是 CBI 的 option 把自己渲染到哪棵子树记在内部，行被搬走之后 LuCI 后续填值
+ * 的对象已经不是页上这一颗了 —— 于是"看得见、存不进"。
+ * 现在改成正经做法：给这一项单开一张 form.Map（同一份 uci config、同一个 section），
+ * 由它自己渲染、自己采值、自己保存；我们只搬【整张 map 节点】进源页的宿主，
+ * 而"搬整张 map 节点不坏存值"这条是 r26 真机 A/B 验过的（配置页那张 map 本身
+ * 也是被搬进面板宿主的）。
+ * 顺带两个好处：保存只写这一项（不会把配置页其他未应用的改动一起写进去），
+ * 以及全文只有这一份 DynamicList（不会有同 cbid 的两个控件）。
  */
-var SRC_EDIT_KEY = 'community_sources';
 var SRC_EDIT_OPEN_KEY = GROUPS_KEY + 'srcedit';
 
-function findOptionRow(root, key) {
-	var rows = root && root.querySelectorAll ? root.querySelectorAll('.cbi-value') : [];
-	for (var i = 0; i < rows.length; i++) {
-		var lab = rows[i].querySelector('label[for]');
-		if (lab && String(lab.htmlFor || '').split('.').pop() === key)
-			return rows[i];
-	}
-	return null;
+/* 源清单专用表单：一张 map、一个匿名 section、一条 DynamicList。 */
+function sourcesMap() {
+	var ms = new form.Map('cf_ipcheck', null, null);
+	var s = ms.section(form.TypedSection, 'global', null);
+	s.anonymous = true;
+	var o = s.option(form.DynamicList, 'community_sources', _('社区优选源 URL'), _('每行一个 HTTPS 文本地址；改完点下面的「保存并检测」。'));
+	o.description = help('community_sources',
+		_('每行一个 HTTPS 文本地址；改完点下面的「保存并检测」。'),
+		_('这些地址返回纯文本，里面夹着一堆 IPv4；引擎逐行提取、去重后进候选池。没有格式要求，只要 IP 出现在文本里就行（HTML 注释、Markdown、纯列表都能读）。要确认某个源还在不在提供真正的 CF 地址，就在下面点「保存并检测」看它的「段内占比」—— 掉到 90% 以下通常说明它换了内容。'));
+	return ms;
 }
 
-/* 把表单里渲染好的那一行搬进 srcEdit 宿主（宿主在源面板里、不参与每拍重画）。
- * 返回搬过去的行；找不到就什么都不动（宁缺毋滥：配置页留原样也比搬错强）。 */
-function relocateSourceEditor(mapnode, srcEdit) {
+/* 把渲染好的源表单塞进可折叠宿主（宿主在源面板里、不参与每拍重画，
+ * 否则输入框会在用户按下与松开之间被换掉 = 打字丢字 + 吞真实点击，见 r29）。 */
+function mountSourcesForm(mapnode, srcEdit) {
 	if (!mapnode || !srcEdit || !srcEdit.appendChild)
 		return null;
-	/* m.save() 之后 form.js 会重画 map  contents，宿主里那半截旧行必须先倒掉 ——
-	 * 旧节点已经不属于任何 option 了，留着它等于页面上有两份同名输入区。 */
 	clear(srcEdit);
-	var row = findOptionRow(mapnode, SRC_EDIT_KEY) || findOptionRow(srcEdit, SRC_EDIT_KEY);
-	if (!row)
-		return null;
-
 	var openKey = SRC_EDIT_OPEN_KEY;
 	var open = false;
 	try {
-		var saved = window.localStorage.getItem(openKey);
-		/* 默认收起（这次合并就是为了省版面）；用户手动展开过就记住 */
-		open = saved === '1';
+		open = window.localStorage.getItem(openKey) === '1';
 	} catch (e) {}
 
-	var body = el('div', { class: 'grp-b' });
-	body.appendChild(row);
+	var body = el('div', { class: 'grp-b' }, [ mapnode ]);
 	var head = el('div', {
 		class: 'grp-h', tabindex: '0', role: 'button',
 		'aria-expanded': open ? 'true' : 'false'
@@ -1786,19 +1774,9 @@ function relocateSourceEditor(mapnode, srcEdit) {
 		}
 	});
 	srcEdit.appendChild(box);
-	/* 解释要跟着搬：这一行的 ⓘ 现在长在源页上，配置页里已经没有它了 */
+	/* 完整解释贴成 ⓘ：这一步必须在节点就位之后（applyHelp 按 label[for] 认字段） */
 	applyHelp(srcEdit);
-	return row;
-}
-
-/* 表单重排 = 分组 + 把源清单那一行搬去源页。
- * m.save() 之后必须再跑一次：form.js 重画了 map  contents，搬过去的行被打回原形。 */
-function layoutForm(mapnode, srcEdit) {
-	if (!mapnode)
-		return null;
-	var wrap = regroupForm(mapnode);
-	relocateSourceEditor(mapnode, srcEdit);
-	return wrap;
+	return box;
 }
 
 /* 配置面板外壳：说明 + 全部展开/收起 + 表单本体（异步由 Map 渲染好后塞进来） */
@@ -2096,27 +2074,25 @@ function actCheck(btn) {
 	 * 不跑 procd 的 reload；而这个包的 init.d 是 `reload_service(){ stop; start; }`，
 	 * 走 apply 会把 daemon 重启一遍（r41 之前那还会当场多吃一轮 ≈100MB）。
 	 * 引擎每轮都重新 load_config，所以"存进去"就已经对下一轮生效了。
-	 * 代价要说清：save() 存的是【整张表单】的当前值，不只这一项；改动停在未提交
-	 * 的 delta 里，设备重启就没了 —— 要长期生效仍然要点标准的「保存并应用」。 */
+	 * 这里用的是那张【只含 community_sources】的 Map，所以不会把配置页里其他
+	 * 还没应用的改动一起顺手写进去（这是 r41 第一版没做到的，见 6b 注释）。
+	 * 代价：这一存是未提交的 delta，设备重启会回到上次「保存并应用」的那份 ——
+	 * 要长期生效仍然要去配置页点标准的保存并应用。 */
 	store.set({
 		sources: { state: 'saving' },
 		busy: Object.assign({}, store.get().busy, { check: true })
 	});
 	var chain = Promise.resolve();
-	if (P.form && typeof P.form.save === 'function')
-		chain = Promise.resolve(P.form.save(null, true));
+	if (P.srcForm && typeof P.srcForm.save === 'function')
+		chain = Promise.resolve(P.srcForm.save(null, true));
 	chain.then(function () {
-		/* save() 末尾会 renderContents()，把我们搬到这一页的表单行打回 map 里，
-		 * 所以排版必须重跑一次（分组 + 再搬一回）。 */
-		layoutForm(P.mapnode, P.srcEdit);
 		store.set({ sources: { state: 'checking' } });
 		return runCmd([ 'check-sources' ]);
 	}, function (err) {
 		/* 存都没存成，就不能去检测：那样检出来的是配置文件里的旧清单，
 		 * 页面会拿着"你没填过的那几条"的健康度骗人。 */
-		layoutForm(P.mapnode, P.srcEdit);
 		store.set({
-			sources: { state: 'save_failed', reason: (err && err.message) ? err.message : '保存表单时出错' },
+			sources: { state: 'save_failed', reason: (err && err.message) ? err.message : '保存源清单时出错' },
 			busy: Object.assign({}, store.get().busy, { check: false })
 		});
 	}).then(function (out) {
@@ -2273,8 +2249,9 @@ var P = {
 	built: false,    /* 页面是否已经建好（订阅回调依赖它） */
 	unsub: null,     /* store 订阅的退订函数（重进页面时先退再订） */
 	mapnode: null,   /* LuCI 表单本体（m.render() 给的那个 div） */
-	form: null,      /* form.Map 实例：「保存并检测」要调它的 save() */
-	srcEdit: null,   /* 源清单编辑行的固定宿主（在「源与检测」页，不参与每拍重画） */
+	form: null,      /* 配置页那张 Map（其余 32 个字段） */
+	srcForm: null,   /* 源清单专用 Map（只含 community_sources），渲染进源页宿主 */
+	srcEdit: null,   /* 源清单表单的固定宿主（在「源与检测」页，不参与每拍重画） */
 	srcRes: null     /* 检测结果宿主：drawSources 只清这一块 */
 };
 
@@ -2624,10 +2601,9 @@ return view.extend({
 			_('让榜单跨轮连续。'),
 			_('把上一轮已经入围的 IP 并回候选池一起测。好处是榜单不会「一轮好一轮空」地跳；代价是如果一个 IP 已经劣化，它会多占一个候选名额，要再过一两轮才掉出去。'));
 
-		o = src.option(form.DynamicList, 'community_sources', _('社区优选源 URL'), _('这一项显示在「源与检测」页顶部。'));
-		o.description = help('community_sources',
-			_('这一项显示在「源与检测」页顶部。'),
-			_('这些地址返回纯文本，里面夹着一堆 IPv4；引擎逐行提取、去重后进候选池。没有格式要求，只要 IP 出现在文本里就行（HTML 注释、Markdown、纯列表都能读）。要增删就切到「源与检测」页：那一页顶部就是这份清单，改完点「保存并检测」，逐源体检的结果紧跟在下面 —— 段内占比掉到 90% 以下通常说明这个源换了内容。'));
+		/* community_sources 不在这里声明 —— 它由 sourcesMap() 单开一张 Map，
+		 * 渲染进「源与检测」页的宿主（原因与真机取证见 6b 的注释）。
+		 * 这一节剩下的两个开关仍是候选池的一部分。 */
 
 		var thr = m.section(form.TypedSection, 'global', _('测速与判定'));
 		thr.anonymous = true;
@@ -2771,30 +2747,43 @@ return view.extend({
 
 		return m.render().then(function (mapnode) {
 			linkStyle();
-			/* 「保存并检测」要调 Map.save()，所以实例得留个把手 */
 			P.form = m;
 			P.mapnode = mapnode;
-			/* 配置页的面板先建好、表单搬进去，再重组分组（并把源清单那一行送去源页） */
+			/* 配置页的面板先建好、表单搬进去，再重组分组 */
 			var root = buildPage(mapnode);
 			/* 落点由 regroupForm 自己保证（分组必须留在 map 节点里面，见该函数末注释） */
-			layoutForm(mapnode, P.srcEdit);
-			/* 恢复上次停留的标签；没有记录就落到榜单页 */
-			var want = savedTab();
-			var valid = false;
-			for (var i = 0; i < TAB_DEFS.length; i++)
-				if (TAB_DEFS[i].id === want)
-					valid = true;
-			goto(valid ? want : 'board', false);
+			regroupForm(mapnode);
+			/* 源清单是另一张【只含 community_sources】的 Map，渲染进源页的宿主。
+			 * 顺序不能颠倒：宿主是 buildPage 时才创建的。 */
+			var ms = sourcesMap();
+			P.srcForm = ms;
+			return ms.render().then(function (srcNode) {
+				mountSourcesForm(srcNode, P.srcEdit);
+			}, function () {
+				/* 这张 Map 渲染失败不能把整页带走：源页留一句实话，
+				 * 其余面板照常（检测仍然能检配置文件里已有的源）。 */
+				clear(P.srcEdit);
+				P.srcEdit.appendChild(el('p', { class: 'note' },
+					T('源清单的编辑表单没能加载。下面仍然可以检测配置文件里已有的源；要增删源请改完配置文件再刷新本页。')));
+			}).then(function () {
+				/* 恢复上次停留的标签；没有记录就落到榜单页 */
+				var want = savedTab();
+				var valid = false;
+				for (var i = 0; i < TAB_DEFS.length; i++)
+					if (TAB_DEFS[i].id === want)
+						valid = true;
+				goto(valid ? want : 'board', false);
 
-			/* 首帧若读到的是「正在跑」，直接把轮询接上 */
-			if (store.get().status.state === 'running')
-				startPoll();
+				/* 首帧若读到的是「正在跑」，直接把轮询接上 */
+				if (store.get().status.state === 'running')
+					startPoll();
 
-			/* 日志主动取一次：打开页面就能看到最近发生了什么，
-			 * 不必先到「日志」页点一下「读取日志」 */
-			logsRefresh();
+				/* 日志主动取一次：打开页面就能看到最近发生了什么，
+				 * 不必先到「日志」页点一下「读取日志」 */
+				logsRefresh();
 
-			return root;
+				return root;
+			});
 		});
 	},
 
@@ -2814,6 +2803,7 @@ return view.extend({
 		/* 表单把手与源页宿主一起清掉：teardown 之后 DOM 已经不在文档里，
 		 * 留着旧 Map 实例会让下次进页面的「保存并检测」写到一份废弃的表单上。 */
 		P.form = null;
+		P.srcForm = null;
 		P.mapnode = null;
 		P.srcEdit = null;
 		P.srcRes = null;

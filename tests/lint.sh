@@ -676,36 +676,44 @@ fi
 echo "=== [15/15] Red line 15: source editor has one home; check implies save ==="
 if [ -f "$VIEW" ]; then
     rl15=0
-    # GROUP_OPTIONS 的四个组里不该再有 community_sources（它归源页宿主管）
+    # 这一项在全文只能声明一次（两张 Map 各一份 = 两个出处，改一处存另一处）
+    decl=$(grep -c "option(form.DynamicList, 'community_sources'" "$VIEW")
+    if [ "$decl" = "1" ]; then
+        echo "[PASS] edit: community_sources 全文只声明一次（在源页那张只含它的 Map 里）"
+    else
+        echo "[FAIL] edit: community_sources 被声明了 $decl 次 —— 必须恰好 1 次（源页那张 Map）"
+        rl15=1
+    fi
+    # 配置页那张 Map 不该再分组它，否则会出现第二个输入区
     grp=$(sed -n '/^var GROUP_OPTIONS = {/,/^};/p' "$VIEW" | grep -c "community_sources")
     if [ "$grp" = "0" ]; then
-        echo "[PASS] edit: 源清单不再属于「配置」的任何分组（不会出现两份）"
+        echo "[PASS] edit: 配置页的分组表里没有它（不会出现第二份）"
     else
-        echo "[FAIL] edit: GROUP_OPTIONS 里还列着 community_sources（$grp 处）—— 会渲染出第二个输入区"
+        echo "[FAIL] edit: GROUP_OPTIONS 里还列着 community_sources（$grp 处）"
         rl15=1
     fi
-    reg=$(grep -c "^var EDIT_ONLY_OPTIONS = { community_sources: true" "$VIEW")
-    if [ "$reg" = "1" ]; then
-        echo "[PASS] edit: 它被登记成「只搬不分组」，兜底组不会再收它"
+    # 必须整张 map 节点被挂进源页宿主（搬【行】这条路真机证明存不进，见视图 6b 注释）
+    mount=$(grep -c "mountSourcesForm(srcNode, P.srcEdit)" "$VIEW")
+    if [ "$mount" = "1" ]; then
+        echo "[PASS] edit: 源表单是整张 map 节点挂进源页宿主（不是搬单行）"
     else
-        echo "[FAIL] edit: EDIT_ONLY_OPTIONS 没登记 community_sources（会被兜进「其它」组，等于两份）"
+        echo "[FAIL] edit: 没看到 mountSourcesForm(srcNode, P.srcEdit) —— 搬单行会「看得见、存不进」"
         rl15=1
     fi
-    # drawSources 只许清结果宿主；清整个面板会把编辑行一起抹掉（打字中途丢字 + 吞点击）
+    # drawSources 只许清结果宿主；清整个面板会把输入区一起抹掉（打字中途丢字 + 吞点击）
     if grep -q "clear(P.srcRes)" "$VIEW" && ! grep -q "clear(srcPane)" "$VIEW"; then
-        echo "[PASS] edit: 每拍重画只清结果宿主，不碰编辑区"
+        echo "[PASS] edit: 每拍重画只清结果宿主，不碰编辑宿主"
     else
-        echo "[FAIL] edit: 源面板的重画还在清整个容器 —— 编辑框会被连带换掉（r29 的吞点机制）"
+        echo "[FAIL] edit: 源面板的重画还在清整个容器 —— 输入框会被连带换掉（r29 的吞点机制）"
         rl15=1
     fi
     # 保存必须先于检测：比较两处调用的行号
-    sv=$(grep -n "P.form.save" "$VIEW" | head -1 | cut -d: -f1)
-    ck=$(grep -n "runCmd\[?( 'check-sources'" "$VIEW" | head -1 | cut -d: -f1)
-    ck=${ck:-$(grep -n "runCmd(\[ 'check-sources' \])" "$VIEW" | head -1 | cut -d: -f1)}
+    sv=$(grep -n "P.srcForm.save" "$VIEW" | head -1 | cut -d: -f1)
+    ck=$(grep -n "runCmd(\[ 'check-sources' \])" "$VIEW" | head -1 | cut -d: -f1)
     if [ -n "$sv" ] && [ -n "$ck" ] && [ "$sv" -lt "$ck" ]; then
-        echo "[PASS] save: 检测之前先保存（Map.save 在 runCmd('check-sources') 之前，行 $sv < $ck）"
+        echo "[PASS] save: 检测之前先保存（srcForm.save 在 runCmd('check-sources') 之前，行 $sv < $ck）"
     else
-        echo "[FAIL] save: 没找到「先 Map.save 再 check-sources」的顺序 —— 检的会是配置文件里的旧清单"
+        echo "[FAIL] save: 没找到「先 srcForm.save 再 check-sources」的顺序 —— 检的会是配置文件里的旧清单"
         rl15=1
     fi
     if [ "$rl15" = 1 ]; then

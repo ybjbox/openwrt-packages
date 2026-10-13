@@ -45,8 +45,7 @@ const hook = "\nglobalThis.__cf_t = {\n" +
 	"\tget P() { return P; }, goto: goto, savedTab: savedTab,\n" +
 	"\tbuildPage: buildPage, runCmd: runCmd,\n" +
 	"\tactRun: actRun, actCheck: actCheck,\n" +
-	"\tlayoutForm: layoutForm, relocateSourceEditor: relocateSourceEditor,\n" +
-	"\tSRC_EDIT_KEY: SRC_EDIT_KEY, EDIT_ONLY_OPTIONS: EDIT_ONLY_OPTIONS,\n" +
+	"\tsourcesMap: sourcesMap, mountSourcesForm: mountSourcesForm,\n" +
 	"\trailKeyOf: railKeyOf, boardKeyOf: boardKeyOf,\n" +
 	"\tlogsRefresh: logsRefresh,\n" +
 	"\trefresh: refresh, startPoll: startPoll, stopPoll: stopPoll, afterMiss: afterMiss,\n" +
@@ -361,6 +360,13 @@ let saveImpl = () => Promise.resolve();
 MapStub.prototype.save = function (cb, silent) {
 	saveCalls.push({ cb: cb, silent: silent });
 	return saveImpl();
+};
+/* render() 按声明过的 option 产出一棵假表单（真 form.js 也是这么产 .cbi-value 的），
+ * 这样"整张 map 节点被搬进宿主"这件事能被断言，而不是只在文字层面成立。 */
+MapStub.prototype.render = function () {
+	const names = [];
+	this.sections.forEach(s => s.options.forEach(o => names.push(o.name)));
+	return Promise.resolve(fakeForm(names));
 };
 
 /* ui 桩只放**官方 LuCI 真有的**方法。早先这里给的是 addToast/toast —— 那两个
@@ -1500,65 +1506,61 @@ eq('调 __apply(false) 真的会收起', leftover.className.indexOf('open') >= 0
 eq('同时把 aria-expanded 改掉', lfHead.attrs['aria-expanded'], 'false');
 
 /* ================================================================== *
- * 26. r41：源清单编辑搬进「源与检测」页 + 「保存并检测」的顺序
- * Ryan 要求把源编辑与源检测并成一页。两个必须钉住的性质：
- *   a) 那一行只有一份，且搬进源页的固定宿主（不参与每拍重画）；
- *   b) 检测之前必须先保存，保存失败就不检测（否则检的是配置文件里的旧清单，更骗人）。
+ * 26. r41：源清单用【另一张 Map】挂进「源与检测」页 + 「保存并检测」的顺序
+ * 第一版是把配置页那张 Map 里渲染好的行搬过来，真机证明"看得见、存不进"
+ * （加进去的那条根本没进 uci.set 的请求体）。现在是一张只含这一项的 Map，
+ * 自己渲染、自己采值、自己保存；我们只搬【整张 map 节点】。
+ * 必须钉住的性质：
+ *   a) 这一项在全文只声明一次（两张 Map 各有一份 = 两个出处）；
+ *   b) map 节点整颗进宿主，宿主不参与每拍重画（否则打字丢字 + 吞真实点击）；
+ *   c) 检测之前先保存，保存失败就不检测（否则拿旧清单的结果骗人）。
  * ================================================================== */
-eq('源清单不再归「配置」的任何分组（改由源页宿主接管）',
-	(t.GROUP_OPTIONS.pool || []).indexOf('community_sources'), -1);
-eq('它被登记成"只搬不分组"的字段', t.EDIT_ONLY_OPTIONS.community_sources, true);
+eq('源清单不再归「配置」的任何分组', (t.GROUP_OPTIONS.pool || []).indexOf('community_sources'), -1);
 
-const mgMap = fakeForm([ 'enabled', 'use_official_ranges', 'community_sources', 'candidate_budget' ]);
-/* HELP 是 render() 里逐条 help() 注册进来的；这里不跑整个 render，先手工登记这一条，
- * 才能验"ⓘ 跟着那一行一起搬过来"。 */
-t.help('community_sources', '这一项显示在「源与检测」页顶部。', '完整解释：逐行提取 IPv4 并进候选池。');
-/* form.js 会在字段行里生成说明节点，ⓘ 是贴在它上面的 —— 桩要照形状补出来才测得到"ⓘ 跟着搬" */
-mgMap.querySelectorAll('.cbi-value').forEach(row => {
+const smap = t.sourcesMap();
+eq('源清单那张 Map 只声明了这一个字段',
+	smap.sections.map(sec => sec.options.map(o => o.name).join(',')).join(';'), 'community_sources');
+const snode = await smap.render();
+/* ⓘ 需要的说明节点是 form.js 生成的，桩照形状补一个 */
+snode.querySelectorAll('.cbi-value').forEach(row => {
 	const d = makeNode('div');
 	d.attrs['class'] = 'cbi-value-description';
 	row.appendChild(d);
 });
-const mgHost = makeNode('div');
-const mgWrap = t.layoutForm(mgMap, mgHost);
-const mgRow = mgMap.querySelectorAll('.cbi-value').concat(mgHost.querySelectorAll('.cbi-value'))
-	.find(r => String((r.querySelector('label[for]') || {}).htmlFor || '').indexOf('community_sources') >= 0);
-ok('源清单那一行确实找到了', !!mgRow);
-ok('那一行搬进了源页的宿主里', hasAncestor(mgHost, mgRow));
-ok('那一行已经不在配置页的分组容器里（全文只有一份）', !hasAncestor(mgWrap, mgRow));
-const mgBox = byClass(mgHost, 'src-edit')[0];
-ok('宿主里是一个可折叠盒（复用配置页那套 .grp 外观）', !!mgBox && !!mgBox.__apply);
-const mgHead = mgBox ? byClass(mgBox, 'grp-h')[0] : null;
-ok('默认收起（这次合并就是为了省版面）', !!mgHead && mgHead.attrs['aria-expanded'] === 'false');
-ok('收起状态下输入区不可见', !!mgBox && mgBox.className.indexOf('open') < 0);
-mgBox.__apply(true);
-ok('点开后 aria-expanded 跟着翻', byClass(mgBox, 'grp-h')[0].attrs['aria-expanded'], 'true');
-const mgText = textOf(mgHost);
-ok('折叠标题说清"改完点保存并检测"', mgText.includes('保存并检测'));
-ok('源清单那一行的 ⓘ 也跟着搬过来了', byClass(mgHost, 'hmark').length >= 1);
-const mgMap2 = mgMap;			/* 同一个宿主，再排一次（模拟 m.save() 之后 form.js 重画 map） */
-t.layoutForm(mgMap2, mgHost);
-eq('重复排版不会在宿主里叠出两份编辑盒', byClass(mgHost, 'src-edit').length, 1);
+t.help('community_sources', '每行一个 HTTPS 文本地址。', '完整解释：逐行提取 IPv4 并进候选池。');
+const host26 = makeNode('div');
+const box26 = t.mountSourcesForm(snode, host26);
+ok('源表单的 map 节点整颗进了源页宿主', hasAncestor(host26, snode));
+ok('宿主里就是一个可折叠盒（复用配置页那套 .grp 外观）', !!box26 && typeof box26.__apply === 'function');
+const h26 = box26 ? byClass(box26, 'grp-h')[0] : null;
+ok('默认收起（这次合并就是为了省版面）', !!h26 && h26.attrs['aria-expanded'] === 'false');
+box26.__apply(true);
+eq('点开后 aria-expanded 跟着翻', byClass(box26, 'grp-h')[0].attrs['aria-expanded'], 'true');
+ok('折叠标题说清"改完点保存并检测"', textOf(host26).includes('保存并检测'));
+ok('这一项的 ⓘ 贴在宿主里（applyHelp 在就位之后跑）', byClass(host26, 'hmark').length >= 1);
+t.mountSourcesForm(snode, host26);
+eq('重复挂载不会在宿主里叠出两份编辑盒', byClass(host26, 'src-edit').length, 1);
+eq('也不会叠出两份字段行（全文这一项只有一颗 .cbi-value）',
+	byClass(host26, 'cbi-value').filter(r => /community_sources$/.test(String((r.querySelector('label[for]') || {}).htmlFor || ''))).length, 1);
 
 /* 「保存并检测」的顺序：先 save 再 check；save 失败则不 check */
-t.P.form = new formStub.Map();
-t.P.mapnode = mgMap2;
-t.P.srcEdit = mgHost;
+t.P.srcForm = smap;
 let seenCmds = [];
 const oldRpc = rpcImpl;
-rpcImpl = (decl) => { seenCmds.push(String(decl.method || '')); return Promise.resolve('[{"url":"a.example","code":"200","ips":10,"inflows":9}]'); };
+rpcImpl = (decl) => { seenCmds.push(String(decl.method || '')); return Promise.resolve('[{"url":"a.example","http":"200","rc":0,"ips":100,"cf_in":98}]'); };
 saveCalls.length = 0;
 saveImpl = () => { seenCmds.push('save'); return Promise.resolve(); };
 t.actCheck(null);
 await new Promise((r) => setImmediate(r));
 await new Promise((r) => setImmediate(r));
-eq('确实先调了 Map.save()', seenCmds[0], 'save');
+eq('确实先调了那张源 Map 的 save()', seenCmds[0], 'save');
 ok('保存之后才发 check_sources', seenCmds.indexOf('check_sources') > 0);
-eq('保存按钮的忙碌标记落地后被清掉', String(t.store.get().busy.check), 'false');
+eq('保存调用走的是 LuCI 的 (cb, silent) 签名（silent=true 不弹自己的模态）',
+	saveCalls.length && saveCalls[0].silent, true);
+eq('忙碌标记落地后被清掉', String(t.store.get().busy.check), 'false');
 eq('检测结果进了 store', t.store.get().sources && t.store.get().sources.state, 'ok');
 
 seenCmds = [];
-saveCalls.length = 0;
 saveImpl = () => Promise.reject(new TypeError('选项 "定时周期（小时）" 里的输入不合法'));
 t.actCheck(null);
 await new Promise((r) => setImmediate(r));
@@ -1571,14 +1573,13 @@ rpcImpl = oldRpc;
 saveImpl = () => Promise.resolve();
 
 /* 每拍重画不许碰编辑宿主：输入框被换掉 = 打字打到一半丢字 + 吞真实点击（r29 的机制） */
-const mgPage = t.buildPage(null);
+t.buildPage(null);
 const hostRef = t.P.srcEdit;
-const boxRef = hostRef && hostRef.childNodes[0];
+t.P.srcEdit.appendChild(box26);
+const boxRef = hostRef.childNodes[0];
 t.store.set({ status: t.parseStatus(JSON.stringify({ state: 'running', stage: 'fetch', stage_done: 3, stage_total: 13 })) });
 fireTimers(0);
 t.store.set({ sources: { state: 'ok', rows: srcRows } });
-fireTimers(0);
-t.store.set({ busy: Object.assign({}, t.store.get().busy, { check: true }) });
 fireTimers(0);
 ok('重画之后编辑宿主还是同一颗节点', t.P.srcEdit === hostRef && t.P.srcEdit.childNodes[0] === boxRef);
 ok('而结果区确实被重画了（说明上面那条不是"整个没动"）',
