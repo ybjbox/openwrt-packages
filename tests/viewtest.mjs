@@ -49,8 +49,8 @@ const hook = "\nglobalThis.__cf_t = {\n" +
 	"\tlogsRefresh: logsRefresh,\n" +
 	"\trefresh: refresh, startPoll: startPoll, stopPoll: stopPoll, afterMiss: afterMiss,\n" +
 	"\tflash: flash, whyNoReply: whyNoReply,\n" +
-	"\tget pollFail() { return pollFail; }, pollGap: pollGap,\n" +
-	"\tPOLL_MS: POLL_MS, POLL_SLOW_MS: POLL_SLOW_MS,\n" +
+	"\tget pollFail() { return pollFail; }, pollGapSec: pollGapSec,\n" +
+	"\tPOLL_SEC: POLL_SEC, POLL_SLOW_SEC: POLL_SLOW_SEC, pollTick: pollTick,\n" +
 	"\tFAIL_STALE: FAIL_STALE, FAIL_GIVEUP: FAIL_GIVEUP,\n" +
 	"\tHUNG: HUNG, CMD_LIMIT: CMD_LIMIT, isRunningReply: isRunningReply\n" +
 	"};\n";
@@ -279,6 +279,25 @@ const windowStub = {
 	isSecureContext: false
 };
 
+/* L.poll 桩：镜像真机 luci.js 里的单例语义 —— 间隔单位是**秒**、按函数身份去重
+ * （同一个 fn 重复 add 返回 false）、remove 撤登记、start/stop 是全局暂停。
+ * 不镜像这些，测试就测不到「改节奏必须先 remove」这类真会踩的坑。 */
+const pollEntries = new Map();
+let pollRunning = true;
+const pollStub = {
+	add(fn, sec) {
+		if (pollEntries.has(fn)) return false;
+		pollEntries.set(fn, (sec == null || sec <= 0) ? 5 : sec);
+		return true;
+	},
+	remove(fn) { return pollEntries.delete(fn); },
+	start() { pollRunning = true; },
+	stop() { pollRunning = false; },
+	active() { return pollRunning; }
+};
+const pollSecOf = (fn) => (pollEntries.has(fn) ? pollEntries.get(fn) : null);
+const livePolls = () => pollEntries.size;
+
 const _ = s => String(s);
 /* rpc 桩：视图走的已经是 rpcd 的 ucode 具名方法，真机回包形状是 { ok, text }
  * （text = 引擎原样输出）。测试里仍然按「引擎那份文本」写桩，可读性高，
@@ -342,9 +361,9 @@ const lastInterval = () => {
 	return null;
 };
 
-const ctx = new Function('form', 'rpc', 'ui', 'view', 'E', '_', 'L', 'window', 'document',
+const ctx = new Function('form', 'rpc', 'ui', 'poll', 'view', 'E', '_', 'L', 'window', 'document',
 	'setTimeout', 'setInterval', 'clearInterval', 'clearTimeout', 'navigator', 'globalThis', src);
-ctx(formStub, rpcStub, uiStub, viewStub, () => makeNode('div'), _, {
+ctx(formStub, rpcStub, uiStub, pollStub, viewStub, () => makeNode('div'), _, {
 	addItem: noop, network: {}
 }, windowStub, documentStub,
 	stubSetTimeout, stubSetInterval, stubClearInterval, stubClearTimeout,
@@ -1123,7 +1142,7 @@ t.store.set({ status: Object.assign({}, runFrame), busy: {}, logs: { state: 'ok'
 rpcImpl = () => new Promise(() => {});        // 路由器不回话
 
 t.startPoll();
-eq('正常节奏 3 秒', lastInterval().ms, t.POLL_MS);
+eq('正常节奏 3 秒（L.poll 按秒登记）', pollSecOf(t.pollTick), t.POLL_SEC);
 
 let mp = t.refresh();
 fireTimers(t.CMD_LIMIT.status_running);
@@ -1133,7 +1152,7 @@ eq('第一次没读到：状态仍是 running', t.store.get().status.state, 'run
 eq('第一次没读到：进度没被抹掉', t.store.get().status.stage_done, 40);
 eq('第一次没读到：还不算滞留（下一拍大概率就回来了）', String(t.store.get().status.staleFor), 'undefined');
 eq('失败计数 1', t.pollFail, 1);
-eq('心跳没被掐掉', liveIntervals(), 1);
+eq('心跳没被掐掉（登记还在）', livePolls(), 1);
 
 mp = t.refresh();
 fireTimers(t.CMD_LIMIT.status_running);
@@ -1141,7 +1160,7 @@ await mp;
 eq('第二次没读到：挂上滞留秒数', typeof t.store.get().status.staleFor, 'number');
 eq('第二次没读到：进度仍在', t.store.get().status.stage_done, 40);
 eq('第二次没读到：状态词说实话', t.stateWord(t.store.get().status), '测速中 · 读数滞留');
-eq('节奏放慢到 10 秒（不是停机）', lastInterval().ms, t.POLL_SLOW_MS);
+eq('节奏放慢到 10 秒（不是停机：改节奏是 remove+add）', pollSecOf(t.pollTick), t.POLL_SLOW_SEC);
 has('滞留时榜单顶上挂一条横幅', t.BoardPane(t.store.get().status, noActions), '路由器暂时没回话');
 has('横幅明说不用刷新页面', t.BoardPane(t.store.get().status, noActions), '不需要刷新');
 
@@ -1156,7 +1175,7 @@ eq('认输时说的是「没有回应」', gaveUp.reason, 'hung');
 eq('认输也不许把上一帧榜单扔掉', gaveUp.items.length, 1);
 has('认输的面板照样把榜单端出来', t.BoardPane(gaveUp, noActions), '1.1.1.1');
 has('认输的面板说清是没有回应', t.BoardPane(gaveUp, noActions), '路由器没有回应');
-ok('认输之后心跳仍在（恢复了能自己跟上，不用 F5）', liveIntervals() >= 1);
+ok('认输之后心跳仍在（恢复了能自己跟上，不用 F5）', livePolls() === 1);
 eq('认输后不再计滞留秒数（指纹因此稳定，「重新读取」按钮不会被反复换掉）',
 	String(gaveUp.staleFor), 'null');
 eq('认输后连着再读不到，指纹也不再变', t.boardKeyOf(gaveUp),
@@ -1168,12 +1187,12 @@ await mp;
 eq('路由器一回话就自愈', t.store.get().status.stage, 'speed');
 eq('失败计数清零', t.pollFail, 0);
 eq('滞留标记去掉', String(t.store.get().status.staleFor), 'undefined');
-eq('节奏回到 3 秒', lastInterval().ms, t.POLL_MS);
+eq('节奏回到 3 秒', pollSecOf(t.pollTick), t.POLL_SEC);
 
 rpcImpl = async () => JSON.stringify({ state: 'done', items: [ { ip: '2.2.2.2' } ] });
 mp = t.refresh();
 await mp;
-eq('这一轮跑完就停心跳', liveIntervals(), 0);
+eq('这一轮跑完就撤登记', livePolls(), 0);
 
 /* 手上根本没有任何读数（刚进页面第一次就没读到）时不许装样子：直说没回应 */
 t.store.set({ status: { state: 'never_run', items: [] }, busy: {} });
@@ -1281,6 +1300,33 @@ const why = t.whyNoReply ? t.whyNoReply('读不到日志', 'logs') : '';
 ok('排查话术提到 rpcd-mod-ucode', /rpcd-mod-ucode/.test(why));
 ok('排查话术提到 rpcd reload', /reload/.test(why));
 ok('排查话术点名是哪个方法', /logs/.test(why));
+
+/* ================================================================== *
+ * 24. 轮询交给官方 L.poll：登记唯一、改节奏不重复、停机后能再开
+ * ================================================================== */
+t.store.set({ status: { state: 'running', stage: 'probe', stage_done: 1, stage_total: 9, items: [] }, busy: {} });
+pollEntries.clear();
+t.startPoll();
+t.startPoll();
+t.startPoll();
+eq('连着开三次也只登记一份（L.poll 按函数身份去重，我们也自己拦）', livePolls(), 1);
+eq('登记的间隔就是正常节奏', pollSecOf(t.pollTick), t.POLL_SEC);
+t.stopPoll();
+eq('停轮询是撤登记，不是留着不管', livePolls(), 0);
+t.startPoll();
+eq('停了之后还能重新开起来', pollSecOf(t.pollTick), t.POLL_SEC);
+t.stopPoll();
+eq('重复停不报错', livePolls(), 0);
+ok('视图里已经没有自己写的 setInterval 轮询', !/setInterval\(/.test(src0.replace(/\/\*[\s\S]*?\*\//g, '')));
+/* L.poll 的重入守卫是 Promise.resolve(fn()).finally(...) 判的：pollTick 不把
+ * promise 交回去，那个守卫就是空转的（它以为这一拍瞬间完成）。 */
+t.store.set({ status: { state: 'running', stage: 'probe', stage_done: 1, stage_total: 9, items: [] }, busy: {} });
+rpcImpl = async () => '{"state":"running","stage":"probe","stage_done":2,"stage_total":9,"items":[]}';
+const tickRet = t.pollTick();
+ok('pollTick 把 promise 交回给 L.poll（守卫才有东西可判）',
+	!!tickRet && typeof tickRet.then === 'function');
+await tickRet;
+eq('这一拍确实读到了新进度', t.store.get().status.stage_done, 2);
 
 console.log(fails === 0 ? '=== view 渲染断言全部通过' : `=== view 渲染断言失败 ${fails} 项`);
 process.exit(fails === 0 ? 0 : 1);

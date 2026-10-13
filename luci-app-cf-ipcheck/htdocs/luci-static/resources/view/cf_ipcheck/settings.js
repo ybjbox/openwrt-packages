@@ -1,5 +1,6 @@
 'use strict';
 'require form';
+'require poll';
 'require rpc';
 'require ui';
 'require view';
@@ -28,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r36';
+var VIEW_BUILD = 'r37';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -1695,7 +1696,14 @@ function ConfigPane() {
  * （重画由订阅者负责），所以同一个动作从状态条、空态、面板里点效果完全一致。
  */
 var inflight = null;
-var poller = null;
+
+/* 轮询交给官方的 L.poll（luci.js 里的单例）：
+ * 它用**一个**全局 1 秒步进器按各自的秒数派活，并且给每个登记项配了重入守卫
+ * （上一回 promise 没落地就不会再调它），还跟框架的暂停/恢复打通 —— 弹出
+ * 「应用设置」那个对话框期间框架会 poll.stop()，我们自写 setInterval 时是照打的。
+ * 早先这里是自己 setInterval + 一个模块级 poller，行为等价但属于重复造轮子。 */
+var pollOn = false;
+var pollSec = 0;
 
 /* 一次读不到不等于路由器死了。下面这组数决定「读不到」时页面怎么办：
  * 保住上一帧读数、放慢节奏继续轮询，连着失败到 FAIL_GIVEUP 才承认「没有回应」。
@@ -1706,13 +1714,15 @@ var poller = null;
  * 会超过 8 秒上限的是这台电脑到路由器的那段路（本机代理/TUN 接管、无线抖动）。 */
 var pollFail = 0;
 var lastGoodAt = 0;
-var POLL_MS = 3000;
-var POLL_SLOW_MS = 10000;
+var POLL_SEC = 3;
+var POLL_SLOW_SEC = 10;
 var FAIL_STALE = 2;	/* 连着 2 次没读到：挂「读数滞留」横幅，节奏放慢 */
 var FAIL_GIVEUP = 4;	/* 连着 4 次没读到（约一分钟）：才说「路由器没有回应」 */
 
-function pollGap() {
-	return pollFail >= FAIL_STALE ? POLL_SLOW_MS : POLL_MS;
+/* L.poll 的间隔单位是**秒**，且同一个函数身份重复 add 会被忽略，
+ * 所以改节奏必须 remove 再 add。 */
+function pollGapSec() {
+	return pollFail >= FAIL_STALE ? POLL_SLOW_SEC : POLL_SEC;
 }
 
 /* 没读到时的状态怎么算。返回的永远是「上一帧读数 + 一句老实话」，
@@ -1725,7 +1735,7 @@ function afterMiss(prev, hung) {
 	if (!worth || pollFail >= FAIL_GIVEUP) {
 		if (worth)
 			flash(T('读取状态没有回应'),
-				T('连着 %s 次都没等到路由器返回。最后一次读到的榜单还在下面，页面每 %s 秒仍会自动重试一次，恢复了会自己跟上。').format(pollFail, Math.round(POLL_SLOW_MS / 1000)),
+				T('连着 %s 次都没等到路由器返回。最后一次读到的榜单还在下面，页面每 %s 秒仍会自动重试一次，恢复了会自己跟上。').format(pollFail, POLL_SLOW_SEC),
 				'bad', 1);
 		return Object.assign({}, prev, {
 			state: 'unreachable',
@@ -1784,10 +1794,11 @@ function refresh() {
 }
 
 function stopPoll() {
-	if (poller) {
-		clearInterval(poller);
-		poller = null;
-	}
+	if (!pollOn)
+		return;
+	pollOn = false;
+	pollSec = 0;
+	poll.remove(pollTick);
 }
 
 /* 测速进行中每 3 秒拉一次；读不到就放慢到 10 秒，读到真结果后自己停。
@@ -1798,17 +1809,24 @@ function pollTick() {
 	 * 轮询的生死全交给 refresh() 判：这里绝不能再「看到不是 running 就停机」——
 	 * 一次读不到就把心跳掐死，页面就永远回不来了（r32 的病根之一）。 */
 	logsRefresh();
-	refresh();
 	/* 顺手复查一次明暗：改系统偏好或主题模式时 Argon 会当场换色，
 	 * 我们得跟着换，不然就出现「整站变暗、这块还亮着」。 */
 	applyScheme(P.root);
+	/* 必须把 refresh 的 promise 交回去：L.poll 的重入守卫是
+	 * `Promise.resolve(fn()).finally(...)` 判的，返回 undefined 就等于让那个守卫
+	 * 空转 —— 它以为这一拍瞬间就完成了，下一照发，慢响应时请求会叠起来。 */
+	return refresh();
 }
 
 function startPoll() {
-	if (typeof setInterval !== 'function')
-		return;
-	stopPoll();
-	poller = setInterval(pollTick, pollGap());
+	var want = pollGapSec();
+	if (pollOn && want === pollSec)
+		return;	/* 已经是这个节奏，别动登记 */
+	if (pollOn)
+		poll.remove(pollTick);
+	poll.add(pollTick, want);
+	pollOn = true;
+	pollSec = want;
 }
 
 function actRun(btn) {
