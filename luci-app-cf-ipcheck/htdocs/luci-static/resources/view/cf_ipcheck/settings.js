@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r48';
+var VIEW_BUILD = 'r49';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -395,9 +395,12 @@ function why(reason) {
 		case 'interrupted':
 			return T('上一轮没跑完就断了（进程被杀、断电或重启），运行锁已被回收，这一条是自动判出来的。下面是上一次成功完成的榜单；直接点「立即测速」即可重来。');
 		default:
+			/* 走到这里说明引擎报了个页面没登记过的原因码。别把英文码当整句话甩给用户：
+			 * 一是翻译不出来，二是用户不知道该干什么。所以先说人话、再指着「日志」页
+			 * （那里是引擎自己写的过程记录，比这个码信息量大），最后给重试动作。 */
 			return reason
-				? T('引擎报告本轮失败（reason=%s）。').format(reason)
-				: T('引擎报告本轮失败，但没有给出原因。');
+				? T('本轮中途停了。引擎留下的原因码是 %s —— 这一页还没登记过它，所以翻不出人话。先看「日志」页最后几行（那是引擎自己写的过程记录，通常能看出停在哪一步），确认没问题再点「立即测速」重试一轮；反复出现就把那几行原样贴出来问。').format(reason)
+				: T('本轮中途停了，引擎没有留下原因。先看「日志」页最后几行，那里通常有中止前的过程记录；确认配置没问题就点「立即测速」重试一轮。');
 	}
 }
 
@@ -1168,7 +1171,10 @@ function BoardPane(st, actions) {
 	if (st.intercepted == 1) {
 		kids.push(Flash({
 			title: T('出口被代理接管'),
-			text: T('候选 IP 没参与选路，下面这些数字测的是「本机 → 代理 → CF」的耗时。本轮已自动跳过机房与吞吐两列。'),
+			/* 光说"数字不可信"不够 —— 用户下一步要问的是"那我怎么让它可信"。
+			 * 接管来自路由器上的透明代理，所以指向代理侧的直连/绕过名单，
+			 * 本插件不替你改任何代理配置（配置面最小是这插件的边界）。 */
+			text: T('候选 IP 没参与选路，下面这些数字测的是「本机 → 代理 → CF」的耗时，不能用来判断 IP 好坏。本轮已自动跳过机房与吞吐两列。要拿到真值：在路由器那侧的透明代理里把探测域名（默认 www.cloudflare.com）和 Cloudflare 网段列入直连/绕过名单，或临时停一下代理，再点「立即测速」重跑一轮。本插件不替你改代理配置。'),
 			tone: 'bad'
 		}));
 	}
@@ -1198,7 +1204,7 @@ function BoardPane(st, actions) {
 				? T('连着几次都没等到 %s 的返回，这通常不是插件的问题。先确认这台电脑能打开路由器后台（本机代理/TUN 接管会把到 10.0.0.0/8 的流量吞掉），再看 LuCI 会话是不是已经过期。页面仍在后台每隔一会儿重试，恢复了会自己跟上；等不及就点「重新读取」。').format(CMD)
 				: (st.state === 'unreachable'
 					? whyNoReply(T('读不到引擎的输出'), 'status')
-					: T('拿到的不是合法 JSON，无法解析。原文片段：%s').format(String(st.raw || '').slice(0, 160))),
+					: T('拿到的不是引擎该回的那段结构化文本，读不懂。原文片段：%s —— 先核对右上角版本号与装上的包版本是否一致（不一致就是浏览器还在吃旧的视图缓存，强刷一次），再点「重新读取」。').format(String(st.raw || '').slice(0, 160))),
 			action: Button({
 				label: T('重新读取'), icon: '\u21bb',
 				onClick: actions.refresh
@@ -1248,8 +1254,11 @@ function BoardPane(st, actions) {
 	kids.push(SummaryStrip(st));
 	kids.push(Section(T('榜单')));
 	kids.push(Leaderboard(st.items));
+	/* 列头那几个缩写在这一行里一次讲清。为什么不用 <abbr> 虚线悬浮（树内插件的做法）：
+	 * 悬浮在触屏上拿不到（本插件实测过 556 处 title 在手机上读不到），
+	 * 而这些是用户每轮都要看的列头，所以写成明文。 */
 	kids.push(el('p', { class: 'note' },
-		T('按 TTFB 升序排列，同值再看总耗时。列头 TCP / TLS / TTFB / 总计 单位均为毫秒；MB/s 为十进制（1 MB = 1000 KB），只对前若干个 IP 实测、仅作参考不参与排序，未测或失败显示 %s。总计那一列含响应体下载时间，会随内容大小变化，所以排序看的是 TTFB（首字节，含 TCP+TLS）。').format(DASH)));
+		T('按 TTFB 升序排列，同值再看总耗时。四个时间列都是毫秒，从浅到深：TCP=能否连上这个 IP；TLS=在它上面能否完成加密握手；TTFB（首字节耗时）=握手加上传请求到收到第一个字节；总计=整段响应收完，含下载内容，会随文件大小变化。排序看的是 TTFB，因为它与内容大小无关。机房=这个 IP 实际把你带到的 Cloudflare 节点城市三字码（如 SIN 新加坡、NRT 东京）。MB/s 为十进制（1 MB = 1000 KB），只对前若干个 IP 实测、仅作参考不参与排序，未测或失败显示 %s。').format(DASH)));
 
 	return el('div', {}, kids);
 }
@@ -1394,7 +1403,7 @@ function SourcesPane(src, actions) {
 
 	kids.push(SourceMatrix(src.rows));
 	kids.push(el('p', { class: 'note' },
-		T('「CF 段内」是判定一个源还能不能用的关键：这个源提取出的 IPv4 里，有多少落在 Cloudflare 官方网段内。占比高说明它还在提供真正的 CF anycast；掉到 90% 以下通常意味着它开始夹带别人自己的中转 / VPS 地址。拉不到的那条会标黄，引擎本轮会跳过它并记日志。')));
+		T('「CF 段内」是判定一个源还能不能用的关键：这个源提取出的 IPv4 里，有多少落在 Cloudflare 官方网段内。占比高说明它还在提供真正的 CF anycast（同一个 IP 在全球多个节点同时广播，你连到的自然是最近的那个）；掉到 90% 以下通常意味着它开始夹带别人自己的中转 / VPS 地址。HTTP 列写「拉不到」表示这条压根没取到（连不上、被拒、超时都算，引擎内部一律记 000，那不是源返回的状态码），这一条会被跳过并记进日志。')));
 
 	return el('div', {}, kids);
 }
@@ -1404,13 +1413,13 @@ function srcMessage(src) {
 		case 'unreachable':
 			return whyNoReply(T('检测没跑成'), 'check_sources');
 		case 'hung':
-			return T('检测没有回应：路由器在 %s 秒内没返回。引擎这一项最坏约 12 秒（每条源 8 秒上限、13 条一批并发），比这更慢就是这台电脑到路由器的路有问题；另外平台侧 rpcd 的 exec 超时是 30 秒，真超了会被掐断，那时页面会报「输出不是合法 JSON」而不是这一句。').format(Math.round(CMD_LIMIT['check-sources'] / 1000));
+			return T('检测没有回应：路由器在 %s 秒内没返回。引擎这一项最坏约 12 秒（每条源 8 秒上限、13 条一批并发），比这更慢通常是这台电脑到路由器的路有问题。先确认浏览器能正常打开路由器其它页面（本机代理/TUN 接管会把到 10.0.0.0/8 的流量吞掉），再点一次「检测源可用性」；反复如此就 ssh 到路由器跑一次 %s check-sources 看它卡在哪条上。（平台侧 rpcd 的 exec 超时是 30 秒，真超了页面会报「输出读不懂」而不是这一句。）').format(Math.round(CMD_LIMIT['check-sources'] / 1000), CMD);
 		case 'parse_error':
-			return T('检测返回的内容不是合法 JSON。原文片段：%s').format(String(src.raw || '').slice(0, 160));
+			return T('检测回的内容读不懂（引擎本该回一段结构化文本）。原文片段：%s —— 先确认装上的引擎和页面是同一版（本页右上角的版本号应与包版本一致），再点一次「检测源可用性」；仍然读不懂就 ssh 跑 %s check-sources 看它到底吐了什么。').format(String(src.raw || '').slice(0, 160), CMD);
 		case 'empty':
 			return T('一条源都没检出：配置里的「社区优选源 URL」是空的。在上面展开「源清单」填几条 HTTPS 地址，点页面底部「保存并应用」，再回来点检测。');
 		default:
-			return T('没有可用的检测结果。');
+			return T('还没有检测结果。点上面的「检测源可用性」跑一次 —— 它只读配置文件里那份清单，不会改动任何设置。');
 	}
 }
 
@@ -1506,7 +1515,7 @@ function logMessage(lg) {
 		case 'empty':
 			return T('日志文件还是空的。引擎每轮开始就会往里写（取源、候选池、达标数、吞吐），跑一轮再回来看看。');
 		default:
-			return T('没有可显示的日志。');
+			return T('没有可显示的日志。日志存在路由器的内存盘里，重启就清零 —— 先点「立即测速」跑一轮，或点「重新读取」再试一次。');
 	}
 }
 
@@ -2865,7 +2874,7 @@ return view.extend({
 		o.rmempty = false;
 		o.description = help('canary_check',
 			_('拿保留地址探一次。'),
-			_('每轮开始前，用 RFC 保留（不可路由）地址走一遍与真实探测完全相同的路径。正常情况下这个请求根本发不出去；如果它竟然拿到了响应，说明本机出口被透明代理接管了 —— 那么这一轮测的所有耗时其实都是「本机 → 代理 → CF」的耗时，不能用来判断 IP 好坏。检测到接管时，本页会出现红条，并且跳过机房与吞吐两列。'));
+			_('每轮开始前，用 RFC 保留（不可路由）地址走一遍与真实探测完全相同的路径。正常情况下这个请求根本发不出去；如果它竟然拿到了响应，说明本机出口被透明代理接管了 —— 那么这一轮测的所有耗时其实都是「本机 → 代理 → CF」的耗时，不能用来判断 IP 好坏。检测到接管时，本页会出现红条，并且跳过机房与吞吐两列。想让它不再报接管：在代理客户端里把探测域名和 Cloudflare 网段设为直连/绕过（本插件不替你改代理），或临时停掉透明代理再跑一轮。'));
 
 		o = thr.option(form.Value, 'probe_user', _('探测发起身份'), _('默认 nobody，别轻易改。'));
 		o.default = 'nobody';
@@ -2891,7 +2900,7 @@ return view.extend({
 		o = gs.option(form.Value, 'gist_id', _('Gist ID'), _('先手工建一个 Gist。'));
 		o.description = help('gist_id',
 			_('先手工建一个 Gist。'),
-			_('Gist 网址最后那串十六进制就是 ID，例如 gist.github.com/you/1a2b3c… 里的 1a2b3c…。需要先在 GitHub 上手工建一个（可以是空的私有 Gist），引擎不会替你创建。'));
+			_('Gist 就是 GitHub 上的一段可共享文本，可以设成私有；引擎把结果写进你指定的那一个，别的设备再从它拉同一份清单。网址最后那串字符就是 ID，例如 gist.github.com/you/1a2b3c… 里的 1a2b3c…。需要先在 GitHub 上手工建一个（空的私有 Gist 就行），引擎不会替你创建。'));
 
 		o = gs.option(form.Value, 'gist_file', _('Gist 文件名'), _('同名更新，改名会多出一份。'));
 		o.default = 'cf-ip.txt';
@@ -2903,7 +2912,7 @@ return view.extend({
 		o.password = true;
 		o.description = help('gist_token',
 			_('只需 gist 权限。'),
-			_('经典令牌，只勾 gist 一个权限就够了，不要用全权限令牌。注意：它会随 sysupgrade 备份一起走，也会在本页以掩码形式回显 —— 如果这不是你想要的，改用下面的 Token 文件路径。'));
+			_('令牌是 GitHub 账号的访问凭证，在「设置 → 开发者设置 → Fine-grained tokens / Personal access tokens」里生成，只勾 gist 一个权限就够，不要用全权限令牌。填在这里它会以掩码回显，并随 sysupgrade 备份一起走 —— 不想让它进配置文件的话，改用下面的 Token 文件路径。'));
 
 		o = gs.option(form.Value, 'token_file', _('Token 文件路径（备选）'), _('两处都填时以 gist_token 为准。'));
 		o.default = '/etc/cf-ipcheck.token';
@@ -2930,7 +2939,7 @@ return view.extend({
 				 * 其余面板照常（检测仍然能检配置文件里已有的源）。 */
 				clear(P.srcEdit);
 				P.srcEdit.appendChild(el('p', { class: 'note' },
-					T('源清单的编辑表单没能加载。下面仍然可以检测配置文件里已有的源；要增删源请改完配置文件再刷新本页。')));
+					T('源清单的编辑表单没能加载。下面仍然可以检测配置文件里已有的源；要增删源，可以先改配置文件（/etc/config/cf_ipcheck 里的 community_sources）再刷新本页。刷新后还是不行，多半是 rpcd 还拿着旧的表单缓存，在路由器上执行 /etc/init.d/rpcd reload 再试。')));
 			}).then(function () {
 				/* 恢复上次停留的标签；没有记录就落到榜单页 */
 				var want = savedTab();

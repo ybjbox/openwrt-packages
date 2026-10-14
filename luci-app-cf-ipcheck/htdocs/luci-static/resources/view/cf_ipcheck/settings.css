@@ -188,8 +188,14 @@
 .cfp .board{border:1px solid var(--rule);border-radius:var(--r2);background:var(--panel);
   overflow:hidden;margin-bottom:var(--s3)}
 .cfp .board-scroll{overflow:auto;max-height:min(58vh,540px)}
+/* 轨道分配：富余宽度过去只给 IP 那一列（它是唯一的 fr），实测 @1600 IP 列被拉到
+ * 868px，8 个数字列合计只有 480px 且全贴着右边缘 —— 一行里 IP 和第一个数字之间
+ * 隔着约 870px 空白，扫一行要横跨半屏。
+ * 现在 IP 按内容收（minmax(9em,max-content)，最长地址约 134px），末尾加一条空的
+ * 1fr 轨道把富余全部吸走：数字紧跟 IP，空白挪到最右边（那里本来就没有要读的东西）。
+ * 不用"给 IP 设 max-width"的写法，是因为那样 @768 会开始出横向滚动（实测 734/726）。 */
 .cfp .brow{display:grid;align-items:center;
-  grid-template-columns:2.4em minmax(9em,1.5fr) 3.6em 4.6em 4.6em 4.8em 5em 3.8em 5.6em;
+  grid-template-columns:2.4em minmax(9em,max-content) 3.6em 4.6em 4.6em 4.8em 5em 3.8em 5.6em minmax(0,1fr);
   border-bottom:1px solid var(--rule-soft);min-width:max-content}
 .cfp .brow:last-child{border-bottom:0}
 /* 源清单只有 5 列，绝不能沿用上面榜单那 9 条轨道 —— 真机实测：URL 列被分到 34px
@@ -216,7 +222,8 @@
 .cfp .spd{display:inline-flex;align-items:center;justify-content:flex-end;gap:.4em;width:100%}
 .cfp .spd-bar{width:32px;height:3px;border-radius:2px;background:var(--idle-bd);overflow:hidden;flex:0 0 auto}
 .cfp .spd-fill{display:block;height:100%;background:var(--ok-fg);border-radius:2px}
-.cfp .board.multi .brow{grid-template-columns:2.4em minmax(9em,1.5fr) 3.6em 4.6em 4.6em 4.8em 5em 3.8em 5.6em minmax(7em,1fr)}
+/* 多域名那一版多一列「胜出域名」（文字列，给它 1fr），末尾同样留一条吸富余的空轨道 */
+.cfp .board.multi .brow{grid-template-columns:2.4em minmax(9em,max-content) 3.6em 4.6em 4.6em 4.8em 5em 3.8em 5.6em minmax(7em,1fr) minmax(0,1fr)}
 .cfp .empty{display:flex;align-items:flex-start;gap:var(--s3);padding:var(--s5) var(--s4);
   border:1px dashed var(--rule);border-radius:var(--r2);background:var(--panel);margin:0 0 var(--s4)}
 .cfp .empty-ic{flex:0 0 auto;width:20px;height:20px;border-radius:50%;
@@ -322,10 +329,39 @@
   .cfp .cell-sub{white-space:normal;overflow:visible;text-overflow:clip}
   .cfp .cell{min-width:0}
   .cfp .cell-v,.cfp .cell-sub{overflow-wrap:anywhere}
-  .cfp .board-scroll{max-height:none}
-  .cfp .logbox{max-height:none}
+  /* 窄屏不再取消内层滚动。原来写 max-height:none 的代价实测很大：556 行日志在
+   * 420px 下把面板撑到 **19346px** 高（320px 是 23527px），一屏都装不下的长滚动条；
+   * 而且表头 `position:sticky` 因此失去滚动参照（实测页面滚 700px、容器滚 60px，
+   * 表头 top 恒为 795 —— 等于没粘）。改成按视口高度封顶并允许容器内滚。 */
+  .cfp .board-scroll{max-height:62vh;overscroll-behavior:contain}
+  .cfp .logbox{max-height:62vh;overscroll-behavior:contain}
   .cfp .empty{flex-direction:column;align-items:stretch;gap:var(--s3)}
   .cfp .grp-t{font-size:var(--t-sm)}
+  /* 折叠头：副标题是 nowrap 的，会把 flex:1 的标题压成"一字一行"—— 实测 420px 下
+   * 「源清单」三个字只剩 **24×58**（每字 8px）。窄屏让副标整行另起，标题拿回宽度；
+   * 顺带解掉 320px 下折叠盒 338/278 的静默截字（overflow:hidden 又没省略号）。 */
+  .cfp .grp-h{flex-wrap:wrap}
+  /* nowrap 是基础规则给的，窄屏必须一并解除，否则副标整行还是撑破盒子被裁
+   * （实测 320px：副标 301 对 246，盒 317 对 278 且 overflow:hidden）。 */
+  .cfp .grp-x{flex:1 0 100%;order:3;margin-left:0;min-width:0;white-space:normal}
+  /* 320px 下源清单每条 URL 把自己的字段撑破（实测 .cbi-dynlist 292 对 .cbi-value-field 214，
+   * 外层 .grp 是 overflow:hidden → 静默裁字）。原因是 .item 作为 flex 项默认
+   * min-width:auto，收不到比"最长不断行片段"更窄。给它 min-width:0 并允许任意处断行，
+   * URL 折成两行而不是撑破盒子。 */
+  .cfp .cbi-value-field,.cfp .cbi-dynlist{min-width:0}
+  /* white-space 必须先解除：主题的 .item 是 nowrap，光给 overflow-wrap 断不了行
+   * （实测 320px 下改前一条 URL 的 .item 仍是 288 宽，把 214 的字段撑破）。 */
+  /* 真正撑破的是 .item 里面那颗 span：实测它 white-space:nowrap 且 min-width:248px
+   * （只改 .item 没用，320px 下 .item 仍是 288 宽）。三个属性一起给才断得开。 */
+  /* 光断字还不够：实测主题给 .item 定了自己的宽度（320px 下 dynlist 292 / item 288，
+   * 而字段只有 214），所以连宽度一起收回容器内。 */
+  .cfp .cbi-dynlist{min-width:0;width:100%;max-width:100%}
+  .cfp .cbi-dynlist > .item,
+  .cfp .cbi-dynlist > .item > span{width:auto;min-width:0;max-width:100%;white-space:normal;overflow-wrap:anywhere}
+  /* 最后撑破的是「+ 添加」那一行（实测 320px 下 .add-item 261 对 248：输入框按默认
+   * size 有约 170px，再挤一个按钮）。让输入框收进可用宽、按钮跟着换行。 */
+  .cfp .cbi-dynlist > .add-item{flex-wrap:wrap}
+  .cfp .cbi-dynlist > .add-item > input[type=text]{flex:1 1 6em;min-width:0;width:auto}
 }
 @media (prefers-reduced-motion: reduce){
   /* 一律关掉，不再逐个点名。这一版新加了 .grp-h / .brow.data 的 hover 过渡 ——

@@ -500,7 +500,11 @@ ok('interrupted 说明锁被回收', /锁/.test(t.why('interrupted')));
 ok('sink_not_writable 提到 rc=23', t.why('sink_not_writable').includes('rc=23'));
 ok('sink_not_writable 不是兜底文案', !t.why('sink_not_writable').includes('引擎报告'));
 ok('empty_pool 给出下一步', /源|检测/.test(t.why('empty_pool')));
-ok('未知原因才走兜底', /失败/.test(t.why('something_new')));
+/* 兜底那句的用处：页面没登记过的原因码不能变成一句英文码糊给用户，
+ * 必须仍然说清「发生了什么 + 去哪儿看 + 下一步」。r49 把文案改成人话后这样判。 */
+ok('未知原因走兜底：带上原始码、指向日志、给出重试动作',
+	t.why('something_new').includes('something_new') && /日志/.test(t.why('something_new')) && /立即测速/.test(t.why('something_new')));
+ok('兜底句不再把英文 reason= 当正文抛给用户', !/reason=/.test(t.why('something_new')));
 
 /* ================================================================== *
  * 4. 榜单：列数随「胜出域名种类」变，数字列一律右对齐
@@ -1615,7 +1619,15 @@ function trackCount(spec) {
 const lbRule = /\.cfp \.brow\{[^}]*?grid-template-columns:([^;]+);/.exec(css);
 const srcRule = /\.cfp \.board\.src \.brow\{[^}]*?grid-template-columns:([^;]+);/.exec(css);
 ok('CSS 里两条网格模板都在', !!lbRule && !!srcRule);
-eq('榜单：列定义数 = 自己的轨道数', t.COLS.length, trackCount(lbRule[1]));
+/* r49 起榜单那一行末尾多一条【吸富余用的空轨道】（minmax(0,1fr)）：过去 IP 列是唯一的
+ * fr，@1600 被拉到 868px，一行里 IP 与第一个数字之间隔着约 870px。所以这里的不变量是
+ * "轨道数 = 列数 + 末尾那条空轨道"，并且空轨道必须在最后、必须是 minmax(0,1fr)。 */
+const lbTracks = lbRule[1].trim().split(/\s+/).filter(Boolean);
+eq('榜单：轨道数 = 列数 + 1 条末尾空轨道', t.COLS.length + 1, lbTracks.length);
+ok('榜单：末尾那条是不占内容的空轨道 minmax(0,1fr)',
+	/minmax\(0,1fr\)/.test(lbTracks[lbTracks.length - 1]));
+ok('榜单：IP 列按内容收（不再是吃掉全部富余的 1.5fr）',
+	/minmax\(9em,max-content\)/.test(lbRule[1]));
 eq('源清单：列定义数 = 自己的轨道数（不再共用榜单的）', t.SRC_COLS.length, trackCount(srcRule[1]));
 const srcBoard = t.SourceMatrix([ { url: 'https://x/y.txt', http: '200', rc: 0, ips: 12, cf_in: 12 } ]);
 ok('源清单的容器带上了 board src 这个类', String(srcBoard.attrs['class'] || '').includes('board src'));
