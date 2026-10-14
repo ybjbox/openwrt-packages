@@ -243,6 +243,12 @@
   border:1px solid var(--rule);border-radius:var(--r2);padding:.55em .7em;
   white-space:pre-wrap;word-break:break-all}
 .cfp .lline{min-height:1.4em}
+/* r45：行首时间戳拆成独立一段 —— 定宽 + 表格数字，让正文那一列左边缘对齐；
+   颜色退一级，扫读时眼睛先看到事件、再看到时刻。 */
+.cfp .lline .lts{display:inline-block;min-width:9.2em;color:var(--ink-3);
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+.cfp .lline.bad .lts,.cfp .lline.warn .lts{color:inherit;opacity:.72}
+.cfp .lline .lmsg{word-break:break-all}
 .cfp .lline.bad{color:var(--bad-fg)}
 .cfp .lline.warn{color:var(--warn-fg)}
 .cfp abbr{text-decoration:underline dotted;text-underline-offset:2px;cursor:help}

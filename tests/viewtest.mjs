@@ -1054,6 +1054,43 @@ ok('日志画在自己的滚动容器里', byClass(lp, 'logbox').length === 1);
 has('说明只给最近一段', lp, '60 KB');
 has('给复制入口', lp, '复制全部');
 
+/* ================================================================== *
+ * 15b. r45：日志最新在上 + 行首时间显示简化（原始串留在悬停里）
+ * ================================================================== */
+const pad2 = (n) => (n < 10 ? '0' + n : String(n));
+const nowD = new Date();
+const tsOf = (d) => d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) +
+	'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds()) + '+0800';
+const todayTs = tsOf(nowD);
+const yestTs = tsOf(new Date(nowD.getTime() - 86400000));
+const oldTs = '2025-03-04T09:08:07+0800';
+const logTxt = [todayTs + ' 第一行（最早）', todayTs + ' 第二行', todayTs + ' 本轮完成（最新）'].join('\n') + '\n';
+const blk = t.LogBlock(logTxt);
+const lns = byClass(blk, 'lline');
+eq('三行都还在', lns.length, 3);
+ok('最新那一行排在最上面', (textOf(lns[0])).includes('本轮完成'));
+ok('最早那一行沉到最下', (textOf(lns[2])).includes('第一行'));
+const firstTs = lns[0].querySelector ? lns[0].querySelector('.lts') : null;
+ok('行首时间被拆成独立一段（正文另起一段）', !!firstTs && !!lns[0].querySelector('.lmsg'));
+eq('今天只显示 HH:MM:SS（不带日期与偏移）', firstTs.textContent,
+	pad2(nowD.getHours()) + ':' + pad2(nowD.getMinutes()) + ':' + pad2(nowD.getSeconds()));
+ok('悬停里留着原始时间戳', String(firstTs.attrs.title || '').includes(todayTs), firstTs.attrs.title);
+ok('悬停里还给了距今', /刚刚|分钟前/.test(String(firstTs.attrs.title || '')), firstTs.attrs.title);
+eq('正文段不再带时间前缀', lns[0].querySelector('.lmsg').textContent, '本轮完成（最新）');
+const yb = t.LogBlock(yestTs + ' 昨天的事' + '\n');
+ok('昨天的行带上「昨天」', textOf(yb.querySelector('.lts')).includes('昨天'), textOf(yb.querySelector('.lts')));
+const ob = t.LogBlock(oldTs + ' 去年的事' + '\n');
+ok('跨年带上完整日期', textOf(ob.querySelector('.lts')).includes('2025-03-04'), textOf(ob.querySelector('.lts')));
+const nb = t.LogBlock('没有前缀的一行' + '\n' + '\t缩进的续行' + '\n');
+eq('没有时间戳的行原样保留（不拆段）', byClass(nb, 'lts').length, 0);
+ok('没有时间戳的行也走同一条倒序（最后一行排到最上）',
+	textOf(byClass(nb, 'lline')[0]).includes('缩进的续行'));
+ok('原样保留整串（不拆段、不吞字符）', textOf(byClass(nb, 'lline')[1]).includes('没有前缀的一行'));
+const badb = t.LogBlock(todayTs + ' 社区源拉取失败' + '\n');
+ok('倒序与上色互不干扰：坏消息行照样带 bad', byClass(badb, 'lline bad').length, 1);
+has('脚注说清最新在上与悬停看原始时间', t.LogsPane({ state: 'ok', text: logTxt }, { refresh: noop, copy: noop }), '最新的在最上面');
+has('复制入口说明自己给的是时间先后', t.LogsPane({ state: 'ok', text: logTxt }, { refresh: noop, copy: noop }), '复制全部');
+
 /* 面板从 3 个变 4 个：日志页和另外三页同一条约束 —— 一直在文档里，切换只翻 class */
 eq('标签顺序：日志在配置之前', t.TAB_DEFS.map(d => d.id).join(','), 'board,sources,logs,config');
 ok('store 默认带 logs（null = 还没读过）', t.store.get().logs === null);

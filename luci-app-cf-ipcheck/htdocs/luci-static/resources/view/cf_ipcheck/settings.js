@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r44'
+var VIEW_BUILD = 'r45';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -1394,14 +1394,69 @@ function logTone(line) {
 	return '';
 }
 
+/* 引擎每行都以 `2026-10-14T05:16:29+0800 ` 开头（r25 起是路由器本地时间 + 偏移）。
+ * 整串贴在每条前面既占地方又难扫读，所以显示时拆成两段：
+ *   - 今天 → `05:16:29`；昨天 → `昨天 05:16:29`；今年更早 → `10-13 05:16:29`；跨年 → 带年份
+ *   - 原始那一串完整留在 title 里（悬停可见），一行信息都不丢
+ * 只解析、不换算时区：日志串本身已经是路由器本地时间，再过一遍 Date 的本地化
+ * 反而会把电脑不在 +0800 时的显示搞成另一种时刻（title 里给的是原始串，可核对）。 */
+var LOG_TS_RE = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})([+-]\d{2}):?(\d{2})/;
+
+function logStamp(ln) {
+	var m = LOG_TS_RE.exec(ln);
+	if (!m)
+		return null;
+	var pad = function (n) { return n < 10 ? '0' + n : String(n); };
+	var now = new Date();
+	var ymd = m[1] + '-' + m[2] + '-' + m[3];
+	var hmss = m[4] + ':' + m[5] + ':' + m[6];
+	var today = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate());
+	var yd = new Date(now.getTime() - 86400000);
+	var yesterday = yd.getFullYear() + '-' + pad(yd.getMonth() + 1) + '-' + pad(yd.getDate());
+	var shown;
+	if (ymd === today)
+		shown = hmss;
+	else if (ymd === yesterday)
+		shown = T('昨天') + ' ' + hmss;
+	else if (m[1] === String(now.getFullYear()))
+		shown = m[2] + '-' + m[3] + ' ' + hmss;
+	else
+		shown = ymd + ' ' + hmss;
+	/* 悬停里给原始串 + 距今多久。距今只在重画时算一次，所以不会每秒自己跳
+	 * （logsKeyOf 只在内容变化时重画，这是刻意的：常跳动的相对时间会晃眼）。 */
+	var title = ln.slice(0, m[0].length);
+	var ts = Date.parse(ymd + 'T' + hmss + m[7] + ':' + m[8]);
+	if (isFinite(ts)) {
+		var mins = Math.floor((now.getTime() - ts) / 60000);
+		if (mins < 0)
+			mins = 0;
+		title += ' · ' + (mins < 1 ? T('刚刚') :
+			(mins < 60 ? T('%d 分钟前').format(mins) :
+				(mins < 1440 ? T('%d 小时前').format(Math.floor(mins / 60)) :
+					T('%d 天前').format(Math.floor(mins / 1440)))));
+	}
+	return { shown: shown, title: title, rest: ln.slice(m[0].length).replace(/^[ \t]+/, '') };
+}
+
 function LogBlock(text) {
 	var lines = String(text).split('\n');
 	while (lines.length && !lines[lines.length - 1])
 		lines.pop();
+	/* 最新在最上面（r45）：日志是"刚才发生了什么"，一屏里最该先看到的是最后一行，
+	 * 原来那种"读完要滚到底"的顺序每次都得先跳到底部。复制按钮那份仍是时间先后。 */
+	var out = [];
+	for (var i = lines.length - 1; i >= 0; i--)
+		out.push(lines[i]);
 	return el('div', { class: 'logbox', role: 'log', 'aria-live': 'off' },
-		lines.map(function (ln) {
+		out.map(function (ln) {
 			var t = logTone(ln);
-			return el('div', { class: t ? 'lline ' + t : 'lline', text: ln });
+			var st = logStamp(ln);
+			if (!st)
+				return el('div', { class: t ? 'lline ' + t : 'lline', text: ln });
+			return el('div', { class: t ? 'lline ' + t : 'lline' }, [
+				el('span', { class: 'lts', title: st.title, text: st.shown }),
+				el('span', { class: 'lmsg', text: st.rest })
+			]);
 		}));
 }
 
@@ -1466,8 +1521,8 @@ function LogsPane(lg, actions) {
 
 	kids.push(LogBlock(lg.text));
 	kids.push(el('div', { class: 'note' }, [
-		el('span', { text: T('只给最近这一段（最多约 60 KB）；日志总量按「配置 → 基本设置 → 日志体积上限」封顶，超限会丢掉较早的内容并在这里留一行说明。行首时间戳是路由器自己的本地时间并带时区偏移（国内是 +0800），不是 UTC。') }),
-		Button({ kind: 'lnk', label: T('复制全部'), onClick: actions.copy })
+		el('span', { text: T('最新的在最上面。行首时间只显示时刻（今天的显示 HH:MM:SS，昨天与更早带上日期），鼠标停在上面能看到原始时间戳与距今多久 —— 那是路由器自己的本地时间并带时区偏移（国内是 +0800），不是 UTC。只给最近这一段（最多约 60 KB）；日志总量按「配置 → 基本设置 → 日志体积上限」封顶，超限会丢掉较早的内容并在这里留一行说明。') }),
+		Button({ kind: 'lnk', label: T('复制全部'), title: T('按时间先后复制原始日志（与页面上的倒序显示相反），方便直接粘给别人看。'), onClick: actions.copy })
 	]));
 	return el('div', {}, kids);
 }
@@ -2473,18 +2528,28 @@ function buildPage(mapnode) {
 			return;
 		var box = logsPane.querySelector ? logsPane.querySelector('.logbox') : null;
 		var keepTop = 0;
-		var atBottom = false;
+		var oldH = 0;
+		var atTop = false;
 		if (box) {
 			keepTop = box.scrollTop;
-			atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 4;
+			oldH = box.scrollHeight;
+			/* r45 起最新在【最上面】，所以"跟着新行走"= 贴在顶部，而不是贴底。
+			 * 判据留 4px 容差：缩放/取整会让 scrollTop 永远差那么一两像素。 */
+			atTop = box.scrollTop <= 4;
 		}
 		logsDrawn = true;
 		lastLogsKey = key;
 		clear(logsPane);
 		logsPane.appendChild(LogsPane(state.logs, { refresh: actLogs, copy: actCopyLogs }));
 		var fresh = logsPane.querySelector ? logsPane.querySelector('.logbox') : null;
-		if (fresh)
-			fresh.scrollTop = atBottom ? fresh.scrollHeight : keepTop;
+		if (fresh) {
+			if (atTop)
+				fresh.scrollTop = 0;
+			else
+				/* 新行是【加在顶部】的，所以原来读到的那一行会整体下移：
+				 * 补偿这段高度差，用户眼前的内容才不动。 */
+				fresh.scrollTop = keepTop + Math.max(0, fresh.scrollHeight - oldH);
+		}
 	}
 
 	/* ---- 面板 4：配置 ---- */
