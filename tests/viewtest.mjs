@@ -1059,8 +1059,17 @@ has('给复制入口', lp, '复制全部');
  * ================================================================== */
 const pad2 = (n) => (n < 10 ? '0' + n : String(n));
 const nowD = new Date();
-const tsOf = (d) => d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) +
-	'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds()) + '+0800';
+/* 造时间戳必须用**运行这台 CI 的本地时区**：上一版把偏移写死成 +0800，
+ * 而 GitHub runner 是 UTC —— 于是"距今"算出 8 小时，断言把产品的正确行为判成失败。
+ * 这里按浏览器自己的时钟与偏移生成，产品看到的"今天/昨天"才和断言是同一个日子。 */
+const tsOf = (d) => {
+	const off = -d.getTimezoneOffset();
+	const sign = off >= 0 ? '+' : '-';
+	const a = Math.abs(off);
+	return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) +
+		'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds()) +
+		sign + pad2(Math.floor(a / 60)) + pad2(a % 60);
+};
 const todayTs = tsOf(nowD);
 const yestTs = tsOf(new Date(nowD.getTime() - 86400000));
 const oldTs = '2025-03-04T09:08:07+0800';
@@ -1075,7 +1084,8 @@ ok('行首时间被拆成独立一段（正文另起一段）', !!firstTs && !!l
 eq('今天只显示 HH:MM:SS（不带日期与偏移）', firstTs.textContent,
 	pad2(nowD.getHours()) + ':' + pad2(nowD.getMinutes()) + ':' + pad2(nowD.getSeconds()));
 ok('悬停里留着原始时间戳', String(firstTs.attrs.title || '').includes(todayTs), firstTs.attrs.title);
-ok('悬停里还给了距今', /刚刚|分钟前/.test(String(firstTs.attrs.title || '')), firstTs.attrs.title);
+ok('悬停里还给了距今（刚刚/分钟前/小时前都算）',
+	/刚刚|分钟前|小时前/.test(String(firstTs.attrs.title || '')), firstTs.attrs.title);
 eq('正文段不再带时间前缀', lns[0].querySelector('.lmsg').textContent, '本轮完成（最新）');
 const yb = t.LogBlock(yestTs + ' 昨天的事' + '\n');
 ok('昨天的行带上「昨天」', textOf(yb.querySelector('.lts')).includes('昨天'), textOf(yb.querySelector('.lts')));
