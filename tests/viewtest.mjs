@@ -42,6 +42,9 @@ const hook = "\nglobalThis.__cf_t = {\n" +
 	"\tTAB_DEFS: TAB_DEFS, GROUPS: GROUPS, GROUP_OPTIONS: GROUP_OPTIONS,\n" +
 	"\tel: el, luminanceOf: luminanceOf, detectScheme: detectScheme,\n" +
 	"\tlinkStyle: linkStyle, applyScheme: applyScheme, CSS_PATH: CSS_PATH,\n" +
+	/* 用 typeof 兜一下：让 r47 那种「还没有 watchScheme」的旧视图也能加载，
+	 * 好把「缺了这个函数」变成一条看得懂的 FAIL，而不是整份文件报错。 */
+	"\twatchScheme: (typeof watchScheme === 'function' ? watchScheme : null),\n" +
 	"\tget store() { return store; },\n" +
 	"\tget P() { return P; }, goto: goto, savedTab: savedTab,\n" +
 	"\tbuildPage: buildPage, runCmd: runCmd,\n" +
@@ -924,6 +927,40 @@ ok('CSS 里的 class 前缀统一', /\.cfp/.test(css) && /\.board/.test(css) && 
 ok('忙碌态在图标位画转圈', /\.cfp button\.busy \.bi\{[^]*?animation:cfp-spin/.test(css));
 ok('忙碌态不再只靠降透明度', !/\.cfp button\.busy\{pointer-events:none;opacity:\.6\}/.test(css));
 
+/* ---- r48 审计修的那几条，钉成红线（数字来自真机换算引擎实测） ---- */
+const lightBlock = (/\.cfp\.is-light\s*\{([^}]*)\}/.exec(css) || [null, ''])[1];
+const darkBlock = /:root\s*\{([^}]*)\}/.exec(css)?.[1] || '';
+const inkL = (block) => {
+	const m = /--ink-3:oklch\((\d+(?:\.\d+)?)%/.exec(block || '');
+	return m ? parseFloat(m[1]) : NaN;
+};
+const lightInk3 = inkL(lightBlock), darkInk3 = inkL(darkBlock);
+ok('亮色 --ink-3 抠得出数值（写法变了这条会红，提醒同步改判据）', lightInk3 > 0, String(lightInk3));
+ok('亮色 --ink-3 压到 L≤55（旧值 60 实测 3.94，浅灰底只有 3.60）', lightInk3 <= 55, String(lightInk3));
+ok('暗色 --ink-3 不低于 L64（旧值 62 压在主题深色卡上实测 4.21）', darkInk3 >= 64, String(darkInk3));
+ok('字段说明显式抬回 opacity:1 并走 --ink-2（上游 cascade.css 的 .5 实测压成 1.89:1）',
+	/\.cfp \.cbi-value-description\{[^}]*opacity:1[^}]*color:var\(--ink-2\)/.test(css));
+ok('亮色文字型强调也走 color-mix 压深（旧值裸 --accent 实测 4.20）',
+	/--accent-ink:color-mix\(in oklab, var\(--accent\) 8[0-4]%, black\)/.test(lightBlock));
+ok('主按钮的底色单独走 --accent-btn（白字压裸主色实测只有 4.20）',
+	/--accent-btn:color-mix\(in oklab, var\(--accent\)/.test(lightBlock) &&
+	/\.cfp button\.primary\{[^}]*background:var\(--accent-btn\)/.test(css));
+ok('暗色主按钮照旧用主题主色（实测白字 9.07，本来就过）',
+	/--accent-btn:var\(--accent\)/.test(darkBlock));
+ok('.lnk 走 --accent-ink，不再拿焦点环色当正文色（实测 --focus 只有 3.91）',
+	/\.cfp \.lnk\{[^}]*color:var\(--accent-ink\)/.test(css));
+ok('焦点环仍然用 --focus（图形色门槛 3.0，别跟着文字一起改）',
+	/:focus-visible\{outline:2px solid var\(--focus\)/.test(css));
+ok('bad/warn 行的时间戳不再压 opacity（实测只剩 2.53 / 2.46）',
+	!/\.lline\.bad \.lts[^}]*opacity/.test(css));
+ok('折叠头 hover 有过渡（旧版 all/0s，同页按钮都是 120ms）',
+	/\.cfp \.grp-h\{[^}]*transition:background var\(--d-fast\)/.test(css));
+ok('榜单行 hover 有过渡', /\.cfp \.brow\.data\{transition:background var\(--d-fast\)/.test(css));
+ok('窄屏读数副行允许折行（省略号那条完整内容只在 title 里，触摸读不到）',
+	/\.cfp \.cell-sub\{white-space:normal/.test(css));
+ok('窄屏长值给 min-width:0 + overflow-wrap（域名 148 对 125 会 paint 到邻列）',
+	/\.cfp \.cell\{min-width:0\}/.test(css) && /\.cfp \.cell-v,\.cfp \.cell-sub\{overflow-wrap:anywhere\}/.test(css));
+
 /* linkStyle：幂等，挂不上也不许抛 */
 documentStub.head = makeNode('head');
 t.linkStyle();
@@ -953,6 +990,54 @@ globalThis.getComputedStyle = () => ({ backgroundColor: 'rgba(0, 0, 0, 0)' });
 eq('全程拿不到不透明底色时默认暗色（不误闪一下亮底）', t.detectScheme(), 'dark');
 if (oldGCS === undefined) delete globalThis.getComputedStyle;
 else globalThis.getComputedStyle = oldGCS;
+
+/* r48：applyScheme 的比较对象必须是「这个节点自己的类名」，不是模块级缓存。
+ * schemeNow 是模块级变量，而 buildPage 可能在同一份 JS 里跑第二次（17 节那条注释写明了），
+ * 拿缓存早退的话，第二次进来的新 root 永远等不到 is-light —— 亮色主题下用暗色令牌渲染。
+ * 关键是「主题没变 + 换了新节点」这一串：只测第一次建页抓不到（那时缓存还没建立）。 */
+const oldGCS2 = globalThis.getComputedStyle;
+globalThis.getComputedStyle = () => ({ backgroundColor: 'rgb(244, 245, 247)' });
+const first = { className: 'cfp' };
+eq('第一次建页：判 light 并加上类', t.applyScheme(first), 'light');
+eq('第一次建页后类名是 cfp is-light', first.className, 'cfp is-light');
+const second = { className: 'cfp' };
+eq('主题没变（缓存已经是 light）', t.applyScheme(second), 'light');
+eq('第二次进页面的新 root 也要写上 is-light（r47 在这里返回 cfp）', second.className, 'cfp is-light');
+let writes = 0, cls = 'cfp is-light';
+const spy = { get className() { return cls; }, set className(v) { cls = v; writes++; } };
+t.applyScheme(spy);
+eq('类名本来就对 → 一次 className 都不写（每拍碰节点会牵连点击）', writes, 0);
+/* watchScheme：系统偏好一变就复查。真机实测空闲页 20 秒不跟随（applyScheme 只在
+ * render 与 pollTick 里跑，而空闲不轮询），那个错配态里选中标签只有 1.07:1。 */
+ok('视图提供 watchScheme（r47 没有这一条）', typeof t.watchScheme === 'function');
+if (typeof t.watchScheme === 'function') {
+	let mql = [];
+	globalThis.matchMedia = () => ({ media: '(prefers-color-scheme: dark)', matches: false,
+		addEventListener: (k, fn) => { mql.push([k, fn]); },
+		removeEventListener: (k, fn) => { mql = mql.filter(x => x[1] !== fn); } });
+	globalThis.getComputedStyle = () => ({ backgroundColor: 'rgb(30, 30, 30)' });
+	const wnode = { className: 'cfp' };
+	eq('暗色下建页：类名是 cfp', t.applyScheme(wnode), 'dark');
+	const stopWatch = t.watchScheme(wnode);
+	eq('注册了一条 change 监听', mql.length, 1);
+	eq('监听的是 change 这一件事', mql[0][0], 'change');
+	globalThis.getComputedStyle = () => ({ backgroundColor: 'rgb(244, 245, 247)' });
+	mql[0][1]();
+	eq('系统转亮 → 根节点当场跟上 is-light（不用等下一次轮询或换页）', wnode.className, 'cfp is-light');
+	stopWatch();
+	eq('把手调完监听被摘干净（teardown 不退就会跨实例累积）', mql.length, 0);
+	/* 真实路径的同一条要求：连着建两次页，监听也只能有一份（和 store 订阅一回事）。 */
+	mql = [];
+	globalThis.getComputedStyle = () => ({ backgroundColor: 'rgb(244, 245, 247)' });
+	t.buildPage(null);
+	t.buildPage(null);
+	eq('两次 buildPage 之后只剩一份 change 监听', mql.length, 1);
+	eq('两次 buildPage 之后新 root 有 is-light', t.P.root.className, 'cfp is-light');
+	delete globalThis.matchMedia;
+	eq('没有 matchMedia 的环境回 null 而不是抛', String(t.watchScheme({ className: 'cfp' })), 'null');
+}
+if (oldGCS2 === undefined) delete globalThis.getComputedStyle;
+else globalThis.getComputedStyle = oldGCS2;
 
 /* ================================================================== *
  * 13. RPC 三态：正常 / 被拒 / 挂住

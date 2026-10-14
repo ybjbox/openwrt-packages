@@ -38,7 +38,7 @@
   --panel-2:oklch(26.5% 0.013 250);
   --ink:oklch(93% 0.005 250);
   --ink-2:oklch(76% 0.008 250);
-  --ink-3:oklch(62% 0.010 250);
+  --ink-3:oklch(66% 0.010 250);
   --rule:oklch(34% 0.014 250);
   --rule-soft:oklch(29% 0.013 250);
   --focus:oklch(72% 0.14 250);
@@ -59,6 +59,9 @@
   --bad-bd:oklch(43% 0.090 27);
   --accent:var(--dark-primary, var(--primary, oklch(52% 0.15 52)));
   --accent-ink:color-mix(in oklab, var(--accent) 58%, white);
+  /* 主按钮的底色：白字要过 4.5。暗色下主题给的深主色本来就够（实测 9.07），照旧；
+   * 亮色那条要压深，理由见下面浅色令牌块里同一行的注释。 */
+  --accent-btn:var(--accent);
   --accent-fg:oklch(100% 0 0);
   --accent-bg:oklch(30% 0.050 52);
   --shadow:0 1px 2px oklch(0% 0 0 / 0.28);
@@ -69,7 +72,7 @@
   --panel-2:oklch(96.8% 0.005 250);
   --ink:oklch(24% 0.018 250);
   --ink-2:oklch(45% 0.014 250);
-  --ink-3:oklch(60% 0.012 250);
+  --ink-3:oklch(54% 0.012 250);
   --rule:oklch(88% 0.008 250);
   --rule-soft:oklch(93% 0.006 250);
   --focus:oklch(58% 0.17 250);
@@ -89,7 +92,12 @@
   --bad-bg:oklch(95.5% 0.035 28);
   --bad-bd:oklch(82% 0.090 27);
   --accent:var(--primary, var(--primary-color-high, oklch(54% 0.19 265)));
-  --accent-ink:var(--accent);
+  /* 亮色下主题的 --primary 直接当文字用只有 4.20（Argon 实测 rgb(94,114,228) / 白卡），
+   * 差正文门槛 4.5 —— 所以和暗色那套同一个办法：把主色往黑压一档再当字色。
+   * 压到 84% 时最坏的一处（--panel-2 浅灰底）是 5.69，留了余量。 */
+  --accent-ink:color-mix(in oklab, var(--accent) 84%, black);
+  /* 主按钮是白字压底色，压深的是**底色**而不是字色：84% 时白字 6.23。 */
+  --accent-btn:color-mix(in oklab, var(--accent) 84%, black);
   --accent-fg:oklch(100% 0 0);
   --accent-bg:oklch(96% 0.030 55);
   --shadow:0 1px 2px oklch(30% 0.02 250 / 0.07);
@@ -137,7 +145,7 @@
 .cfp button:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 .cfp button:active:not(:disabled){transform:translateY(1px)}
 .cfp button:disabled{opacity:.42;cursor:not-allowed}
-.cfp button.primary{border-color:transparent;background:var(--accent);color:var(--accent-fg);font-weight:600}
+.cfp button.primary{border-color:transparent;background:var(--accent-btn);color:var(--accent-fg);font-weight:600}
 .cfp button.primary:hover:not(:disabled){filter:brightness(1.07);border-color:transparent}
 .cfp button.ghost{background:transparent;border-color:transparent;color:var(--ink-2);padding:.42em .55em}
 .cfp button.ghost:hover:not(:disabled){background:var(--panel-2);border-color:transparent;color:var(--ink)}
@@ -146,7 +154,9 @@
   border-radius:50%;width:.85em;height:.85em;animation:cfp-spin .8s linear infinite}
 .cfp .bi{width:1em;text-align:center;font-style:normal;opacity:.75;flex:0 0 auto}
 .cfp button.primary .bi{opacity:1}
-.cfp .lnk{background:none;border:0;padding:.15em .3em;color:var(--focus);font-size:var(--t-xs);
+/* 文字型强调走 --accent-ink（本文件开头那条口径），不是 --focus：
+ * --focus 是给焦点环/描边用的图形色（门槛 3.0 就够），当 11px 正文用实测只有 3.91。 */
+.cfp .lnk{background:none;border:0;padding:.15em .3em;color:var(--accent-ink);font-size:var(--t-xs);
   border-radius:var(--r1);cursor:pointer;min-height:0}
 .cfp .lnk:hover:not(:disabled){background:var(--panel-2);border-color:transparent}
 .cfp .tabs{display:flex;gap:var(--s1);border-bottom:1px solid var(--rule);margin-bottom:var(--s4);
@@ -194,6 +204,7 @@
   color:var(--ink-3);padding-top:var(--s2);padding-bottom:var(--s2)}
 .cfp .bc{padding:var(--s2) var(--s3);font-size:var(--t-sm);white-space:nowrap}
 .cfp .bc.r{text-align:right}
+.cfp .brow.data{transition:background var(--d-fast) var(--e-out)}
 .cfp .brow.data:hover{background:var(--panel-2)}
 .cfp .brow.top > .bc:first-child{box-shadow:inset 3px 0 0 var(--accent)}
 .cfp .brow.top .bc{font-weight:600}
@@ -247,7 +258,10 @@
    颜色退一级，扫读时眼睛先看到事件、再看到时刻。 */
 .cfp .lline .lts{display:inline-block;min-width:9.2em;color:var(--ink-3);
   font-variant-numeric:tabular-nums;white-space:nowrap}
-.cfp .lline.bad .lts,.cfp .lline.warn .lts{color:inherit;opacity:.72}
+/* bad/warn 行的时间戳原来再压一层 opacity:.72 表"退一级"—— 亮色下实测只剩
+ * **2.53:1**（bad）/ **2.46:1**（warn），而这一列是给人读时刻的、不是装饰。
+ * 改成随行同色不压淡；层级靠正常行的 --ink-3 与正文拉开就够了。 */
+.cfp .lline.bad .lts,.cfp .lline.warn .lts{color:inherit}
 .cfp .lline .lmsg{word-break:break-all}
 .cfp .lline.bad{color:var(--bad-fg)}
 .cfp .lline.warn{color:var(--warn-fg)}
@@ -263,7 +277,7 @@
 .cfp .grp{border:1px solid var(--rule);border-radius:var(--r2);margin-bottom:var(--s3);
   background:var(--panel);overflow:hidden}
 .cfp .grp-h{display:flex;align-items:center;gap:var(--s2);padding:var(--s3) var(--s4);
-  cursor:pointer;user-select:none}
+  cursor:pointer;user-select:none;transition:background var(--d-fast) var(--e-out)}
 .cfp .grp-h:hover{background:var(--panel-2)}
 .cfp .grp-h:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
 .cfp .grp-t{font-size:var(--t-md);font-weight:600;flex:1;min-width:0}
@@ -276,7 +290,10 @@
 .cfp .grp-b{display:none;border-top:1px solid var(--rule-soft)}
 .cfp .grp.open .grp-b{display:block}
 .cfp .sep{color:var(--rule);user-select:none}
-.cfp .cbi-value-description{max-width:none;cursor:help}
+/* 上游 cascade.css 给 .cbi-value-description 写了 opacity:.5 —— 那不是"浅一点的颜色"而是
+ * 整组半透明：我们 24% 的墨被压成实测 **1.89:1**，里面的 ⓘ 只有 **1.56:1**（图形门槛 3.0），
+ * 28 个字段全中。这里按自己的令牌重新给色，并显式把 opacity 抬回 1。 */
+.cfp .cbi-value-description{max-width:none;cursor:help;opacity:1;color:var(--ink-2)}
 .cfp .hmark{display:inline-flex;align-items:center;justify-content:center;
   width:1.05em;height:1.05em;margin-left:.4em;border:1px solid var(--rule);
   border-radius:50%;font-size:.82em;font-style:normal;line-height:1;
@@ -298,6 +315,13 @@
   .cfp .tab{padding:.55em .65em;font-size:var(--t-sm)}
   .cfp .strip{grid-template-columns:repeat(auto-fit,minmax(104px,1fr))}
   .cfp .cell-v{font-size:var(--t-md)}
+  /* 窄屏读数条两处"看不见内容"的修法（真机 420px 实测）：
+   * 副行被 ellipsis 裁成 135/137/117 对 101，完整句子只在 title 里 —— 触摸设备悬不到，
+   * 所以让它折行；长值（探测域名）148 对 125 且 overflow 是 visible+clip，会paint到邻列
+   * 上面，所以给 min-width:0 让轨道真能收，再用 overflow-wrap 把长串断开。 */
+  .cfp .cell-sub{white-space:normal;overflow:visible;text-overflow:clip}
+  .cfp .cell{min-width:0}
+  .cfp .cell-v,.cfp .cell-sub{overflow-wrap:anywhere}
   .cfp .board-scroll{max-height:none}
   .cfp .logbox{max-height:none}
   .cfp .empty{flex-direction:column;align-items:stretch;gap:var(--s3)}

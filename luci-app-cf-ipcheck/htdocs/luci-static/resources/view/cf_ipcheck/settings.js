@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r47';
+var VIEW_BUILD = 'r48';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -146,16 +146,52 @@ function detectScheme() {
 }
 
 /* 把判定结果落到根节点的类上（CSS 里那套浅色令牌挂在 .cfp.is-light 下）。
- * 只在真的变了时才动 className，别每拍都碰 —— 碰节点这件事在别的版本上
- * 已经证明会牵连到点击行为。 */
+ * 比较的对象是**这个节点自己的类名**，不是模块级缓存：buildPage 可能在同一份 JS 里
+ * 跑第二次（下面 17 节那条注释写明了），而 `schemeNow` 是模块级的 —— 拿缓存做早退，
+ * 第二次进来的新 root（class 只有 "cfp"）就永远等不到 is-light，
+ * 表现是「亮色主题下这块用暗色令牌渲染」。r48 实测过这条路径。
+ * 仍然只在类名真的不对时才写 className：每拍都碰节点会牵连点击行为。 */
 function applyScheme(node) {
 	var want = detectScheme();
-	if (want === schemeNow)
-		return want;
+	var cls = 'cfp' + (want === 'light' ? ' is-light' : '');
 	schemeNow = want;
-	if (node && node.className != null)
-		node.className = 'cfp' + (want === 'light' ? ' is-light' : '');
+	if (node && node.className != null && node.className !== cls)
+		node.className = cls;
 	return want;
+}
+
+/* 系统偏好一变就复查一次明暗（r48）。为什么不能只靠 pollTick 里那一次：空闲不轮询，
+ * 而真机实测「把系统切暗」之后我们这块 20 秒内一次都没跟上（每 2 秒采一次，
+ * .cfp 一直是 is-light 而主题底色已经是 rgb(30,30,30)），那个错配态里选中标签只有
+ * 1.07:1、字段标题被主题刷成 rgb(204,204,204) 压在我们的白卡上 1.61:1。
+ * 换页重新 render 会自动纠正，但长时间停在页面上不能等下一次导航。
+ * change 事件到达时主题自己的样式重算未必已经落地，所以立刻判一次、下一帧再补一次。
+ * 回一个卸载把手给 teardown 用：监听器挂在 matchMedia 上，不摘就横跨页面实例累积。 */
+function watchScheme(node) {
+	var mq;
+	try {
+		if (typeof matchMedia !== 'function')
+			return null;
+		mq = matchMedia('(prefers-color-scheme: dark)');
+	} catch (e) {
+		return null;
+	}
+	if (!mq || typeof mq.addEventListener !== 'function')
+		return null;
+	function recheck() {
+		applyScheme(node);
+		try {
+			if (typeof requestAnimationFrame === 'function')
+				requestAnimationFrame(function () { applyScheme(node); });
+		} catch (e) {
+			/* 没有 rAF 就只认立刻这一次 */
+		}
+	}
+	mq.addEventListener('change', recheck);
+	return function () {
+		if (mq.removeEventListener)
+			mq.removeEventListener('change', recheck);
+	};
 }
 
 /* ==========================================================================
@@ -2357,7 +2393,8 @@ var P = {
 	form: null,      /* 配置页那张 Map（其余 32 个字段） */
 	srcForm: null,   /* 源清单专用 Map（只含 community_sources），渲染进源页宿主 */
 	srcEdit: null,   /* 源清单表单的固定宿主（在「源与检测」页，不参与每拍重画） */
-	srcRes: null     /* 检测结果宿主：drawSources 只清这一块 */
+	srcRes: null,    /* 检测结果宿主：drawSources 只清这一块 */
+	stopSchemeWatch: null  /* 明暗监听的卸载把手（teardown 里必须调，否则跨页面实例累积） */
 };
 
 var TAB_DEFS = [
@@ -2447,6 +2484,11 @@ function buildPage(mapnode) {
 	 * 类名晚一步加就会先闪一下暗底（首帧就在用户眼前）。 */
 	P.root = root;
 	applyScheme(root);
+	/* 先退上一份再登记：buildPage 可能在同一份 JS 里跑第二次（见 17 节那条注释），
+	 * 不退就会每进一次页面多挂一个监听，而旧回调还攥着上一份 root 节点。 */
+	if (P.stopSchemeWatch)
+		P.stopSchemeWatch();
+	P.stopSchemeWatch = watchScheme(root);
 
 	/* 读数条与提示条：各自订阅 store 重画 */
 	P.rail = el('div');
@@ -2923,6 +2965,12 @@ return view.extend({
 		if (P.unsub) {
 			P.unsub();
 			P.unsub = null;
+		}
+		/* 明暗监听也挂在模块外的对象上（matchMedia），不摘就会跨页面实例累积，
+		 * 而且旧回调还攥着上一份 root 节点。 */
+		if (P.stopSchemeWatch) {
+			P.stopSchemeWatch();
+			P.stopSchemeWatch = null;
 		}
 		/* 表单把手与源页宿主一起清掉：teardown 之后 DOM 已经不在文档里，
 		 * 留着旧 Map 实例会让下次进页面时把值写到一份废弃的表单上。 */
