@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r49';
+var VIEW_BUILD = 'r50';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -1164,6 +1164,20 @@ function RunProgress(st) {
 	return el('div', { class: 'prog' }, kids);
 }
 
+/* 榜单本体：读数条 + 小标题 + 表格 + 列头说明。
+ * r49 抽出来共用：过去只有「正常完成」那条分支会带这段脚注，于是本轮失败或读不到
+ * 但仍展示上一轮榜单时，同样这 9 列一个字都不解释 —— 而那一刻恰恰最需要看懂列头。
+ * 脚注里为什么不用 <abbr> 虚线悬浮（树内插件的做法）：悬浮在触屏上拿不到
+ * （本插件实测过 556 处 title 在手机上读不到），而这些是每轮都要看的列头，写成明文。 */
+function BoardTable(st, kids) {
+	kids.push(SummaryStrip(st));
+	kids.push(Section(T('榜单')));
+	kids.push(Leaderboard(st.items));
+	kids.push(el('p', { class: 'note' },
+		T('按 TTFB 升序排列，同值再看总耗时。四个时间列都是毫秒，从浅到深：TCP=能否连上这个 IP；TLS=在它上面能否完成加密握手；TTFB（首字节耗时）=握手加上传请求到收到第一个字节；总计=整段响应收完，含下载内容，会随文件大小变化。排序看的是 TTFB，因为它与内容大小无关。机房=这个 IP 实际把你带到的 Cloudflare 节点城市三字码（如 SIN 新加坡、NRT 东京）。MB/s 为十进制（1 MB = 1000 KB），只对前若干个 IP 实测、仅作参考不参与排序，未测或失败显示 %s。').format(DASH)));
+	return kids;
+}
+
 function BoardPane(st, actions) {
 	var kids = [];
 
@@ -1213,10 +1227,8 @@ function BoardPane(st, actions) {
 		/* 读不到不等于没有：上一轮的榜单还在手上就照样端出来。别因为一次链路
 		 * 抖动就把用户正在看的十行数字抹成白板 —— r32 就是这么干的，一次 status
 		 * 超时之后整页只剩「路由器没有回应」，非按 F5 不可。 */
-		if (st.items && st.items.length) {
-			kids.push(SummaryStrip(st));
-			kids.push(Leaderboard(st.items));
-		}
+		if (st.items && st.items.length)
+			BoardTable(st, kids);
 		return el('div', {}, kids);
 	}
 
@@ -1229,11 +1241,10 @@ function BoardPane(st, actions) {
 				onClick: actions.run
 			})
 		}));
-		/* 即便本轮失败，上一轮的榜单往往还在，照样展示出来 */
-		if (st.items && st.items.length) {
-			kids.push(SummaryStrip(st));
-			kids.push(Leaderboard(st.items));
-		}
+		/* 即便本轮失败，上一轮的榜单往往还在，照样展示出来（连列头说明一起，
+		 * 见 BoardTable：失败的那一刻最需要看得懂这些列） */
+		if (st.items && st.items.length)
+			BoardTable(st, kids);
 		return el('div', {}, kids);
 	}
 
@@ -1251,18 +1262,9 @@ function BoardPane(st, actions) {
 		return el('div', {}, kids);
 	}
 
-	kids.push(SummaryStrip(st));
-	kids.push(Section(T('榜单')));
-	kids.push(Leaderboard(st.items));
-	/* 列头那几个缩写在这一行里一次讲清。为什么不用 <abbr> 虚线悬浮（树内插件的做法）：
-	 * 悬浮在触屏上拿不到（本插件实测过 556 处 title 在手机上读不到），
-	 * 而这些是用户每轮都要看的列头，所以写成明文。 */
-	kids.push(el('p', { class: 'note' },
-		T('按 TTFB 升序排列，同值再看总耗时。四个时间列都是毫秒，从浅到深：TCP=能否连上这个 IP；TLS=在它上面能否完成加密握手；TTFB（首字节耗时）=握手加上传请求到收到第一个字节；总计=整段响应收完，含下载内容，会随文件大小变化。排序看的是 TTFB，因为它与内容大小无关。机房=这个 IP 实际把你带到的 Cloudflare 节点城市三字码（如 SIN 新加坡、NRT 东京）。MB/s 为十进制（1 MB = 1000 KB），只对前若干个 IP 实测、仅作参考不参与排序，未测或失败显示 %s。').format(DASH)));
-
+	BoardTable(st, kids);
 	return el('div', {}, kids);
 }
-
 /* ==========================================================================
  * 12. 源检测面板
  * ========================================================================== */

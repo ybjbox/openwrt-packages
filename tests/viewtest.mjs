@@ -611,6 +611,15 @@ has('error 态仍给重跑按钮', pane, '立即测速');
 const errWithItems = t.parseStatus(JSON.stringify({ state: 'error', reason: 'net', items: done.items }));
 pane = t.BoardPane(errWithItems, noActions);
 has('失败但有旧榜单时仍然列出', pane, '104.16.1.1');
+/* r49：列头说明过去只在「正常完成」那条分支画，于是本轮失败/读不到但仍列出 9 列时
+ * 一个字都不解释 —— 而那一刻恰恰最需要看得懂列头。三条分支现在共用 BoardTable。 */
+has('失败态带旧榜单时也带列头说明', pane, '按 TTFB 升序排列');
+has('列头说明里 TTFB 有明文解释', pane, '首字节耗时');
+has('列头说明里机房列有明文解释', pane, '城市三字码');
+const unreachWithItems = t.parseStatus(JSON.stringify({ state: 'unreachable', items: done.items }));
+has('读不到但有旧榜单时同样带说明', t.BoardPane(unreachWithItems, noActions), '按 TTFB 升序排列');
+/* 反向对照：真的没榜单时不该硬塞一段讲 9 列的脚注 */
+hasNot('空榜单不画列头说明', t.BoardPane(t.parseStatus('{"state":"done","items":[]}'), noActions), '按 TTFB 升序排列');
 
 pane = t.BoardPane(t.parseStatus('{"state":"never_run","items":[]}'), noActions);
 has('从未跑过给首轮引导', pane, '还没有测过');
