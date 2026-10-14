@@ -344,18 +344,12 @@
   /* nowrap 是基础规则给的，窄屏必须一并解除，否则副标整行还是撑破盒子被裁
    * （实测 320px：副标 301 对 246，盒 317 对 278 且 overflow:hidden）。 */
   .cfp .grp-x{flex:1 0 100%;order:3;margin-left:0;min-width:0;white-space:normal}
-  /* 320px 下源清单每条 URL 把自己的字段撑破（实测 .cbi-dynlist 292 对 .cbi-value-field 214，
-   * 外层 .grp 是 overflow:hidden → 静默裁字）。原因是 .item 作为 flex 项默认
-   * min-width:auto，收不到比"最长不断行片段"更窄。给它 min-width:0 并允许任意处断行，
-   * URL 折成两行而不是撑破盒子。 */
+  /* 320px 下源清单把自己的字段撑破（实测 .cbi-dynlist 292 对 .cbi-value-field 214，
+   * 外层 .grp 是 overflow:hidden → 静默裁字）。三处都得改，少一处都断不开：
+   * .item 那颗文字 span 是 nowrap 且 min-width:auto（收不到比最长不断行片段更窄），
+   * 而 .item 自己还带着主题给的字宽。 */
   .cfp .cbi-value-field,.cfp .cbi-dynlist{min-width:0}
-  /* white-space 必须先解除：主题的 .item 是 nowrap，光给 overflow-wrap 断不了行
-   * （实测 320px 下改前一条 URL 的 .item 仍是 288 宽，把 214 的字段撑破）。 */
-  /* 真正撑破的是 .item 里面那颗 span：实测它 white-space:nowrap 且 min-width:248px
-   * （只改 .item 没用，320px 下 .item 仍是 288 宽）。三个属性一起给才断得开。 */
-  /* 光断字还不够：实测主题给 .item 定了自己的宽度（320px 下 dynlist 292 / item 288，
-   * 而字段只有 214），所以连宽度一起收回容器内。 */
-  .cfp .cbi-dynlist{min-width:0;width:100%;max-width:100%}
+  .cfp .cbi-dynlist{width:100%;max-width:100%}
   .cfp .cbi-dynlist > .item,
   .cfp .cbi-dynlist > .item > span{width:auto;min-width:0;max-width:100%;white-space:normal;overflow-wrap:anywhere}
   /* 最后撑破的是「+ 添加」那一行（实测 320px 下 .add-item 261 对 248：输入框按默认
