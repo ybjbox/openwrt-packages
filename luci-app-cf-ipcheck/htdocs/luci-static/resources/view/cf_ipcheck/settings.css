@@ -328,8 +328,10 @@
   .cfp .grp-t{font-size:var(--t-sm)}
 }
 @media (prefers-reduced-motion: reduce){
-  .cfp .chev,.cfp .lamp-dot,.cfp button,.cfp .tab{transition:none;animation:none}
-  .cfp .lamp.t-run .lamp-dot,.cfp .empty.spin .empty-ic{animation:none}
+  /* 一律关掉，不再逐个点名。这一版新加了 .grp-h / .brow.data 的 hover 过渡 ——
+   * 枚举式写法等于"每加一条动效都要记得回来补一行"，漏一次就是嘴上尊重偏好、
+   * 实际还在动。用通配把 .cfp 里所有过渡与动画一起熄灭。 */
+  .cfp *,.cfp *::before,.cfp *::after{transition:none!important;animation:none!important}
 }
 
 /* r41：源清单编辑行搬进了「源与检测」页。它复用的就是配置页那套 .grp 折叠盒，

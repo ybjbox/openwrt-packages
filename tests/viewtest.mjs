@@ -922,6 +922,8 @@ ok('正文继承主题字体，不再自带一套字体栈', /\.cfp\{color:var\(
 ok('等宽字体优先取主题的 --font-mono', /--mono:var\(--font-mono/.test(css));
 ok('CSS 数字用等宽 + tabular-nums', /tabular-nums/.test(css));
 ok('CSS 尊重减少动效偏好', /prefers-reduced-motion/.test(css));
+ok('减少动效是通配熄灭，不是逐个点名（新增动效不必记得回来补）',
+	/\.cfp \*,\.cfp \*::before,\.cfp \*::after\{transition:none!important;animation:none!important\}/.test(css));
 ok('CSS 有可见焦点环', /:focus-visible/.test(css));
 ok('CSS 里的 class 前缀统一', /\.cfp/.test(css) && /\.board/.test(css) && /\.tabs/.test(css));
 ok('忙碌态在图标位画转圈', /\.cfp button\.busy \.bi\{[^]*?animation:cfp-spin/.test(css));
