@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r46';
+var VIEW_BUILD = 'r47';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -822,7 +822,8 @@ function StatusRail(st, busy, actions) {
 	var btnStop = Button({
 		icon: '\u25a0', label: T('停止本轮'),
 		disabled: !running || busy.stop, busy: busy.stop,
-		title: running ? null : T('当前没有在跑的一轮'),
+		title: running ? T('点了不弹窗：这一轮会在收尾时停止，进度与日志里能看到')
+			: T('当前没有在跑的一轮'),
 		onClick: actions.stop
 	});
 	var btnRefresh = Button({
@@ -2116,10 +2117,11 @@ function actRun(btn) {
 			flash(T('无法启动'), whyNoReply(T('启动命令没跑成'), 'run'), 'bad');
 			return;
 		}
-		if (isRunningReply(out))
-			flash(T('这一轮还在跑'), T('引擎说已经有一轮在测速，等它收尾；进度会自动刷新。'), 'warn');
-		else
-			flash(T('已启动一轮测速'), String(out), 'ok');
+		/* 启动成功【不弹窗】（r47，Ryan 提的）：手机端那块通知条会整个盖住榜单，
+		 * 而读数条本来就立刻翻成「测速中」、停止按钮亮起、进度清单开始走 —— 弹窗
+		 * 只是把同一件事用遮挡的方式再说一遍。原来那句还把引擎的原始 JSON
+		 * （{"state":"started"}）当正文显示出来，更难看了。
+		 * 失败/没有回应那几条提示保留：那些是"点了但没成"，页面自己解释不清。 */
 		/* 先把本地状态置成 running：run-now 返回「已启动」只是命令被受理，
 		 * 引擎要过几毫秒才把 running 写进 status.json。
 		 * 注意：这里绝不能立刻 refresh —— r30 把 run-now 的响应管道修成 0 秒后，
@@ -2151,8 +2153,8 @@ function actStop(btn) {
 			flash(T('停止命令没有回应'), T('%s 秒内没等到返回。停止信号可能已经写进去了，本轮收尾后自停。').format(Math.round(CMD_LIMIT.stop / 1000)), 'warn');
 		else if (out === null)
 			flash(T('无法请求停止'), whyNoReply(T('停止命令没跑成'), 'stop'), 'bad');
-		else
-			flash(T('已请求停止'), T('当前这轮收尾后不再继续探测。'), 'warn');
+		/* 受理成功【不弹窗】（r47）：停止是"这一轮收尾时停"，读数条会一直显示
+		 * 「测速中」直到真的停下来，日志页顶上也会出现「已请求停止」那一行 —— 比弹窗更实在。 */
 		refresh();
 	}, function () {
 		setBusy(btn, false);

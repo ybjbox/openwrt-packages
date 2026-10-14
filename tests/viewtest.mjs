@@ -45,7 +45,7 @@ const hook = "\nglobalThis.__cf_t = {\n" +
 	"\tget store() { return store; },\n" +
 	"\tget P() { return P; }, goto: goto, savedTab: savedTab,\n" +
 	"\tbuildPage: buildPage, runCmd: runCmd,\n" +
-	"\tactRun: actRun, actCheck: actCheck,\n" +
+	"\tactRun: actRun, actCheck: actCheck, actStop: actStop,\n" +
 	"\tsourcesMap: sourcesMap, mountSourcesForm: mountSourcesForm,\n" +
 	"\tpendingSourceEdits: pendingSourceEdits,\n" +
 	"\trailKeyOf: railKeyOf, boardKeyOf: boardKeyOf,\n" +
@@ -1688,6 +1688,44 @@ const slLine = t.scheduleLine({ enabled: 1, interval: 6,
 	started: new Date(slStart).toISOString(), finished: new Date(slFin).toISOString() });
 ok('预估落在「起轮 + 周期」那一刻', slLine.includes(hhmm(slWant)), slLine);
 ok('而不是「结束 + 周期」（会晚整整一轮的时长）', slLine.indexOf(hhmm(slBad)) < 0, slLine);
+
+/* 这一段放在最后：它会让 refresh() 失败一次，pollFail 与 store 都是模块级状态，
+ * 插在中间会把上面的容错断言带偏（第一次就是这么被自己影响的）。 */
+/* ================================================================== *
+ * 18b. r47：启动/停止成功【不弹窗】（Ryan：手机上那块通知条会盖住榜单）
+ * 失败与"没有回应"那几条必须仍然弹 —— 那些是"点了但没成"，页面自己解释不清。
+ * ================================================================== */
+notifications.length = 0;
+rpcImpl = () => Promise.resolve('{"state":"started"}');
+t.actRun(null);
+await new Promise((r) => setImmediate(r));
+await new Promise((r) => setImmediate(r));
+eq('启动成功一条通知都不发', notifications.length, 0);
+eq('但本地照样立刻进 running（反馈靠读数条）', t.store.get().status.state, 'running');
+eq('并且把轮询开起来', String(t.store.get().busy.run), 'false');
+
+notifications.length = 0;
+rpcImpl = () => Promise.resolve('{"state":"stopped-requested"}');
+t.actStop(null);
+await new Promise((r) => setImmediate(r));
+await new Promise((r) => setImmediate(r));
+eq('停止受理成功也不弹窗', notifications.length, 0);
+
+notifications.length = 0;
+rpcImpl = () => Promise.resolve(null);	/* null = 调用被拒/读不到 */
+t.actRun(null);
+await new Promise((r) => setImmediate(r));
+await new Promise((r) => setImmediate(r));
+eq('启动失败仍然要提示', notifications.length, 1);
+ok('提示说的是启动没跑成', String(notifications[0].title).includes('无法启动'), notifications[0].title);
+notifications.length = 0;
+t.actStop(null);
+await new Promise((r) => setImmediate(r));
+await new Promise((r) => setImmediate(r));
+eq('停止失败也仍然要提示', notifications.length, 1);
+ok('提示说的是停止没跑成', String(notifications[0].title).includes('无法请求停止'), notifications[0].title);
+notifications.length = 0;
+
 
 console.log(fails === 0 ? '=== view 渲染断言全部通过' : `=== view 渲染断言失败 ${fails} 项`);
 process.exit(fails === 0 ? 0 : 1);
