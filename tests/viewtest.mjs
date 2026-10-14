@@ -35,6 +35,7 @@ const hook = "\nglobalThis.__cf_t = {\n" +
 	"\tSummaryStrip: SummaryStrip, BoardPane: BoardPane,\n" +
 	"\tSourceMatrix: SourceMatrix, SourcesPane: SourcesPane, srcMessage: srcMessage,\n" +
 	"\tparseLog: parseLog, LogsPane: LogsPane, LogBlock: LogBlock, logTone: logTone,\n" +
+	"\tlogStamp: logStamp, logAnchor: logAnchor, logAnchorTop: logAnchorTop,\n" +
 	"\tTabBar: TabBar, StatusRail: StatusRail, Readout: Readout,\n" +
 	"\tregroupForm: regroupForm, ConfigPane: ConfigPane,\n" +
 	"\thelp: help, applyHelp: applyHelp, HelpMark: HelpMark, HELP: HELP,\n" +
@@ -1100,6 +1101,30 @@ const badb = t.LogBlock(todayTs + ' 社区源拉取失败' + '\n');
 ok('倒序与上色互不干扰：坏消息行照样带 bad', byClass(badb, 'lline bad').length, 1);
 has('脚注说清最新在上与悬停看原始时间', t.LogsPane({ state: 'ok', text: logTxt }, { refresh: noop, copy: noop }), '最新的在最上面');
 has('复制入口说明自己给的是时间先后', t.LogsPane({ state: 'ok', text: logTxt }, { refresh: noop, copy: noop }), '复制全部');
+/* 滚动锚点（r46）：日志封顶意味着"顶上加一行 ≈ 底下掉一行"，总高度不变 ——
+ * 只按 scrollHeight 差值补偿会算出 0，用户眼前的内容被整体推走一行。
+ * 真机 r45 第一轮就是这么被抓到的，所以这里用假 offsetTop 把锚的算法钉住。 */
+function fakeBox(scrollTop, texts) {
+	const box = { scrollTop: scrollTop, childNodes: [], querySelectorAll: null };
+	const kids = texts.map((t, i) => ({ textContent: t, offsetTop: 20 * i, offsetHeight: 20 }));
+	box.querySelectorAll = (sel) => (sel === '.lline' ? kids : []);
+	return box;
+}
+const abox = fakeBox(46, ['a1', 'a2', 'a3', 'a4']);
+const anc = t.logAnchor(abox);
+eq('锚 = 眼前第一行（bottom 刚过 scrollTop 的那行）', anc && anc.text, 'a3');
+eq('锚带上"已滚进这一行多少像素"', anc && anc.into, 46 - 40);
+const a2 = fakeBox(0, ['x']);
+ok('贴着顶部时锚就是第一行', t.logAnchor(a2).text === 'x' && t.logAnchor(a2).into === 0);
+const nbox = fakeBox(46, ['新行', 'a1', 'a2', 'a3', 'a4']);
+const fixed = t.logAnchorTop(nbox, anc);
+/* 锚 'a3' 在新容器里 offsetTop 变成 60（顶上多了一行），加上原先滚进它内部的 6px
+	* → 66。用户眼前看到的仍然是 a3 的那一小段，不被推走。 */
+eq('新容器里找回锚那一行并按它的新的 offsetTop 复位（顶上多一行也不动）', fixed, 66);
+eq('锚那一行被截掉时给 null（让调用方退回按高度差补偿）', t.logAnchorTop(fakeBox(0, ['新行', '别的']), anc), null);
+ok('没有 offsetTop 的环境不炸（桩件/老浏览器）',
+	t.logAnchor({ scrollTop: 5, querySelectorAll: () => [{ textContent: 'x' }] }) === null);
+
 
 /* 面板从 3 个变 4 个：日志页和另外三页同一条约束 —— 一直在文档里，切换只翻 class */
 eq('标签顺序：日志在配置之前', t.TAB_DEFS.map(d => d.id).join(','), 'board,sources,logs,config');

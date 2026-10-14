@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r45';
+var VIEW_BUILD = 'r46';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -1473,6 +1473,48 @@ function logMessage(lg) {
 	}
 }
 
+/* 滚动锚点：记住"眼前第一行是哪一行 + 已经往下滚进它多少像素"。
+ * 用文本认行而不是用行号 —— 日志每次都是整块重画，行号会变，而文本在
+ * 这一截里足够区分（同一秒同一句的重复行概率极低，真撞上了也只是偏一行）。
+ * 拿不到 offsetTop（老浏览器/桩件环境）就返回 null，让调用方退回旧补偿。 */
+function logAnchor(box) {
+	if (!box || !box.querySelectorAll)
+		return null;
+	var lines = box.querySelectorAll('.lline');
+	if (!lines || !lines.length)
+		return null;
+	var top = box.scrollTop || 0;
+	for (var i = 0; i < lines.length; i++) {
+		var el2 = lines[i];
+		var ot = el2.offsetTop;
+		var oh = el2.offsetHeight;
+		if (typeof ot !== 'number' || typeof oh !== 'number' || !isFinite(ot) || !isFinite(oh))
+			return null;
+		if (ot + oh > top + 4)
+			return { text: (el2.textContent || '').trim(), into: top - ot };
+	}
+	return null;
+}
+
+/* 在新容器里找回锚那一行，返回应当设的 scrollTop；找不到给 null */
+function logAnchorTop(box, anchor) {
+	if (!box || !box.querySelectorAll || !anchor || !anchor.text)
+		return null;
+	var lines = box.querySelectorAll('.lline');
+	if (!lines || !lines.length)
+		return null;
+	for (var i = 0; i < lines.length; i++) {
+		if ((lines[i].textContent || '').trim() !== anchor.text)
+			continue;
+		var ot = lines[i].offsetTop;
+		if (typeof ot !== 'number' || !isFinite(ot))
+			return null;
+		var v = ot + anchor.into;
+		return v < 0 ? 0 : v;
+	}
+	return null;
+}
+
 function LogsPane(lg, actions) {
 	var kids = [];
 	var busy = store.get().busy && store.get().busy.logs;
@@ -2530,12 +2572,18 @@ function buildPage(mapnode) {
 		var keepTop = 0;
 		var oldH = 0;
 		var atTop = false;
+		var anchor = null;
 		if (box) {
 			keepTop = box.scrollTop;
 			oldH = box.scrollHeight;
 			/* r45 起最新在【最上面】，所以"跟着新行走"= 贴在顶部，而不是贴底。
 			 * 判据留 4px 容差：缩放/取整会让 scrollTop 永远差那么一两像素。 */
 			atTop = box.scrollTop <= 4;
+			/* 不在顶部时记下"眼前第一行是哪一行、往下一点点"—— 这是唯一可靠的锚。
+			 * 光按 scrollHeight 差值补偿不够：日志是封顶的（只给最近这一段），
+			 * 顶上多一行往往意味着底下少一行，总高度不变、差值算出 0，
+			 * 结果用户眼前的内容被整体推走一行（真机 r45 第一轮就被这样抓到）。 */
+			anchor = logAnchor(box);
 		}
 		logsDrawn = true;
 		lastLogsKey = key;
@@ -2543,12 +2591,15 @@ function buildPage(mapnode) {
 		logsPane.appendChild(LogsPane(state.logs, { refresh: actLogs, copy: actCopyLogs }));
 		var fresh = logsPane.querySelector ? logsPane.querySelector('.logbox') : null;
 		if (fresh) {
+			var top = null;
 			if (atTop)
-				fresh.scrollTop = 0;
-			else
-				/* 新行是【加在顶部】的，所以原来读到的那一行会整体下移：
-				 * 补偿这段高度差，用户眼前的内容才不动。 */
-				fresh.scrollTop = keepTop + Math.max(0, fresh.scrollHeight - oldH);
+				top = 0;
+			else if (anchor)
+				top = logAnchorTop(fresh, anchor);
+			if (top === null)
+				/* 锚那一行已经掉出保留窗口（或被封顶截掉）：退回到按高度差补偿 */
+				top = keepTop + Math.max(0, fresh.scrollHeight - oldH);
+			fresh.scrollTop = top;
 		}
 	}
 
