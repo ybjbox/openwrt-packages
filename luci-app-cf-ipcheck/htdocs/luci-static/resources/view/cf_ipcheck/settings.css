@@ -115,12 +115,14 @@
 .cfp h3,.cfp h4{margin:0;font-weight:600;letter-spacing:.005em}
 .cfp p{margin:0}
 .cfp .sec{display:flex;align-items:baseline;gap:var(--s2);margin:0 0 var(--s3)}
-/* .sec-t 现在是 h3（给读屏器一个可跳的章节层级），所以盒子必须整排接管：
- * r51 只写 margin:0 → Argon 的 h3{padding:14.008px 20px} 把这一行从 17px 撑到 40px；
- * r52 补了 padding:0 → 又量出高度是 12px，比原来矮 5px，根因同一个：
- * 主题还给 h3 写了 line-height:12.1px。margin / padding / line-height 三项一起接管，
- * 并且每一项都要当场量，换标签名不是只换语义。 */
-.cfp .sec-t{margin:0;padding:0;line-height:inherit;font-size:var(--t-xs);font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+/* .sec-t 现在是 h3（给读屏器一个可跳的章节层级），所以盒子必须整排接管，且每一项都要当场量：
+ * r51 只写 margin:0 → 主题的 h3{padding:14.008px 20px} 把这一行从 17px 撑到 40px；
+ * r52 归零 padding → 量到 12px；r53 写 line-height:inherit → 仍是 12.1px，
+ * 因为赢家是 cascade.css 的 `.h1..h6,h1..h6{line-height:1.1 !important}`，!important 压过我们。
+ * 所以这里用同等权重。settings.css 是视图渲染时才 <link> 进去的，排在 cascade.css 之后，
+ * 同为 important 时后者胜出（这条是量出来的，不是推的）。1.55 就是 .cfp 自己的行高，
+ * 11px × 1.55 = 17.05px，与改标签名之前的 span 一致。 */
+.cfp .sec-t{margin:0;padding:0;line-height:1.55!important;font-size:var(--t-xs);font-weight:700;letter-spacing:.08em;text-transform:uppercase;
   color:var(--ink-3);white-space:nowrap}
 .cfp .sec-rule{flex:1;height:1px;background:var(--rule);transform:translateY(-.25em)}
 .cfp .rail{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s3) var(--s4);

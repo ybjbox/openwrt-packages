@@ -993,8 +993,10 @@ ok('r51 三处内层滚动区都在基础规则里 contain（不只窄屏），�
 ok('r51 读数数值与吞吐数字用 tabular-nums（位数变化不推宽）',
 	/\.cfp \.cell-v\{[^}]*font-variant-numeric:tabular-nums/.test(css) &&
 	/\.cfp \.spd\{[^}]*font-variant-numeric:tabular-nums/.test(css));
-ok('r53 章节标题是 h3，margin / padding / line-height 三项都接管（少一项就被主题改掉行高：40px 与 12px 都实测过）',
-	/\.cfp \.sec-t\{margin:0;padding:0;line-height:inherit/.test(css));
+/* r54：主题的 cascade.css 有 `.h1..h6,h1..h6{line-height:1.1 !important}`，
+ * 所以我们的行高也必须同权重才拿得回来（r53 用非 important 的 inherit 实测仍 12.1px）。 */
+ok('r54 章节标题是 h3，margin/padding 归零且 line-height 用 !important 压过主题',
+	/\.cfp \.sec-t\{margin:0;padding:0;line-height:1\.55!important/.test(css));
 
 /* linkStyle：幂等，挂不上也不许抛 */
 documentStub.head = makeNode('head');
