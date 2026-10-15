@@ -583,6 +583,12 @@ const noActions = { run: noop, stop: noop, refresh: noop, copy: noop, check: noo
 let pane = t.BoardPane(done, noActions);
 has('正常态渲染榜单', pane, '104.16.1.1');
 has('正常态给出排序说明', pane, '按 TTFB 升序排列');
+/* r51：章节标题给读屏器一个可跳的层级（过去整块面板里一个标题元素都没有）。
+ * 分组头 .grp-h 故意保持 role=button 的 div —— 那是控件，套标题会变成双重语义。 */
+const secHeads = byTag(pane, 'h3');
+eq('榜单面板画出一个 h3 章节标题', secHeads.length, 1);
+eq('h3 就是「榜单」那颗', secHeads.length ? secHeads[0].textContent : '', '榜单');
+eq('h3 带的是原来的 .sec-t 类（视觉不变）', secHeads.length ? String(secHeads[0].className) : '', 'sec-t');
 
 pane = t.BoardPane(t.parseStatus(JSON.stringify({ state: 'done', intercepted: 1, items: [] })), noActions);
 has('接管态给出红条', pane, '出口被代理接管');
@@ -975,6 +981,20 @@ ok('窄屏读数副行允许折行（省略号那条完整内容只在 title 里
 	/\.cfp \.cell-sub\{white-space:normal/.test(css));
 ok('窄屏长值给 min-width:0 + overflow-wrap（域名 148 对 125 会 paint 到邻列）',
 	/\.cfp \.cell\{min-width:0\}/.test(css) && /\.cfp \.cell-v,\.cfp \.cell-sub\{overflow-wrap:anywhere\}/.test(css));
+
+/* ---- r51：两份 UI/UX 清单交叉对照后补的四条（判据来自 vercel web-interface-guidelines
+ * 与 impeccable/reference/audit.md，但每条都用我们自己的源码/渲染结果复核过） ---- */
+ok('r51 面板自己声明 color-scheme（暗为默认、浅色随 is-light），不碰 html',
+	/\.cfp\{[^}]*color-scheme:dark/.test(css) && /\.cfp\.is-light\{color-scheme:light\}/.test(css));
+ok('r51 三处内层滚动区都在基础规则里 contain（不只窄屏），防链式滚动',
+	/\.cfp \.tabs\{[^}]*overscroll-behavior:contain/.test(css) &&
+	/\.cfp \.board-scroll\{[^}]*overscroll-behavior:contain/.test(css) &&
+	/\.cfp \.logbox\{[^}]*overscroll-behavior:contain/.test(css));
+ok('r51 读数数值与吞吐数字用 tabular-nums（位数变化不推宽）',
+	/\.cfp \.cell-v\{[^}]*font-variant-numeric:tabular-nums/.test(css) &&
+	/\.cfp \.spd\{[^}]*font-variant-numeric:tabular-nums/.test(css));
+ok('r51 章节标题是 h3，且外边距自己钉死（不吃主题给 h3 的默认 margin）',
+	/\.cfp \.sec-t\{margin:0/.test(css));
 
 /* linkStyle：幂等，挂不上也不许抛 */
 documentStub.head = makeNode('head');

@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r50';
+var VIEW_BUILD = 'r51';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -651,8 +651,12 @@ var store = createStore({
 
 /* 小节标题：小标签 + 一条拉满的发丝线 */
 function Section(title, right) {
+	/* h3 而不是 span：读屏器靠标题跳章节，过去整块面板里一个标题级元素都没有。
+	 * 层级上 LuCI 给页面 h1/h2，我们面板内的分区落 h3 正好接得上。
+	 * 分组头（.grp-h）故意不跟着改：那是 role=button 的控件，套标题会让 AT 听到
+	 * 「标题+按钮」双重语义，反而更难用。 */
 	return el('div', { class: 'sec' }, [
-		el('span', { class: 'sec-t', text: title }),
+		el('h3', { class: 'sec-t', text: title }),
 		el('span', { class: 'sec-rule' }),
 		right || null
 	]);

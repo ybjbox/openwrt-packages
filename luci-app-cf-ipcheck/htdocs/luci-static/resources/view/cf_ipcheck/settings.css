@@ -103,14 +103,21 @@
   --shadow:0 1px 2px oklch(30% 0.02 250 / 0.07);
 }
 .cfp{color:var(--ink);font-family:inherit;font-size:var(--t-md);line-height:1.55;
-  -webkit-font-smoothing:antialiased}
+  -webkit-font-smoothing:antialiased;
+  /* 原生控件（滚动条、select 下拉、number 步进箭头）按我们这块的实际明暗来画。
+   * 只声明在 .cfp 上、不碰 html —— 页面根的颜色方案归主题，我们越界就会和 Argon 打架。
+   * 暗色是默认那套令牌（:root），浅色靠 .is-light 类，所以判据跟着类走。 */
+  color-scheme:dark}
+.cfp.is-light{color-scheme:light}
 .cfp *{box-sizing:border-box}
 .cfp .n{font-family:var(--mono);font-variant-numeric:tabular-nums;letter-spacing:-.01em}
 .cfp .u{font-size:var(--t-xs);color:var(--ink-3);font-weight:400;margin-left:.15em}
 .cfp h3,.cfp h4{margin:0;font-weight:600;letter-spacing:.005em}
 .cfp p{margin:0}
 .cfp .sec{display:flex;align-items:baseline;gap:var(--s2);margin:0 0 var(--s3)}
-.cfp .sec-t{font-size:var(--t-xs);font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+/* .sec-t 现在是 h3（给读屏器一个可跳的章节层级），所以外边距必须自己钉死：
+ * 不然各主题给 h3 的默认 margin 会直接把这一行撑高，而我们看不见。 */
+.cfp .sec-t{margin:0;font-size:var(--t-xs);font-weight:700;letter-spacing:.08em;text-transform:uppercase;
   color:var(--ink-3);white-space:nowrap}
 .cfp .sec-rule{flex:1;height:1px;background:var(--rule);transform:translateY(-.25em)}
 .cfp .rail{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s3) var(--s4);
@@ -159,8 +166,10 @@
 .cfp .lnk{background:none;border:0;padding:.15em .3em;color:var(--accent-ink);font-size:var(--t-xs);
   border-radius:var(--r1);cursor:pointer;min-height:0}
 .cfp .lnk:hover:not(:disabled){background:var(--panel-2);border-color:transparent}
+/* overscroll-behavior:contain 放在基础规则里（不是只补窄屏）：这三处都是内层滚动区，
+ * 不写的话在里面滚到边界会链式带动整页 —— 跑动中每 3 秒有新行进来，整页被带着跳。 */
 .cfp .tabs{display:flex;gap:var(--s1);border-bottom:1px solid var(--rule);margin-bottom:var(--s4);
-  overflow-x:auto;-webkit-overflow-scrolling:touch}
+  overflow-x:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
 .cfp .tab{position:relative;flex:0 0 auto;display:inline-flex;align-items:center;gap:.45em;
   padding:.5em .85em;border:0;border-bottom:2px solid transparent;margin-bottom:-1px;
   border-radius:0;background:none;color:var(--ink-3);font-size:var(--t-md);font-weight:500;
@@ -180,14 +189,16 @@
 .cfp .cell{background:var(--panel);padding:var(--s3)}
 .cfp .cell-k{font-size:var(--t-xs);color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase;
   font-weight:600;white-space:nowrap}
+/* 读数数值与吞吐数字要 tabular-nums：跑动中 94→100、11.2→9.8 这类位数变化
+ * 会把整格推宽（过去只给了 .n/.lts/.pn 三处，漏了这两处最大的数字）。 */
 .cfp .cell-v{display:flex;align-items:baseline;gap:.1em;margin-top:var(--s1);
-  font-size:var(--t-lg);font-weight:600}
+  font-size:var(--t-lg);font-weight:600;font-variant-numeric:tabular-nums}
 .cfp .cell-v.warn{color:var(--warn-fg)}
 .cfp .cell-sub{font-size:var(--t-xs);color:var(--ink-3);margin-top:.15em;white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis}
 .cfp .board{border:1px solid var(--rule);border-radius:var(--r2);background:var(--panel);
   overflow:hidden;margin-bottom:var(--s3)}
-.cfp .board-scroll{overflow:auto;max-height:min(58vh,540px)}
+.cfp .board-scroll{overflow:auto;max-height:min(58vh,540px);overscroll-behavior:contain}
 /* 轨道分配：富余宽度过去只给 IP 那一列（它是唯一的 fr），实测 @1600 IP 列被拉到
  * 868px，8 个数字列合计只有 480px 且全贴着右边缘 —— 一行里 IP 和第一个数字之间
  * 隔着约 870px 空白，扫一行要横跨半屏。
@@ -219,7 +230,8 @@
 .cfp .ip{font-family:var(--mono);font-size:var(--t-sm)}
 .cfp .code-ok{color:var(--ok-fg);font-weight:600}
 .cfp .code-odd{color:var(--warn-fg);font-weight:600}
-.cfp .spd{display:inline-flex;align-items:center;justify-content:flex-end;gap:.4em;width:100%}
+.cfp .spd{display:inline-flex;align-items:center;justify-content:flex-end;gap:.4em;width:100%;
+  font-variant-numeric:tabular-nums}
 .cfp .spd-bar{width:32px;height:3px;border-radius:2px;background:var(--idle-bd);overflow:hidden;flex:0 0 auto}
 .cfp .spd-fill{display:block;height:100%;background:var(--ok-fg);border-radius:2px}
 /* 多域名那一版多一列「胜出域名」（文字列，给它 1fr），末尾同样留一条吸富余的空轨道 */
@@ -257,7 +269,7 @@
 .cfp .note{font-size:var(--t-xs);color:var(--ink-3);line-height:1.75;max-width:80ch}
 .cfp .note b{color:var(--ink-2);font-weight:600}
 .cfp .logbox{font-family:var(--mono);font-size:var(--t-xs);line-height:1.55;
-  max-height:min(58vh,540px);overflow:auto;background:var(--panel-2);
+  max-height:min(58vh,540px);overflow:auto;background:var(--panel-2);overscroll-behavior:contain;
   border:1px solid var(--rule);border-radius:var(--r2);padding:.55em .7em;
   white-space:pre-wrap;word-break:break-all}
 .cfp .lline{min-height:1.4em}
