@@ -382,6 +382,19 @@
   /* 标签原来 @420 量到 41×44：高度补够了，宽度还差 3px（两个字 25 + 左右内衬 16.2）。
    * 内衬从 .65em 提到 .8em → 45 宽；四条标签合计 +12px，实测 392/420 仍不出横滚。 */
   .cfp .tab{min-height:44px;padding:.55em .8em;font-size:var(--t-sm)}
+  /* 相邻触摸目标之间 ≥8px（正版 ux-guidelines 的 touch-spacing，Apple/Material 同一条）。
+   * 标签排原来只给 4px。补到 8px 之后这一排需要 285px：@420 可视宽 380 → 不滚；
+   * @320 可视宽 280，而这一排在 r56 就已经是 273/280 在滚了（最后一条被切一半），
+   * 这次只是多滚 5px —— 也就是说 320 的横滚不是这条改出来的，是本来就有的。 */
+  .cfp .tabs{gap:var(--s2)}
+  /* 文字输入类控件在窄屏给到 16px：iOS Safari 聚焦字号 <16px 的输入框会整页放大。
+   * r56 装机实测这一页 21 个文字输入全是主题的 14px（20 text + 1 password），
+   * 7 个 checkbox 不在内（它们没有文字可聚焦，不会被撑大）。
+   * 只给输入控件、不给正文 —— 正文跟着上面的 --t-xs/--t-sm 那两档走。
+   * 注：本机没有 iOS 设备，"聚焦会放大"这条是规则推出来的、没实测；实测到的部分是字号。 */
+  .cfp input[type=text],.cfp input[type=password],.cfp input[type=email],
+  .cfp input[type=number],.cfp input[type=tel],.cfp input[type=url],
+  .cfp select,.cfp textarea{font-size:16px}
   /* ⓘ 角标是 role=button，可它的盒子只有 10.8×10.8（那个圆就是 1.05em），手指点不准。
    * 补一块 24×24 的命中区：绝对定位的伪元素，视觉与布局一个像素都不动。
    * 为什么不是 44 —— 真机 @420 五点取样量过：方块长到 28 时下边缘就压到**下一行的字段名**

@@ -1041,6 +1041,14 @@ ok('r55 说明文字的字号归自己的令牌（主题的 12px 不管用），
 ok('r55 窄屏给 ⓘ 补 24×24 命中区（伪元素，不动视觉与布局）',
 	/\.cfp \.hmark\{position:relative\}/.test(mob) &&
 	/\.cfp \.hmark::after\{[^}]*width:24px;height:24px/.test(mob));
+/* ---- r57：正版 ui-ux-pro-max 的两条落点（相邻目标 ≥8px、文字输入 ≥16px） ---- */
+ok('r57 窄屏标签间距补到 8px（基础规则仍是 4px，桌面不动）',
+	/\.cfp \.tabs\{gap:var\(--s2\)\}/.test(mob) && /\.cfp \.tabs\{display:flex;gap:var\(--s1\)/.test(css));
+ok('r57 窄屏文字输入给 16px（iOS 聚焦不放大），且没把 checkbox 拖进去',
+	/\.cfp input\[type=text\][^}]*font-size:16px/.test(mob) &&
+	/input\[type=password\]/.test(mob) && !/input\[type=checkbox\]/.test(css));
+ok('r57 16px 只写在窄屏那块里（桌面仍是主题的 14px，鼠标不需要这条）',
+	mob.includes('font-size:16px') && !css.replace(mob, '').includes('font-size:16px'));
 
 /* U4：图标真的画出来了 —— 每个按钮的 .bi 里必须站一个带 path 的 svg，且不吃文字 */
 const rail55 = t.StatusRail({ state: 'done', items: [{ ip: '1.1.1.1', speed_mbytes: 1 }] }, {}, noActions);
