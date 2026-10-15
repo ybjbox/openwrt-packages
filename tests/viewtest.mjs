@@ -1018,8 +1018,10 @@ ok('r55 窄屏按钮与标签的触摸目标钉到 44px',
 	/\.cfp button\{min-height:44px\}/.test(mob) && /\.cfp \.tab\{min-height:44px/.test(mob));
 ok('r55 42px 这条已经不存在了（不是新增一条盖在上面）',
 	!/min-height:42px/.test(css));
-ok('r55 行内链接不吃 44px（它是文字不是控件）',
-	/\.cfp button\.lnk\{min-height:0\}/.test(mob));
+ok('r55 .lnk 那三颗也吃 44px（它们在自己的工具条行里，不是句子里的行内链接）',
+	/\.cfp button\.lnk\{min-height:44px\}/.test(mob));
+ok('r55 窄屏标签的宽度也够（内衬提到 .8em；只补高度的话两字标签还是 41 宽）',
+	/\.cfp \.tab\{min-height:44px;padding:\.55em \.8em/.test(mob));
 ok('r55 帮助角标是手型（它点得动），说明文字保持问号（只悬浮、点了没反应）',
 	/\.cfp \.hmark\{[^}]*cursor:pointer/.test(css) &&
 	/\.cfp \.cbi-value-description\{[^}]*cursor:help/.test(css));

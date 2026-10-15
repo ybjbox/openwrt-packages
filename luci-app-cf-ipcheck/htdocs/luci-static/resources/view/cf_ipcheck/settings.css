@@ -375,8 +375,13 @@
    * 42 是 padding 算出来的。两者一起钉死 44，用 min-height 不改 padding（改了字就顶到上边）。
    * .lnk 那种嵌在文字行里的行内链接不在此列（它是文字，不是控件），单独放回 0。 */
   .cfp button{min-height:44px}
-  .cfp button.lnk{min-height:0}
-  .cfp .tab{min-height:44px;padding:.55em .65em;font-size:var(--t-sm)}
+  /* .lnk 那三颗（全部展开 / 全部收起 / 复制全部）都在自己的工具条那一行里，
+   * 不是嵌在句子里的行内链接 —— 所以它们也要 44，不吃基础规则里那条 min-height:0。
+   * 权重要压过 .cfp .lnk（两个类）才能生效，这里选择器比它多一个元素。 */
+  .cfp button.lnk{min-height:44px}
+  /* 标签原来 @420 量到 41×44：高度补够了，宽度还差 3px（两个字 25 + 左右内衬 16.2）。
+   * 内衬从 .65em 提到 .8em → 45 宽；四条标签合计 +12px，实测 392/420 仍不出横滚。 */
+  .cfp .tab{min-height:44px;padding:.55em .8em;font-size:var(--t-sm)}
   /* ⓘ 角标是 role=button，可它的盒子只有 10.8×10.8（那个圆就是 1.05em），手指点不准。
    * 补一块 24×24 的命中区：绝对定位的伪元素，视觉与布局一个像素都不动。
    * 为什么不是 44 —— 真机 @420 五点取样量过：方块长到 28 时下边缘就压到**下一行的字段名**
