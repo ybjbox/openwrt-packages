@@ -993,8 +993,8 @@ ok('r51 三处内层滚动区都在基础规则里 contain（不只窄屏），�
 ok('r51 读数数值与吞吐数字用 tabular-nums（位数变化不推宽）',
 	/\.cfp \.cell-v\{[^}]*font-variant-numeric:tabular-nums/.test(css) &&
 	/\.cfp \.spd\{[^}]*font-variant-numeric:tabular-nums/.test(css));
-ok('r51 章节标题是 h3，且外边距自己钉死（不吃主题给 h3 的默认 margin）',
-	/\.cfp \.sec-t\{margin:0/.test(css));
+ok('r52 章节标题是 h3，margin 与 padding 都钉死（Argon 给 h3 的 14px/20px 内衬会把这行从 17px 撑到 40px）',
+	/\.cfp \.sec-t\{margin:0;padding:0/.test(css));
 
 /* linkStyle：幂等，挂不上也不许抛 */
 documentStub.head = makeNode('head');
