@@ -161,11 +161,29 @@
 .cfp button.primary:hover:not(:disabled){filter:brightness(1.07);border-color:transparent}
 .cfp button.ghost{background:transparent;border-color:transparent;color:var(--ink-2);padding:.42em .55em}
 .cfp button.ghost:hover:not(:disabled){background:var(--panel-2);border-color:transparent;color:var(--ink)}
-.cfp button.busy{pointer-events:none;opacity:.78}
-.cfp button.busy .bi{opacity:1;font-size:0;border:2px solid currentColor;border-top-color:transparent;
-  border-radius:50%;width:.85em;height:.85em;animation:cfp-spin .8s linear infinite}
-.cfp .bi{width:1em;text-align:center;font-style:normal;opacity:.75;flex:0 0 auto}
+/* 图标一律是内联 SVG（.bi 里塞一个 <svg>），不再用 ▶ ■ ↻ ⧉ 这类文字符号：
+ * 文字图标跟着字体走，而本机没有一款系统字体把这四个字符都收进同一个字面 ——
+ * 掉字体时它们会各自去借一个字形，粗细、基线、光学尺寸全都不受我们控制，
+ * 而且屏幕阅读器会把它们读成「黑色右向三角形」这类噪声。SVG 用 currentColor 描边，
+ * 跟随按钮文字色，盒子恒定 1em 见下。 */
+.cfp .bi{position:relative;width:1em;height:1em;display:inline-flex;align-items:center;justify-content:center;
+  flex:0 0 auto;opacity:.75}
+.cfp .bi > svg{display:block;width:100%;height:100%;fill:none;stroke:currentColor;
+  stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 .cfp button.primary .bi{opacity:1}
+/* 忙碌态：图标位换成一个转圈的环。
+ * 环画在 .bi::before 上（绝对定位、缩进 .06em），不画在 .bi 自己的 border 上 ——
+ * 后者在这套布局里量出来是 17.67×17.67：.bi 是按钮那根 inline-flex 的项，加 border 之后
+ * flex 的 min-content 把它顶开了，写死的 1em 没管住实际盒子（量出来的，不是推的）。
+ * 绝对定位的伪元素不参与父盒子的尺寸计算，所以环稳定待在 1em 里，按钮宽一点不动。
+ * 动画名 cfp-spin 的 @keyframes 只声明在 (prefers-reduced-motion:no-preference) 里 ——
+ * 减弱动效时那个名字根本不存在，这行动画自然落空，不用在这里再写一遍媒体查询。 */
+.cfp button.busy{pointer-events:none;opacity:.78}
+.cfp button.busy .bi{opacity:1}
+.cfp button.busy .bi > svg{visibility:hidden}
+.cfp button.busy .bi::before{content:'';position:absolute;inset:.06em;
+  border:2px solid currentColor;border-top-color:transparent;border-radius:50%;
+  animation:cfp-spin .8s linear infinite}
 /* 文字型强调走 --accent-ink（本文件开头那条口径），不是 --focus：
  * --focus 是给焦点环/描边用的图形色（门槛 3.0 就够），当 11px 正文用实测只有 3.91。 */
 .cfp .lnk{background:none;border:0;padding:.15em .3em;color:var(--accent-ink);font-size:var(--t-xs);
@@ -270,7 +288,13 @@
 .cfp .pstep.now .pn{color:var(--ink)}
 .cfp .pstep.off{opacity:.5}
 .cfp .pbar{flex:0 0 34%;height:3px;border-radius:2px;background:var(--panel-2);overflow:hidden}
-.cfp .pbar b{display:block;height:100%;background:var(--accent)}
+/* 进度走 scaleX 而不是改 width：改 width 每 3 秒让这一行重排一次（进度条是 flex 项，
+ * 它的宽度变化会传导给整行），transform 只走合成层。填满的 b 收在 overflow:hidden 的
+ * 轨里，缩放原点钉在左端。0.22s 的过渡让「攒够一批跳一下」的过程看着是推进而不是闪烁，
+ * 减弱动效时全局那条把 transition 熄掉，仍然如实跳到当前值。 */
+.cfp .pbar b{display:block;height:100%;width:100%;background:var(--accent);
+  transform-origin:left center;transform:scaleX(0);
+  transition:transform var(--d-base) var(--e-out)}
 .cfp .note{font-size:var(--t-xs);color:var(--ink-3);line-height:1.75;max-width:80ch}
 .cfp .note b{color:var(--ink-2);font-weight:600}
 .cfp .logbox{font-family:var(--mono);font-size:var(--t-xs);line-height:1.55;
@@ -316,12 +340,17 @@
 .cfp .sep{color:var(--rule);user-select:none}
 /* 上游 cascade.css 给 .cbi-value-description 写了 opacity:.5 —— 那不是"浅一点的颜色"而是
  * 整组半透明：我们 24% 的墨被压成实测 **1.89:1**，里面的 ⓘ 只有 **1.56:1**（图形门槛 3.0），
- * 28 个字段全中。这里按自己的令牌重新给色，并显式把 opacity 抬回 1。 */
-.cfp .cbi-value-description{max-width:none;cursor:help;opacity:1;color:var(--ink-2)}
+ * 28 个字段全中。这里按自己的令牌重新给色，并显式把 opacity 抬回 1。
+ * font-size 也一起接管：主题给的是 12px，而这是我们自己写的说明文字（不是控件），
+ * 该跟着 --t-sm 这一档走 —— 窄屏那 28 条说明实测就卡在 12px，比正文还小一级。 */
+.cfp .cbi-value-description{max-width:none;cursor:help;opacity:1;color:var(--ink-2);font-size:var(--t-sm)}
+/* 光标跟着交互性质走：.hmark 是个 role=button 的可点控件（点开/收起完整说明），
+ * 指针手型是"这一下点得动"的唯一视觉承诺；问号光标说的是"停这儿有解释"，那是
+ * 下面那行 .cbi-value-description 的性质（它只悬浮出 title，点了没反应），两处不能互换。 */
 .cfp .hmark{display:inline-flex;align-items:center;justify-content:center;
   width:1.05em;height:1.05em;margin-left:.4em;border:1px solid var(--rule);
   border-radius:50%;font-size:.82em;font-style:normal;line-height:1;
-  color:var(--ink-3);background:var(--panel-2);cursor:help;
+  color:var(--ink-3);background:var(--panel-2);cursor:pointer;
   vertical-align:-.12em;transition:border-color var(--d-fast) var(--e-out),
   color var(--d-fast) var(--e-out)}
 .cfp .hmark:hover{color:var(--ink);border-color:var(--ink-3)}
@@ -332,11 +361,31 @@
   border-radius:0 var(--r1) var(--r1) 0;color:var(--ink-2);
   font-size:var(--t-xs);line-height:1.6;white-space:normal;cursor:auto}
 @media (max-width:760px){
+  /* 窄屏最小字号抬到 12.5px（r54 实测 420px 下 135 个可见文字节点全都在 16px 以下，
+   * 其中 35 个是 11px 这一档：读数条标签、章节小标题、说明脚注、日志正文）。
+   * 抬到 12.5 而不是 16：这是路由器读数的仪表面，一屏要摆 6 个读数和 9 列数字，
+   * 16px 在 420px 宽里放不下（榜单那 9 列会全部换成横滚）。这一档和 --t-sm 合流，
+   * 窄屏等于少一层字号层级 —— 换来的是一直不用眯眼读。
+   * 顺序要紧：这条写在 .cfp button 之前，下面按钮的字用 --t-sm，不受这里影响。 */
+  .cfp{--t-xs:12.5px}
   .cfp .rail{flex-direction:column;align-items:stretch;gap:var(--s3)}
   .cfp .rail-acts{justify-content:flex-start}
-  .cfp button{min-height:42px}
+  /* 触摸目标 44×44（r54 实测 8 个可点元素全不够：按钮 90×42 / 65×42 / 103×42，
+   * 标签 41×42）。按钮原来只有 42，是当时照着「差不多 40 以上」写的；标签过去根本没设高度，
+   * 42 是 padding 算出来的。两者一起钉死 44，用 min-height 不改 padding（改了字就顶到上边）。
+   * .lnk 那种嵌在文字行里的行内链接不在此列（它是文字，不是控件），单独放回 0。 */
+  .cfp button{min-height:44px}
   .cfp button.lnk{min-height:0}
-  .cfp .tab{padding:.55em .65em;font-size:var(--t-sm)}
+  .cfp .tab{min-height:44px;padding:.55em .65em;font-size:var(--t-sm)}
+  /* ⓘ 角标是 role=button，可它的盒子只有 10.8×10.8（那个圆就是 1.05em），手指点不准。
+   * 补一块 24×24 的命中区：绝对定位的伪元素，视觉与布局一个像素都不动。
+   * 为什么不是 44 —— 真机 @420 五点取样量过：方块长到 28 时下边缘就压到**下一行的字段名**
+   * （.cbi-value-title 是 label，点了会把点击转发给那一行的开关），等于偷别人的点击；
+   * 24 这一档四条边都还落在说明文字自己身上，而 24×24 正好是 WCAG 2.2 AA 的下限。
+   * 只在窄屏给：桌面上这个角标有 hover 变色 + 手型光标，10.8px 用鼠标点得准。 */
+  .cfp .hmark{position:relative}
+  .cfp .hmark::after{content:'';position:absolute;left:50%;top:50%;width:24px;height:24px;
+    transform:translate(-50%,-50%)}
   .cfp .strip{grid-template-columns:repeat(auto-fit,minmax(104px,1fr))}
   .cfp .cell-v{font-size:var(--t-md)}
   /* 窄屏读数条两处"看不见内容"的修法（真机 420px 实测）：

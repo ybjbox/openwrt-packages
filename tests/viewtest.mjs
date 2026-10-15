@@ -37,6 +37,7 @@ const hook = "\nglobalThis.__cf_t = {\n" +
 	"\tparseLog: parseLog, LogsPane: LogsPane, LogBlock: LogBlock, logTone: logTone,\n" +
 	"\tlogStamp: logStamp, logAnchor: logAnchor, logAnchorTop: logAnchorTop,\n" +
 	"\tTabBar: TabBar, StatusRail: StatusRail, Readout: Readout,\n" +
+	"\tICONS: ICONS, svgIcon: svgIcon, Button: Button,\n" +
 	"\tregroupForm: regroupForm, ConfigPane: ConfigPane,\n" +
 	"\thelp: help, applyHelp: applyHelp, HelpMark: HelpMark, HELP: HELP,\n" +
 	"\tTAB_DEFS: TAB_DEFS, GROUPS: GROUPS, GROUP_OPTIONS: GROUP_OPTIONS,\n" +
@@ -236,6 +237,14 @@ function matchSel(node, sel) {
 
 const documentStub = {
 	createElement: tag => makeNode(tag),
+	/* r55 的内联 SVG 图标走这条。桩件不需要命名空间语义，但必须存在：
+	 * 视图里 `!document.createElementNS` 是"这引擎画不了 SVG"的判空分支，
+	 * 不给它，图标那条断言会一律测成"图标位是空的"。 */
+	createElementNS: (ns, tag) => {
+		const n = makeNode(tag);
+		n.namespaceURI = String(ns);
+		return n;
+	},
 	createTextNode: data => ({ __txt: true, data: String(data) }),
 	getElementById: () => null,
 	addEventListener: () => {},
@@ -945,7 +954,7 @@ ok('减少动效是通配熄灭，不是逐个点名（新增动效不必记得�
 	/\.cfp \*,\.cfp \*::before,\.cfp \*::after\{transition:none!important;animation:none!important\}/.test(css));
 ok('CSS 有可见焦点环', /:focus-visible/.test(css));
 ok('CSS 里的 class 前缀统一', /\.cfp/.test(css) && /\.board/.test(css) && /\.tabs/.test(css));
-ok('忙碌态在图标位画转圈', /\.cfp button\.busy \.bi\{[^]*?animation:cfp-spin/.test(css));
+ok('忙碌态在图标位画转圈', /\.cfp button\.busy \.bi::before\{[^}]*animation:cfp-spin/.test(css));
 ok('忙碌态不再只靠降透明度', !/\.cfp button\.busy\{pointer-events:none;opacity:\.6\}/.test(css));
 
 /* ---- r48 审计修的那几条，钉成红线（数字来自真机换算引擎实测） ---- */
@@ -997,6 +1006,114 @@ ok('r51 读数数值与吞吐数字用 tabular-nums（位数变化不推宽）',
  * 所以我们的行高也必须同权重才拿得回来（r53 用非 important 的 inherit 实测仍 12.1px）。 */
 ok('r54 章节标题是 h3，margin/padding 归零且 line-height 用 !important 压过主题',
 	/\.cfp \.sec-t\{margin:0;padding:0;line-height:1\.55!important/.test(css));
+
+/* ---- r55：ui-ux-pro-max 那套规则过下来的五条（U1 字号 / U2 触摸目标 / U3 光标 /
+ * U4 图标 / U5 进度条）。媒体查询块单独取出来判，不拿全文比对 —— 全文里有同名选择器
+ * 的基础规则，min-height:44px 要是只写在基础规则里，窄屏那条 42px 会赢（后来者胜），
+ * 用全文断言就看不出这种错位。 -------------------------------------------------- */
+const mob = (css.match(/@media \(max-width:760px\)\{([\s\S]*?)\n\}/) || [, ''])[1];
+ok('r55 窄屏最小字号这一档抬到 12.5px（11px 那档在 420px 下有 35 处）',
+	mob.includes('.cfp{--t-xs:12.5px}'));
+ok('r55 窄屏按钮与标签的触摸目标钉到 44px',
+	/\.cfp button\{min-height:44px\}/.test(mob) && /\.cfp \.tab\{min-height:44px/.test(mob));
+ok('r55 42px 这条已经不存在了（不是新增一条盖在上面）',
+	!/min-height:42px/.test(css));
+ok('r55 行内链接不吃 44px（它是文字不是控件）',
+	/\.cfp button\.lnk\{min-height:0\}/.test(mob));
+ok('r55 帮助角标是手型（它点得动），说明文字保持问号（只悬浮、点了没反应）',
+	/\.cfp \.hmark\{[^}]*cursor:pointer/.test(css) &&
+	/\.cfp \.cbi-value-description\{[^}]*cursor:help/.test(css));
+ok('r55 图标位盒子定死 1em×1em，svg 吃 currentColor 描边',
+	/\.cfp \.bi\{[^}]*width:1em;height:1em/.test(css) &&
+	/\.cfp \.bi > svg\{[^}]*stroke:currentColor/.test(css));
+ok('r55 忙碌态只加描边、不改盒子宽度（改宽度会让按钮在点下去那一刻跳一下）',
+	!/\.cfp button\.busy \.bi\{[^}]*width:/.test(css));
+/* 环画在伪元素上而不是 .bi 自己的 border 上：真机量过，加在 .bi 上时盒子被 flex 的
+ * min-content 顶到 17.67×17.67（写死的 1em 管不住），绝对定位的伪元素不参与父盒尺寸。 */
+ok('r55 图标位是定位父级，忙碌环走绝对定位的伪元素',
+	/\.cfp \.bi\{position:relative/.test(css) &&
+	/\.cfp button\.busy \.bi::before\{[^}]*position:absolute/.test(css) &&
+	!/\.cfp button\.busy \.bi\{[^}]*border:/.test(css));
+ok('r55 说明文字的字号归自己的令牌（主题的 12px 不管用），ⓘ 才有 12.5 这一档',
+	/\.cfp \.cbi-value-description\{[^}]*font-size:var\(--t-sm\)/.test(css));
+ok('r55 窄屏给 ⓘ 补 24×24 命中区（伪元素，不动视觉与布局）',
+	/\.cfp \.hmark\{position:relative\}/.test(mob) &&
+	/\.cfp \.hmark::after\{[^}]*width:24px;height:24px/.test(mob));
+
+/* U4：图标真的画出来了 —— 每个按钮的 .bi 里必须站一个带 path 的 svg，且不吃文字 */
+const rail55 = t.StatusRail({ state: 'done', items: [{ ip: '1.1.1.1', speed_mbytes: 1 }] }, {}, noActions);
+const bis55 = byClass(rail55, 'bi');
+eq('读数带四个按钮各有一个图标位', bis55.length, 4);
+bis55.forEach((b, i) => {
+	const sv = (b.children || []).filter(c => c.tagName === 'SVG');
+	eq('图标位 ' + i + ' 里正好一个 svg', sv.length, 1);
+	eq('图标位 ' + i + ' 的 svg 走 SVG 命名空间', sv[0].namespaceURI, 'http://www.w3.org/2000/svg');
+	ok('图标位 ' + i + ' 至少一条 path', (sv[0].children || []).length >= 1 &&
+		(sv[0].children || []).every(p => /^M./.test(String(p.attrs.d || ''))));
+	eq('图标位 ' + i + ' 不带文字（旧的字形符号已经换掉）', textOf(b), '');
+	eq('图标位 ' + i + ' 的 svg 对读屏器隐藏', sv[0].attrs['aria-hidden'], 'true');
+});
+ok('r55 源码里不再留 ▶ ■ ↻ ⧉ ⎕ 这类当图标用的字形',
+	!/\\u25b6|\\u25a0|\\u21bb|\\u29c9|\\u2315/.test(src));
+/* 图标名写错是不报错的：svgIcon 返回 null，图标位留个空盒 —— 页面看着正常，
+ * 只是那一个按钮没了图形。所以把「源码里用过的名字」和「ICONS 里定义的名字」对一遍。 */
+const usedIcons = [];
+src.replace(/icon: '([a-z]+)'/g, (m, n) => { usedIcons.push(n); return m; });
+eq('源码里一共用到五种图标', Array.from(new Set(usedIcons)).sort().join(','), 'copy,play,probe,refresh,stop');
+usedIcons.forEach(n => {
+	ok('名字 ' + n + ' 在 ICONS 里有定义（写错不会报错，只会画空）',
+		Array.isArray(t.ICONS[n]) && t.ICONS[n].length > 0);
+});
+eq('ICONS 没有多余没人在用的条目', Object.keys(t.ICONS).sort().join(','), 'copy,play,probe,refresh,stop');
+t.ICONS && Object.keys(t.ICONS).forEach(n => {
+	const sv = t.svgIcon(n);
+	eq(n + '：svg 命名空间对', sv.namespaceURI, 'http://www.w3.org/2000/svg');
+	eq(n + '：viewBox 是 24 方格', sv.attrs.viewBox, '0 0 24 24');
+	ok(n + '：每条 path 都以 M 起笔', sv.children.every(p => /^M[0-9.\- ]/.test(String(p.attrs.d || ''))));
+});
+eq('没定义的名字返回 null（不是抛异常）', String(t.svgIcon('nope')), 'null');
+/* 走一遍真按钮：Button 造出来的 .bi 必须是 svgIcon 的那棵树，而不是文字 */
+const btnPlay = t.Button({ icon: 'play', label: '立即测速' });
+eq('Button 的图标位里没有文字', textOf(byClass(btnPlay, 'bi')[0]), '');
+eq('Button 的标签文字照常', textOf(byClass(btnPlay, 'bi')[0].parentNode).trim(), '立即测速');
+/* 没有 createElementNS 的引擎：图标位留空但不许抛 —— 这条分支在真机上不会走到，
+ * 走到就是整页空白，所以宁可只少一个图形。 */
+const realCns = documentStub.createElementNS;
+documentStub.createElementNS = undefined;
+const railNoSvg = t.StatusRail({ state: 'done', items: [] }, {}, noActions);
+eq('造不了 SVG 时按钮照样画出来', byClass(railNoSvg, 'bi').length, 4);
+eq('造不了 SVG 时图标位是空的', byClass(railNoSvg, 'bi').every(b => !b.children.length), true);
+documentStub.createElementNS = realCns;
+
+/* U5：两帧写法。插入帧用上一帧的比例，下一帧才改成目标值 —— 少了这一对，
+ * 新建的元素没有「改之前」，CSS 那条 transition 永远不起跳（就是 r54 实测到的一格一格闪）。 */
+const rafQ = [];
+globalThis.requestAnimationFrame = fn => { rafQ.push(fn); return rafQ.length; };
+try {
+	let ra = t.RunProgress({ state: 'running', stage: 'probe', stage_done: 40, stage_total: 100, upload: 1 });
+	let barA = byClass(ra, 'pbar')[0].childNodes[0];
+	rafQ.splice(0).forEach(fn => fn());
+	eq('A 帧落定在自己的目标值', barA.style.transform, 'scaleX(0.4)');
+
+	let rb = t.RunProgress({ state: 'running', stage: 'probe', stage_done: 60, stage_total: 100, upload: 1 });
+	let barB = byClass(rb, 'pbar')[0].childNodes[0];
+	eq('同一环节接着画：插入帧用上一帧那个值当起点，不是 0', barB.style.transform, 'scaleX(0.4)');
+	rafQ.splice(0).forEach(fn => fn());
+	eq('同一环节：下一帧才改成新目标', barB.style.transform, 'scaleX(0.6)');
+
+	let rc = t.RunProgress({ state: 'running', stage: 'speed', stage_done: 3, stage_total: 10, upload: 1 });
+	let barC = byClass(rc, 'pbar')[0].childNodes[0];
+	eq('换环节：起点回 0，新的一节从头长', barC.style.transform, 'scaleX(0)');
+	rafQ.splice(0).forEach(fn => fn());
+	eq('换环节：目标值不受上一节影响', barC.style.transform, 'scaleX(0.3)');
+} finally {
+	delete globalThis.requestAnimationFrame;
+	rafQ.length = 0;
+}
+/* 没有 rAF 的引擎（含本桩件）当场落定：宁可不动画，也不许停在起点不动。
+ * 除不尽时收成三位小数，别把 0.3333333333333333 写进 style。 */
+let rd = t.RunProgress({ state: 'running', stage: 'probe', stage_done: 1, stage_total: 3, upload: 1 });
+eq('没有 rAF 时当场就是目标值', byClass(rd, 'pbar')[0].childNodes[0].style.transform, 'scaleX(0.333)');
 
 /* linkStyle：幂等，挂不上也不许抛 */
 documentStub.head = makeNode('head');
@@ -1290,7 +1407,7 @@ eq('七个环节都画出来', byClass(rp, 'pstep').length, 7);
 eq('排在探测前的两条标已完成', byClass(rp, 'pstep done').length, 2);
 eq('当前环节只有一条高亮', byClass(rp, 'pstep now').length, 1);
 has('标题带当前环节与计数', rp, '并发探测 40/100');
-eq('进度条宽度按 done/total 算', byClass(rp, 'pbar')[0].childNodes[0].style.width, '40%');
+eq('进度条按 done/total 算 scaleX', byClass(rp, 'pbar')[0].childNodes[0].style.transform, 'scaleX(0.4)');
 eq('探测之后的环节排在待做', byClass(rp, 'pstep todo').length, 4);
 
 rp = t.RunProgress({ state: 'running', stage: 'probe', stage_done: 100, stage_total: 100, upload: 1 });

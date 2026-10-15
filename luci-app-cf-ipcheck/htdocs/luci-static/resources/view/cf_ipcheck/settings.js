@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r54';
+var VIEW_BUILD = 'r55';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -270,6 +270,36 @@ function clear(node) {
 		return;
 	while (node.firstChild)
 		node.removeChild(node.firstChild);
+}
+
+/* 图标：内联 SVG，不引图标库也不做字体图标（项目边界是零新依赖）。
+ * 必须走 createElementNS —— document.createElement('svg') 造出来的是
+ * HTMLUnknownElement，浏览器只画一个空盒子，页面上一片空白、控制台不报错。
+ * 24×24 viewBox、只描边不填充，粗细与圆角由 CSS 的 .bi > svg 统一定（见样式表）。
+ * aria-hidden：按钮文字已经写了「立即测速」，图形再让读屏器念成「播放」就是重复。 */
+var SVG_NS = 'http://www.w3.org/2000/svg';
+var ICONS = {
+	play: ['M6 4.5l13 7.5-13 7.5z'],
+	stop: ['M6 6h12v12H6z'],
+	refresh: ['M19 12a8 8 0 1 1-2.34-5.66L19 8', 'M19 3.5V8h-4.5'],
+	copy: ['M9 9h12v12H9z', 'M15 4.5A2.5 2.5 0 0 0 12.5 2h-8A2.5 2.5 0 0 0 2 4.5v8A2.5 2.5 0 0 0 4.5 15'],
+	probe: ['M18 11a8 8 0 1 1-16 0 8 8 0 1 1 16 0z', 'M20 20l-4.4-4.4']
+};
+
+function svgIcon(name) {
+	var ds = ICONS[name];
+	if (!ds || !document.createElementNS)
+		return null;
+	var s = document.createElementNS(SVG_NS, 'svg');
+	s.setAttribute('viewBox', '0 0 24 24');
+	s.setAttribute('aria-hidden', 'true');
+	s.setAttribute('focusable', 'false');
+	for (var i = 0; i < ds.length; i++) {
+		var p = document.createElementNS(SVG_NS, 'path');
+		p.setAttribute('d', ds[i]);
+		s.appendChild(p);
+	}
+	return s;
 }
 
 /* ==========================================================================
@@ -772,11 +802,11 @@ function ReadoutStrip(cells) {
 	return el('div', { class: 'strip' }, cells);
 }
 
-/* 按钮。kind: primary | default | ghost | lnk */
+/* 按钮。kind: primary | default | ghost | lnk；icon: ICONS 里的名字 */
 function Button(p) {
 	var kids = [];
 	if (p.icon)
-		kids.push(el('i', { class: 'bi', text: p.icon }));
+		kids.push(el('i', { class: 'bi' }, svgIcon(p.icon)));
 	kids.push(el('span', { text: p.label }));
 	var cls = '';
 	if (p.kind === 'primary')
@@ -858,25 +888,25 @@ function StatusRail(st, busy, actions) {
 	var running = st.state === 'running';
 
 	var btnRun = Button({
-		kind: 'primary', icon: '\u25b6', label: T('立即测速'),
+		kind: 'primary', icon: 'play', label: T('立即测速'),
 		disabled: running || busy.run, busy: busy.run,
 		onClick: actions.run
 	});
 	var btnStop = Button({
-		icon: '\u25a0', label: T('停止本轮'),
+		icon: 'stop', label: T('停止本轮'),
 		disabled: !running || busy.stop, busy: busy.stop,
 		title: running ? T('点了不弹窗：这一轮会在收尾时停止，进度与日志里能看到')
 			: T('当前没有在跑的一轮'),
 		onClick: actions.stop
 	});
 	var btnRefresh = Button({
-		icon: '\u21bb', label: T('刷新'),
+		icon: 'refresh', label: T('刷新'),
 		disabled: busy.refresh, busy: busy.refresh,
 		onClick: actions.refresh
 	});
 	var copyable = !!(st.items && st.items.length) && st.state !== 'running';
 	var btnCopy = Button({
-		icon: '\u29c9', label: T('复制榜单 IP'),
+		icon: 'copy', label: T('复制榜单 IP'),
 		disabled: !copyable,
 		/* 跑着的时候手上那份 items 是**上一轮**的（这一轮还没出榜单），
 		 * 让它可点就等于悄悄把人没看见的东西复制到剪贴板里去了。 */
@@ -1116,6 +1146,28 @@ function stageCountText(done, total) {
 	return String(done) + '/' + String(total);
 }
 
+/* 进度条：宽度改成 transform:scaleX（.pbar b 已满宽，靠 .pbar 的 overflow:hidden 裁）。
+ * 为什么要多写一帧：榜单面板每 3 秒按指纹整体重画，这个 b 是刚插进 DOM 的新元素，
+ * 浏览器手上没有它的「改之前长什么样」，于是 CSS 里那条 transition 永远不起跳 ——
+ * 上一版实测到的「进度条一格一格闪」就是这个。先按上一帧的值插入，下一帧再改成目标值，
+ * 中间这一跳才有起点可插值。没有 rAF（老引擎、桩测）就当场落定，宁可不动也不能不动画。
+ * 起点只在同一个环节里沿用：换环节时从 0 长出来，那一节本来就是新的一根。 */
+var progPrev = { id: '', frac: 0 };
+
+function ProgBar(stageId, frac) {
+	var bar = el('b');
+	bar.style.transform = 'scaleX(' + (progPrev.id === stageId ? progPrev.frac : 0) + ')';
+	progPrev = { id: stageId, frac: frac };
+	if (typeof requestAnimationFrame !== 'function') {
+		bar.style.transform = 'scaleX(' + frac + ')';
+		return bar;
+	}
+	requestAnimationFrame(function () {
+		bar.style.transform = 'scaleX(' + frac + ')';
+	});
+	return bar;
+}
+
 function RunProgress(st) {
 	var cur = stageIndex(st.stage);
 	var head = T('正在测速');
@@ -1131,6 +1183,7 @@ function RunProgress(st) {
 
 	var doneN = Number(st.stage_done) || 0;
 	var totalN = Number(st.stage_total) || 0;
+	var progFrac = totalN > 0 ? Math.min(1, Math.round(doneN * 1000 / totalN) / 1000) : 0;
 	var curText = stageCountText(doneN, totalN);
 	if (curText)
 		head += ' · ' + STAGES[cur].label + ' ' + curText;
@@ -1156,8 +1209,7 @@ function RunProgress(st) {
 			el('span', { class: 'pn', text: note })
 		];
 		if (state === 'now' && totalN > 0)
-			row.push(el('span', { class: 'pbar' },
-				el('b', { style: { width: Math.min(100, Math.round(doneN * 100 / totalN)) + '%' } })));
+			row.push(el('span', { class: 'pbar' }, ProgBar(sg.id, progFrac)));
 		return el('li', { class: 'pstep ' + state }, row);
 	});
 
@@ -1224,7 +1276,7 @@ function BoardPane(st, actions) {
 					? whyNoReply(T('读不到引擎的输出'), 'status')
 					: T('拿到的不是引擎该回的那段结构化文本，读不懂。原文片段：%s —— 先核对右上角版本号与装上的包版本是否一致（不一致就是浏览器还在吃旧的视图缓存，强刷一次），再点「重新读取」。').format(String(st.raw || '').slice(0, 160))),
 			action: Button({
-				label: T('重新读取'), icon: '\u21bb',
+				label: T('重新读取'), icon: 'refresh',
 				onClick: actions.refresh
 			})
 		}));
@@ -1241,7 +1293,7 @@ function BoardPane(st, actions) {
 			title: T('本轮没有跑完'),
 			detail: why(st.reason),
 			action: Button({
-				kind: 'primary', label: T('立即测速'), icon: '\u25b6',
+				kind: 'primary', label: T('立即测速'), icon: 'play',
 				onClick: actions.run
 			})
 		}));
@@ -1259,7 +1311,7 @@ function BoardPane(st, actions) {
 				? T('点「立即测速」跑第一轮。引擎会先拉社区源、把上一轮的入围 IP 并回候选池，再用带真实 SNI 的 HTTPS 逐个实测。')
 				: T('候选池里的 IP 都没有同时过 TTFB 与总耗时两道门槛。放宽阈值（配置 → 测速与判定），或先到「源与检测」看看候选池为什么这么小。'),
 			action: Button({
-				kind: 'primary', label: T('立即测速'), icon: '\u25b6',
+				kind: 'primary', label: T('立即测速'), icon: 'play',
 				onClick: actions.run
 			})
 		}));
@@ -1358,7 +1410,7 @@ function SourcesPane(src, actions) {
 	var kids = [];
 
 	kids.push(Section(T('逐源检测'), Button({
-		label: T('检测源可用性'), icon: '\u2315',
+		label: T('检测源可用性'), icon: 'probe',
 		disabled: store.get().busy && store.get().busy.check,
 		busy: store.get().busy && store.get().busy.check,
 		title: T('逐条实拉【已经生效】的那份清单。上面编辑框里改过的内容，要先点页面底部的「保存并应用」才会生效。'),
@@ -1382,7 +1434,7 @@ function SourcesPane(src, actions) {
 			title: T('还没有检测过'),
 			detail: T('「检测源可用性」逐条实拉配置里那份社区源清单，列出 HTTP 状态、提取到的 IPv4 数量，以及其中落在 Cloudflare 官方网段内的比例。段内占比掉到 90% 以下，通常说明这个源换了内容。'),
 			action: Button({
-				kind: 'primary', label: T('开始检测'), icon: '\u2315',
+				kind: 'primary', label: T('开始检测'), icon: 'probe',
 				onClick: actions.check
 			})
 		}));
@@ -1402,7 +1454,7 @@ function SourcesPane(src, actions) {
 		kids.push(EmptyBox({
 			title: T('检测没有结果'),
 			detail: srcMessage(src),
-			action: Button({ label: T('重新检测'), icon: '\u2315', onClick: actions.check })
+			action: Button({ label: T('重新检测'), icon: 'probe', onClick: actions.check })
 		}));
 		return el('div', {}, kids);
 	}
@@ -1572,7 +1624,7 @@ function LogsPane(lg, actions) {
 	var busy = store.get().busy && store.get().busy.logs;
 
 	kids.push(Section(T('引擎日志'), Button({
-		label: lg ? T('重新读取') : T('读取日志'), icon: '\u21bb',
+		label: lg ? T('重新读取') : T('读取日志'), icon: 'refresh',
 		disabled: busy, busy: busy,
 		onClick: actions.refresh
 	})));
@@ -1591,7 +1643,7 @@ function LogsPane(lg, actions) {
 				title: T('还没读到日志'),
 				detail: T('这里显示引擎自己写的过程记录：逐条源取到什么、候选池多大、哪些 IP 达标、吞吐实测结果，以及每一轮的失败原因。日志写在路由器的 /tmp/cf-ipcheck/cf-ipcheck.log 里，那是内存盘，重启就清零。'),
 				action: Button({
-					kind: 'primary', label: T('读取日志'), icon: '\u21bb',
+					kind: 'primary', label: T('读取日志'), icon: 'refresh',
 					onClick: actions.refresh
 				})
 			}));
@@ -1608,7 +1660,7 @@ function LogsPane(lg, actions) {
 		kids.push(EmptyBox({
 			title: titles[lg.state] || titles.unreachable,
 			detail: logMessage(lg),
-			action: Button({ label: T('重新读取'), icon: '\u21bb', onClick: actions.refresh })
+			action: Button({ label: T('重新读取'), icon: 'refresh', onClick: actions.refresh })
 		}));
 		return el('div', {}, kids);
 	}
