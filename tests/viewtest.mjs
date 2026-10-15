@@ -515,6 +515,32 @@ ok('未知原因走兜底：带上原始码、指向日志、给出重试动作'
 	t.why('something_new').includes('something_new') && /日志/.test(t.why('something_new')) && /立即测速/.test(t.why('something_new')));
 ok('兜底句不再把英文 reason= 当正文抛给用户', !/reason=/.test(t.why('something_new')));
 
+/* ---- r58：三种"没有新结果"的收尾要分开说；下一轮的预告要接引擎那道门 ---- */
+ok('stopped 有自己的话术，且不落到"没登记过这个码"那条兜底',
+	/不是故障/.test(t.why('stopped')) && !/还没登记过/.test(t.why('stopped')));
+ok('stopped 说的是"按你点的停止"，不是"断了"', /你点的「停止本轮」/.test(t.why('stopped')));
+ok('no_results 说清是跑完了但零达标', /没有一条 IP 达标/.test(t.why('no_results')) && !/还没登记过/.test(t.why('no_results')));
+ok('interrupted 那条没被新分支顶掉', /断电|被杀/.test(t.why('interrupted')));
+eq('叫停的灯退到 warn（不是红的"失败"）', t.tone({ state: 'error', reason: 'stopped' }), 'warn');
+eq('零达标的灯也退到 warn', t.tone({ state: 'error', reason: 'no_results' }), 'warn');
+eq('没有原因码的 error 仍然报红', t.tone({ state: 'error' }), 'bad');
+eq('灯上写「已停止」而不是「本轮失败」', t.stateWord({ state: 'error', reason: 'stopped' }), '已停止');
+ok('零达标写成「跑完 · 无达标」，不冒充已完成',
+	t.stateWord({ state: 'error', reason: 'no_results' }).includes('无达标') &&
+	t.stateWord({ state: 'error', reason: 'no_results' }) !== '已完成');
+/* 期望值都从同一个式子算出来，不拿"自己等于自己"当判据（那是空判） */
+const hhmmAt = (ms) => { const d = new Date(ms), p = n => (n < 10 ? '0' : '') + n; return p(d.getHours()) + ':' + p(d.getMinutes()); };
+const nrEpoch = Math.floor(Date.now() / 1000) + 7200;
+eq('预告用引擎给的 next_run，哪怕状态里还带着上一轮的 started',
+	t.scheduleLine({ enabled: 1, interval: 6, next_run: nrEpoch, started: '2026-10-15T14:50:05Z', finished: '2026-10-15T14:52:04Z' }),
+	'定时实测：每 6 小时，下一轮约 ' + hhmmAt(nrEpoch * 1000));
+eq('老引擎没有 next_run 时退回 started + 周期（r41 那条算法还在）',
+	t.scheduleLine({ enabled: 1, interval: 6, started: '2026-10-15T14:50:05Z' }),
+	'定时实测：每 6 小时，下一轮约 ' + hhmmAt(Date.parse('2026-10-15T14:50:05Z') + 6 * 3600000));
+eq('next_run 是脏值 ⇒ 不显示编出来的点，退回 started 那条路',
+	t.scheduleLine({ enabled: 1, interval: 6, next_run: '胡来', started: '2026-10-15T14:50:05Z' }),
+	'定时实测：每 6 小时，下一轮约 ' + hhmmAt(Date.parse('2026-10-15T14:50:05Z') + 6 * 3600000));
+
 /* ================================================================== *
  * 4. 榜单：列数随「胜出域名种类」变，数字列一律右对齐
  * ================================================================== */

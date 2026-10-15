@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r57';
+var VIEW_BUILD = 'r58';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -379,6 +379,11 @@ function tone(st) {
 		case 'never_run':
 			return 'idle';
 		case 'error':
+			/* 用户自己叫停的、和跑完但零达标的，都不是"坏了"：灯退一档到 warn。
+			 * 但也不能给 ok —— 这一轮确实没拿到新结果。 */
+			if (st.reason === 'stopped' || st.reason === 'no_results')
+				return 'warn';
+			return 'bad';
 		case 'unreachable':
 		case 'parse_error':
 			return 'bad';
@@ -405,6 +410,11 @@ function stateWord(st) {
 		case 'parse_error':
 			return T('输出异常');
 		case 'error':
+			/* 灯上那几个字是和 why() 里同名的三条配对的：自己按的停止不能写成"失败" */
+			if (st.reason === 'stopped')
+				return T('已停止');
+			if (st.reason === 'no_results')
+				return T('跑完 · 无达标');
 			return T('本轮失败');
 		default:
 			return st.intercepted == 1 ? T('完成 · 读数不可信') : T('已完成');
@@ -424,6 +434,13 @@ function why(reason) {
 			return T('探测身份写不了丢弃响应体的目标，本轮在联网之前就中止了。这会让每条探测都以 curl rc=23 失败，看起来像「所有 IP 都不通」，其实是本地写不了。引擎每轮开始会把运行目录（默认 /tmp/cf-ipcheck）chmod 711、把 .null 放成 666，正常不该出现；反复出现就查运行目录所在分区的剩余空间，或「探测身份」是否被改成了不存在的用户。');
 		case 'interrupted':
 			return T('上一轮没跑完就断了（进程被杀、断电或重启），运行锁已被回收，这一条是自动判出来的。下面是上一次成功完成的榜单；直接点「立即测速」即可重来。');
+		case 'stopped':
+			/* 和 interrupted 分开说是必要的：这条是用户自己在页面上按了「停止本轮」，
+			 * 说成"断了/失败"等于把一次正常操作报成事故。 */
+			return T('这一轮是按你点的「停止本轮」停的，不是故障：剩下的探测直接标成已停止，也没有结果需要发布。下面这份榜单还是上一次跑完的那份；要重来直接点「立即测速」。');
+		case 'no_results':
+			/* 跑完了但一条都没达标 —— 既不是中断，也不能算完成 */
+			return T('这一轮跑完了，但没有一条 IP 达标（全部超时，或比门限慢）。下面这份榜单还是上一次跑完的那份。先到「日志」页看最后几行：那行「分类」会说是全超时还是别的原因。');
 		default:
 			/* 走到这里说明引擎报了个页面没登记过的原因码。别把英文码当整句话甩给用户：
 			 * 一是翻译不出来，二是用户不知道该干什么。所以先说人话、再指着「日志」页
@@ -929,13 +946,22 @@ function scheduleLine(st) {
 		return T('定时实测：关闭');
 	var s = T('定时实测：每 %s 小时').format(st.interval != null ? st.interval : '?');
 	if (st.interval != null) {
-		/* r41 的周期守门从【起轮】时刻算余量（引擎写 /etc/cf-ipcheck/lastrun 的是 do_run
-			* 开头那一刻），所以这里也必须用 started —— 拿 finished 会把预计时间整整晚一轮
-			* 的时长（一轮两三分钟），页面上说「下一轮约 18:40」而引擎 18:37 就开跑了。
-			* 老状态文件没有 started（或被裁过）才退回 finished。 */
-		var base = Date.parse(st.started || st.finished);
-		if (isFinite(base)) {
-			var d = new Date(base + Number(st.interval) * 3600000);
+		/* 优先用引擎给的 next_run：它是引擎拿**守门自己读的** lastrun 算出来的，
+		 * 两边不可能再各说一套。以前这里自己按 started + 周期算，而零结果收尾那一轮
+		 * 为了不把上一轮榜单丢掉，状态里带的是上一轮的 started —— 真机上量到的后果是
+		 * 页面说「下一轮约 04:50」而引擎 07:45 才放行，早了将近三个钟头。
+		 * 老引擎没有这个键（或 lastrun 读不到 ⇒ 引擎干脆不给）才退回 started 那套算法。
+		 * r41 那条"别用 finished"的道理在这里仍然成立：守门算余量用的是起轮时刻。 */
+		var at = NaN;
+		if (st.next_run != null && isFinite(Number(st.next_run)))
+			at = Number(st.next_run) * 1000;
+		else {
+			var base = Date.parse(st.started || st.finished);
+			if (isFinite(base))
+				at = base + Number(st.interval) * 3600000;
+		}
+		if (isFinite(at)) {
+			var d = new Date(at);
 			s += T('，下一轮约 %s').format(pad2(d.getHours()) + ':' + pad2(d.getMinutes()));
 		}
 	}

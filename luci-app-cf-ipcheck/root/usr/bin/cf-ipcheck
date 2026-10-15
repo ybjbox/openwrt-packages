@@ -1300,11 +1300,21 @@ do_run() {
 	progress_set rank 1 1
 	log "达标 $qualified / $pool_n（榜单保留 $kept）；分类 $counts"
 	if [ "$kept" = 0 ]; then
-		# 被 stop 截断、或整轮探测全失败：绝不能拿一份空榜单去覆盖上一轮那份好的。
-		# 不发布任何产物，锁一放，状态留给自愈 —— 页面会显示「上一轮中断」+
-		# 上一轮榜单（真机上撞过一次：stop 之后 best-ip.txt 被写成 0 行）。
+		# 绝不能拿一份空榜单去覆盖上一轮那份好的（真机上撞过一次：stop 之后
+		# best-ip.txt 被写成 0 行）。所以不发布任何产物 —— 但状态要**当场自己写**：
+		# 留给读时自愈就只能统一说成「中断」，而"用户按了停止"和"跑完但一条都没达标"
+		# 都不是中断，那两种情况页面得各说各的。
 		rm -f "$LOCK"
-		log '本轮没有达标结果，不覆盖上一轮榜单'
+		if [ -f "$STOP" ]; then
+			endwhy=stopped
+			# 叫停标记用完就清：它是"这一轮别再探测了"的一次性指令，
+			# 留着会让下一轮开头就被自己判成已停止。
+			rm -f "$STOP"
+		else
+			endwhy=no_results
+		fi
+		carry_previous "$endwhy"
+		log "本轮没有达标结果，不覆盖上一轮榜单（收尾=$endwhy）"
 		progress_clear
 		return 0
 	fi
@@ -1332,9 +1342,37 @@ do_run() {
 merge_cfg() {
 	# upload 也带上：页面的「上传 Gist」那一环节只有开了才会走，
 	# 不给这个信息就只能让那条一直挂着「待做」骗人。
-	awk -v e="\"enabled\":$(cfg_num enabled 0),\"interval\":$C_INTERVAL,\"upload\":$(cfg_num upload_gist 0)" '
+	awk -v e="\"enabled\":$(cfg_num enabled 0),\"interval\":$C_INTERVAL,\"upload\":$(cfg_num upload_gist 0)$(next_run_epoch)" '
 		{ if ((i = match($0, /\}[ \t]*$/)) > 0) $0 = substr($0, 1, i - 1) "," e "}" }
 		{ print }'
+}
+
+# 下一次定时轮的大致时刻（epoch 秒），给页面的「下一轮约 HH:MM」用。
+# 为什么要引擎给这个数、而不是页面拿 started + 周期自己算：零结果收尾那一轮为了
+# 不丢上一轮榜单，状态里带的是**上一轮**的 started/finished（见 carry_previous），
+# 照它算预告会早出几个钟头 —— 真机上量到过：页面说 04:50，守门其实 07:45 才放行。
+# 这里直接读守门自己用的那份 lastrun，两边不可能再各说一套。
+# lastrun 读不到（首次安装、内容被弄脏）就整个键都不给，让页面退回老算法，
+# 而不是给一个看起来对的 0。
+next_run_epoch() {
+	lr=$(last_run_epoch)
+	[ "$lr" -gt 0 ] 2>/dev/null || return 0
+	gap=$((C_INTERVAL * 3600))
+	[ "$gap" -gt 0 ] 2>/dev/null || gap=21600
+	printf ',"next_run":%s' "$((lr + gap))"
+}
+
+# 端出上一轮那份好读数，但状态要说实话：那是中止/叫停/零达标，不是「已完成」。
+# 曾经这里是直接 cp 上一轮，于是被 OOM/断电打断过的页面显示「已完成」，
+# 只有时间戳是旧的 —— 和「完成了但没结果」不是一回事，不能装成完成。
+# 三种收尾共用这一条：interrupted（锁主没了 = 真断了）、stopped（用户按的）、
+# no_results（跑完了但一条都没达标）。
+carry_previous() { # $1=reason
+	if [ -s "$RESULT_KEEP" ] && grep -q '"state":"done"' "$RESULT_KEEP"; then
+		sed "s/\"state\":\"done\"/\"state\":\"error\",\"reason\":\"$1\"/" \
+			"$RESULT_KEEP" >"$STATUS" 2>/dev/null && return 0
+	fi
+	printf '{"state":"error","reason":"%s","items":[]}\n' "$1" >"$STATUS"
 }
 
 # 把 progress 文件里的三段并进「正在跑」的状态里，页面据此画分环节进度。
@@ -1370,16 +1408,8 @@ show_status() {
 		fi
 	fi
 	if grep -q '"state":"running"' "$STATUS" 2>/dev/null && ! lock_live; then
-		if [ -s "$RESULT_KEEP" ] && grep -q '"state":"done"' "$RESULT_KEEP"; then
-			# 上一轮的读数照样端出来，但状态要说实话：那是中断，不是「已完成」。
-			# 曾经这里是直接 cp 上一轮，于是被 OOM/断电打断过的页面显示「已完成」，
-			# 只有时间戳是旧的 —— 和「完成了但没结果」不是一回事，不能装成完成。
-			sed 's/"state":"done"/"state":"error","reason":"interrupted"/' \
-				"$RESULT_KEEP" >"$STATUS" 2>/dev/null ||
-				printf '{"state":"error","reason":"interrupted","items":[]}\n' >"$STATUS"
-		else
-			printf '{"state":"error","reason":"interrupted","items":[]}\n' >"$STATUS"
-		fi
+		# 走到这里就是"状态说在跑、可锁主已经不在了"= 真的断了一轮
+		carry_previous interrupted
 	fi
 	if grep -q '"state":"running"' "$STATUS" 2>/dev/null; then
 		# 正在跑的这一轮才有进度可给；done/error 状态不带这几个键，
@@ -1875,6 +1905,33 @@ selftest() {
 	check '中断仍说明原因 interrupted' "$(printf '%s' "$got" | sed -n 's/.*"reason":"\([^"]*\)".*/\1/p')" 'interrupted'
 	check '中断了还把上一轮的榜单端出来' "$(printf '%s' "$got" | grep -c '1\.1\.1\.1')" 1
 	check '上一轮的完成时间没被编造' "$(printf '%s' "$got" | grep -c '"finished":"f1"')" 1
+	# 三种"没有新结果"的收尾要能分开说：自己按的停止 ≠ 跑完零达标 ≠ 真断了。
+	# 都写成 interrupted 就是把一次正常操作报成事故（r58 改这个）。
+	carry_previous stopped
+	got=$(show_status)
+	check '用户叫停的收尾报 stopped，不冒充中断' "$(printf '%s' "$got" | sed -n 's/.*"reason":"\([^"]*\)".*/\1/p')" 'stopped'
+	check '叫停了也照样端上一轮榜单' "$(printf '%s' "$got" | grep -c '1\.1\.1\.1')" 1
+	carry_previous no_results
+	got=$(show_status)
+	check '跑完零达标报 no_results' "$(printf '%s' "$got" | sed -n 's/.*"reason":"\([^"]*\)".*/\1/p')" 'no_results'
+	check '零达标也不是已完成（状态仍是 error）' "$(printf '%s' "$got" | sed -n 's/.*"state":"\([^"]*\)".*/\1/p')" 'error'
+	# 预告「下一轮约几点」用的那个数必须由引擎给：它读的就是守门那份 lastrun，
+	# 页面再也不会拿上一轮的 started 去算出一个早几个钟头的点。
+	# 断言里不许直接用 C_INTERVAL：show_status 是在子壳里跑的，它 load_config 出来的
+	# 那些 C_* 变量不会漏到父壳，这里 set -u 会当场炸（真炸过一次）。周期就从
+	# 同一份输出里读回来的那个 interval 取，顺便把口径一起验了。
+	printf '%s\n' 1000000 >"$LAST_RUN"
+	got=$(show_status)
+	nr=$(printf '%s' "$got" | sed -n 's/.*"next_run":\([0-9]*\).*/\1/p')
+	iv=$(printf '%s' "$got" | sed -n 's/.*"interval":\([0-9]*\).*/\1/p')
+	gap=$(( ${iv:-0} * 3600 )); [ "$gap" -gt 0 ] 2>/dev/null || gap=21600
+	check '状态里并上 next_run（lastrun + 周期）' "$nr" "$((1000000 + gap))"
+	check 'next_run 并进去之后 JSON 结尾仍是单个右括号' "$(printf '%s' "$got" | tail -c 1)" '}'
+	rm -f "$LAST_RUN"
+	check 'lastrun 读不到就干脆不给 next_run（别给一个看着对的 0）' "$(show_status | grep -c '"next_run"')" '0'
+	printf '胡来\n' >"$LAST_RUN"
+	check 'lastrun 内容不是数字 ⇒ 同样不给 next_run' "$(show_status | grep -c '"next_run"')" '0'
+	rm -f "$LAST_RUN"
 	rm -f "$STATUS"
 	printf '{"state":"done","items":[]}' >"$RESULT_KEEP"
 	got=$(show_status | sed -n 's/.*"state":"\([^"]*\)".*/\1/p')
