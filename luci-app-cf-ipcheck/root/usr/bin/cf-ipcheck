@@ -1321,9 +1321,18 @@ do_run() {
 	write_outputs "$ranked" "$pool_n" "$qualified" "$intercepted" "$counts"
 	rm -f "$LOCK"
 	if [ "$C_UPLOAD" = 1 ]; then
-		progress_set upload 0 1
-		upload_gist
-		progress_set upload 1 1
+		if [ -f "$STOP" ]; then
+			# 叫停落在"已经攒够达标 IP"之后时，上一支会照常把这份**跑到一半**的榜单
+			# 推到公开 Gist（真机量到：04:28:34 按停，04:28:44 Gist 已更新）。
+			# 按停的语义是"这一轮别继续了"，不是"把我没看完的结果发出去"，
+			# 所以这里只跳上传：本地产物照写（设备自己要用那份 best-ip.txt）。
+			log '本轮被你叫停：结果只写本地，不推公开 Gist（要上传就再跑完整一轮）'
+			rm -f "$STOP"
+		else
+			progress_set upload 0 1
+			upload_gist
+			progress_set upload 1 1
+		fi
 	fi
 	log '本轮完成'
 	progress_clear

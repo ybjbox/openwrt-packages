@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r58';
+var VIEW_BUILD = 'r59';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -686,7 +686,8 @@ var store = createStore({
 	logs: null,
 	tab: 'board',
 	busy: {},
-	flash: null
+	flash: null,
+	logFull: false
 });
 
 /* ==========================================================================
@@ -1532,7 +1533,7 @@ function logTone(line) {
  * 反而会把电脑不在 +0800 时的显示搞成另一种时刻（title 里给的是原始串，可核对）。 */
 var LOG_TS_RE = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})([+-]\d{2}):?(\d{2})/;
 
-function logStamp(ln) {
+function logStamp(ln, full) {
 	var m = LOG_TS_RE.exec(ln);
 	if (!m)
 		return null;
@@ -1540,6 +1541,10 @@ function logStamp(ln) {
 	var now = new Date();
 	var ymd = m[1] + '-' + m[2] + '-' + m[3];
 	var hmss = m[4] + ':' + m[5] + ':' + m[6];
+	/* 「完整时刻」那一档：整行原样给出（2026-10-16T04:28:44+0800），不再靠悬浮。
+	 * 悬浮这条路径在手机上等于没有 —— 这一列本来就是给人核对"到底几点"的。 */
+	if (full)
+		return { shown: ln.slice(0, m[0].length), title: ln.slice(0, m[0].length), rest: ln.slice(m[0].length).replace(/^[ \t]+/, '') };
 	var today = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate());
 	var yd = new Date(now.getTime() - 86400000);
 	var yesterday = yd.getFullYear() + '-' + pad(yd.getMonth() + 1) + '-' + pad(yd.getDate());
@@ -1568,7 +1573,7 @@ function logStamp(ln) {
 	return { shown: shown, title: title, rest: ln.slice(m[0].length).replace(/^[ \t]+/, '') };
 }
 
-function LogBlock(text) {
+function LogBlock(text, full) {
 	var lines = String(text).split('\n');
 	while (lines.length && !lines[lines.length - 1])
 		lines.pop();
@@ -1580,7 +1585,7 @@ function LogBlock(text) {
 	return el('div', { class: 'logbox', role: 'log', 'aria-live': 'off' },
 		out.map(function (ln) {
 			var t = logTone(ln);
-			var st = logStamp(ln);
+			var st = logStamp(ln, full);
 			if (!st)
 				return el('div', { class: t ? 'lline ' + t : 'lline', text: ln });
 			return el('div', { class: t ? 'lline ' + t : 'lline' }, [
@@ -1691,9 +1696,13 @@ function LogsPane(lg, actions) {
 		return el('div', {}, kids);
 	}
 
-	kids.push(LogBlock(lg.text));
+	var full = !!(store.get() && store.get().logFull);
+	kids.push(LogBlock(lg.text, full));
 	kids.push(el('div', { class: 'note' }, [
-		el('span', { text: T('最新的在最上面。行首时间只显示时刻（今天的显示 HH:MM:SS，昨天与更早带上日期），鼠标停在上面能看到原始时间戳与距今多久 —— 那是路由器自己的本地时间并带时区偏移（国内是 +0800），不是 UTC。只给最近这一段（最多约 60 KB）；日志总量按「配置 → 基本设置 → 日志体积上限」封顶，超限会丢掉较早的内容并在这里留一行说明。') }),
+		el('span', { text: full
+			? T('最新的在最上面。行首现在是**完整原始时间戳**（路由器自己的本地时间并带时区偏移，国内是 +0800，不是 UTC）。只给最近这一段（最多约 60 KB）；日志总量按「配置 → 基本设置 → 日志体积上限」封顶，超限会丢掉较早的内容并在这里留一行说明。')
+			: T('最新的在最上面。行首时间只显示时刻（今天的显示 HH:MM:SS，昨天与更早带上日期），鼠标停在上面能看到原始时间戳与距今多久 —— 手机上悬浮不出来，就用旁边那个「显示完整时刻」。只给最近这一段（最多约 60 KB）；日志总量按「配置 → 基本设置 → 日志体积上限」封顶，超限会丢掉较早的内容并在这里留一行说明。') }),
+		Button({ kind: 'lnk', label: full ? T('只看时刻') : T('显示完整时刻'), title: T('行首时间在「只有时刻」和「完整原始时间戳（带时区）」之间切换。按钮上的字说的是点下去之后会变成什么。'), onClick: actions.full }),
 		Button({ kind: 'lnk', label: T('复制全部'), title: T('按时间先后复制原始日志（与页面上的倒序显示相反），方便直接粘给别人看。'), onClick: actions.copy })
 	]));
 	return el('div', {}, kids);
@@ -1768,6 +1777,62 @@ function rememberTab(id) {
 	try {
 		window.localStorage.setItem(TAB_KEY, id);
 	} catch (e) {}
+}
+
+/* ---- 当前标签写进 URL 的片段（N5）----
+ * 为什么用 location.hash 而不是查询串：装机实测过两件事 ——
+ *   1) luci.js 里 0 处引用 location.hash、也没有 hashchange/popstate 监听，
+ *      dispatcher 只看 pathname，所以这一段不与路由打架；写进去不触发导航、
+ *      刷新也不会被改写；
+ *   2) 表单脏了（有未应用更改、window.onbeforeunload 是 LuCI 挂着的）之后再写
+ *      hash，不弹"离开页面"确认、不产生 dialog、页面照常 —— 因为改片段不是
+ *      一次文档卸载。
+ * 用 replaceState 而不是直接赋值：赋值会在浏览器历史里每切一个标签留一条记录，
+ * 用户按"后退"会在四个标签间来回走半天退不出页面；replaceState 只把地址
+ * 变成"当前这一屏"，分享/收藏/刷新都能回到同一个面板。
+ * 老引擎没有 history.replaceState 时退回赋值（能用，只是会留历史）。 */
+function hashTab() {
+	var m = /^#cf-tab=([a-z]+)/.exec(String(window.location.hash || ''));
+	if (!m)
+		return null;
+	for (var i = 0; i < TAB_DEFS.length; i++)
+		if (TAB_DEFS[i].id === m[1])
+			return m[1];
+	return null;
+}
+
+function writeHashTab(id) {
+	var want = '#cf-tab=' + id;
+	if (String(window.location.hash || '') === want)
+		return;
+	try {
+		if (window.history && window.history.replaceState)
+			window.history.replaceState(null, '', want);
+		else
+			window.location.hash = want;
+	} catch (e) {
+		/* 隐私模式或 file: 之类受限环境下 replaceState 会抛 —— 少一段地址不算事 */
+	}
+}
+
+function watchHash() {
+	var on = function () {
+		var id = hashTab();
+		/* 只有"外部改的、而且和眼前这个不同"才跟着走。自己写的那一次因为
+		 * writeHashTab 先比过相等，不会重复；后退/手改地址栏则走这里。 */
+		if (id && id !== store.get().tab)
+			goto(id, true);
+	};
+	try {
+		window.addEventListener('hashchange', on);
+	} catch (e) {
+		return null;
+	}
+	return function () {
+		try {
+			window.removeEventListener('hashchange', on);
+		} catch (e2) {}
+	};
 }
 
 /* ==========================================================================
@@ -2383,6 +2448,12 @@ function actLogs(btn) {
 	});
 }
 
+function actLogFull() {
+	/* 只是换一种显示，不重新读日志：日志文本还在 store 里，翻一下标记就重画
+	 * （logsKeyOf 把这个标记并进了指纹，所以 drawLogs 不会因"内容没变"而跳过）。 */
+	store.set({ logFull: !store.get().logFull });
+}
+
 function actCopyLogs(btn) {
 	var lg = store.get().logs;
 	if (!lg || lg.state !== 'ok' || !lg.text) {
@@ -2487,7 +2558,8 @@ var P = {
 	srcForm: null,   /* 源清单专用 Map（只含 community_sources），渲染进源页宿主 */
 	srcEdit: null,   /* 源清单表单的固定宿主（在「源与检测」页，不参与每拍重画） */
 	srcRes: null,    /* 检测结果宿主：drawSources 只清这一块 */
-	stopSchemeWatch: null  /* 明暗监听的卸载把手（teardown 里必须调，否则跨页面实例累积） */
+	stopSchemeWatch: null, /* 明暗监听的卸载把手（teardown 里必须调，否则跨页面实例累积） */
+	hashStop: null       /* hashchange 监听的卸载把手，同上 */
 };
 
 var TAB_DEFS = [
@@ -2521,6 +2593,7 @@ function goto(id, persist) {
 	store.set({ tab: id });
 	if (persist !== false)
 		rememberTab(id);
+	writeHashTab(id);
 }
 
 /* 供动作层调用（actCheck 要把人送到源面板） */
@@ -2582,6 +2655,10 @@ function buildPage(mapnode) {
 	if (P.stopSchemeWatch)
 		P.stopSchemeWatch();
 	P.stopSchemeWatch = watchScheme(root);
+	/* 标签 <-> 地址：先摘上一份再挂，理由和明暗监听一样（store 与 window 都是跨实例的） */
+	if (P.hashStop)
+		P.hashStop();
+	P.hashStop = watchHash();
 
 	/* 读数条与提示条：各自订阅 store 重画 */
 	P.rail = el('div');
@@ -2688,15 +2765,17 @@ function buildPage(mapnode) {
 	 *      在中间看着的就不弹回顶部。 */
 	var lastLogsKey = null;
 	var logsDrawn = false;
-	function logsKeyOf(lg) {
+	function logsKeyOf(lg, full) {
 		if (!lg)
 			return 'none';
 		if (lg.state !== 'ok')
 			return lg.state;
-		return 'ok:' + lg.text.length + ':' + lg.text.slice(-60);
+		/* 显示模式并进指纹：不这么做的话点「显示完整时刻」时日志文本一个字没变，
+		 * drawLogs 会认为"没变化"直接跳过 —— 按钮就变成点了没反应的那一类。 */
+		return 'ok:' + (full ? 'F' : 'T') + ':' + lg.text.length + ':' + lg.text.slice(-60);
 	}
 	function drawLogs(state) {
-		var key = logsKeyOf(state.logs);
+		var key = logsKeyOf(state.logs, state.logFull);
 		if (logsDrawn && key === lastLogsKey)
 			return;
 		/* 面板不在眼前就别重画。两个理由：一是白重画（看不见，日志一屏上千个节点）；
@@ -2725,7 +2804,7 @@ function buildPage(mapnode) {
 		logsDrawn = true;
 		lastLogsKey = key;
 		clear(logsPane);
-		logsPane.appendChild(LogsPane(state.logs, { refresh: actLogs, copy: actCopyLogs }));
+		logsPane.appendChild(LogsPane(state.logs, { refresh: actLogs, copy: actCopyLogs, full: actLogFull }));
 		var fresh = logsPane.querySelector ? logsPane.querySelector('.logbox') : null;
 		if (fresh) {
 			var top = null;
@@ -3026,7 +3105,9 @@ return view.extend({
 					T('源清单的编辑表单没能加载。下面仍然可以检测配置文件里已有的源；要增删源，可以先改配置文件（/etc/config/cf_ipcheck 里的 community_sources）再刷新本页。刷新后还是不行，多半是 rpcd 还拿着旧的表单缓存，在路由器上执行 /etc/init.d/rpcd reload 再试。')));
 			}).then(function () {
 				/* 恢复上次停留的标签；没有记录就落到榜单页 */
-				var want = savedTab();
+				/* 地址里那段优先：从分享链接/收藏进来要落在链接指的那一屏；
+				 * 没有片段才退回上次停留的那个（localStorage）。 */
+				var want = hashTab() || savedTab();
 				var valid = false;
 				for (var i = 0; i < TAB_DEFS.length; i++)
 					if (TAB_DEFS[i].id === want)
@@ -3064,6 +3145,12 @@ return view.extend({
 		if (P.stopSchemeWatch) {
 			P.stopSchemeWatch();
 			P.stopSchemeWatch = null;
+		}
+		/* hashchange 挂在 window 上，同样是跨页面实例的：不摘就会每进一次页面多一个
+		 * 监听，一次后退触发好几次 goto。 */
+		if (P.hashStop) {
+			P.hashStop();
+			P.hashStop = null;
 		}
 		/* 表单把手与源页宿主一起清掉：teardown 之后 DOM 已经不在文档里，
 		 * 留着旧 Map 实例会让下次进页面时把值写到一份废弃的表单上。 */

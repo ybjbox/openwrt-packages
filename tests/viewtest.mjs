@@ -49,6 +49,7 @@ const hook = "\nglobalThis.__cf_t = {\n" +
 	"\tget store() { return store; },\n" +
 	"\tget P() { return P; }, goto: goto, savedTab: savedTab,\n" +
 	"\tbuildPage: buildPage, runCmd: runCmd,\n" +
+	"\thashTab: hashTab, writeHashTab: writeHashTab, watchHash: watchHash, logStamp: logStamp, actLogFull: actLogFull,\n" +
 	"\tactRun: actRun, actCheck: actCheck, actStop: actStop,\n" +
 	"\tsourcesMap: sourcesMap, mountSourcesForm: mountSourcesForm,\n" +
 	"\tpendingSourceEdits: pendingSourceEdits,\n" +
@@ -282,7 +283,26 @@ String.prototype.format = function (...a) {
 
 /* localStorage：默认「不存在」以复现无痕/被禁的情形，需要时再挂一个假的 */
 let lsData = null;
+/* location / history：r59 的「标签进 URL」要用。做成可写的假对象，并且把
+ * replaceState 的调用记下来 —— 直接赋值 location.hash 会在浏览器历史里每切一次
+ * 标签留一条记录（后退要在四个标签间走半天），所以视图走的是 replaceState；
+ * 这条区别只能在这里钉住，光看源码看不出来。 */
+const locationStub = { hash: '' };
+const replaceCalls = [];
+const winListeners = {};
 const windowStub = {
+	location: locationStub,
+	history: {
+		replaceState(stub, title, url) { replaceCalls.push(String(url)); locationStub.hash = String(url); }
+	},
+	addEventListener(ev, fn) { (winListeners[ev] = winListeners[ev] || []).push(fn); },
+	removeEventListener(ev, fn) {
+		const a = winListeners[ev] || [];
+		const i = a.indexOf(fn);
+		if (i >= 0) a.splice(i, 1);
+	},
+	fire(ev) { (winListeners[ev] || []).slice().forEach(fn => fn({})); },
+	count(ev) { return (winListeners[ev] || []).length; },
 	get localStorage() {
 		if (lsData === null) return undefined;
 		return {
@@ -2009,6 +2029,59 @@ eq('停止失败也仍然要提示', notifications.length, 1);
 ok('提示说的是停止没跑成', String(notifications[0].title).includes('无法请求停止'), notifications[0].title);
 notifications.length = 0;
 
+
+/* ---- r59：标签进 URL（N5）与日志完整时刻（P7）---- */
+locationStub.hash = '';
+replaceCalls.length = 0;
+t.goto('logs');
+eq('切标签会把当前面板写进地址片段', locationStub.hash, '#cf-tab=logs');
+eq('写的是 replaceState，不是给历史加一条', replaceCalls.slice(-1)[0], '#cf-tab=logs');
+eq('片段能读回来', t.hashTab(), 'logs');
+locationStub.hash = '#cf-tab=bogus';
+eq('不认识的标签名不当数（宁可不落位）', t.hashTab(), null);
+locationStub.hash = '?/admin/foo';
+eq('别人的地址片段不误读成我们的标签', t.hashTab(), null);
+/* 没有 replaceState 的老引擎：退回直接赋值，功能不能丢 */
+locationStub.hash = '';
+const rs = windowStub.history.replaceState;
+delete windowStub.history.replaceState;
+t.goto('board');
+eq('没有 replaceState 时退回直接赋值', locationStub.hash, '#cf-tab=board');
+windowStub.history.replaceState = rs;
+/* hashchange：外部改地址（后退、手敲）要跟着走；卸载把手要能摘干净 */
+let disposer = t.watchHash();
+const n0 = windowStub.count('hashchange');
+locationStub.hash = '#cf-tab=sources';
+windowStub.fire('hashchange');
+eq('外部改片段会切到那一屏', t.store.get().tab, 'sources');
+disposer();
+eq('卸载把手把监听摘掉了', windowStub.count('hashchange'), n0 - 1);
+t.buildPage(null);
+t.buildPage(null);
+eq('连开两次页面只留一份 hashchange 监听', windowStub.count('hashchange'), 1);
+
+/* 完整时刻：同一行日志，两种显示 */
+const padn = (n) => (n < 10 ? '0' : '') + n;
+const stampDay = new Date();
+const todayLine = stampDay.getFullYear() + '-' + padn(stampDay.getMonth() + 1) + '-' + padn(stampDay.getDate()) +
+	'T04:28:44+0800 本轮完成';
+eq('默认只显示时刻', t.logStamp(todayLine, false).shown, '04:28:44');
+eq('完整档给原始串（日期 + 时刻 + 时区偏移）', t.logStamp(todayLine, true).shown, todayLine.split(' ')[0]);
+ok('完整档里能看到 +0800', t.logStamp(todayLine, true).shown.indexOf('+0800') > 0);
+t.goto('logs');
+t.store.set({ logs: { state: 'ok', text: todayLine } });
+fireTimers(0);
+const logsPane = t.P.panes.logs;
+const firstLts = () => { const b = logsPane.querySelector('.logbox'); return b ? byClass(b, 'lts')[0].textContent : null; };
+eq('面板里默认那一列是时刻', firstLts(), '04:28:44');
+t.actLogFull();
+fireTimers(0);
+ok('点一下之后同一列变成完整时间戳（日志文本一个字没变，靠的是显示模式进了重画指纹）',
+	/\+0800/.test(String(firstLts())), firstLts());
+ok('按钮上的字跟着改成"只看时刻"', byClass(logsPane, 'lnk').some(b => /只看时刻/.test(b.textContent)), 'ok');
+t.actLogFull();
+fireTimers(0);
+eq('再点一下回到只显示时刻', firstLts(), '04:28:44');
 
 console.log(fails === 0 ? '=== view 渲染断言全部通过' : `=== view 渲染断言失败 ${fails} 项`);
 process.exit(fails === 0 ? 0 : 1);
