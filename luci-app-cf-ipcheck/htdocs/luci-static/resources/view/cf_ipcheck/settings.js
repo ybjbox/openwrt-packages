@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r60';
+var VIEW_BUILD = 'r61';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -1993,16 +1993,27 @@ function regroupForm(mapnode) {
 		wrap.appendChild(lbox);
 	}
 
-	/* 搬空之后把 form.js 那几个 section 壳子摘掉，避免留下一堆空标题 */
+	/* 搬空之后把 form.js 留下的壳子收拾干净。
+	 * 这一段以前写的是"在 .cfp 里的就跳过" —— 可我们所有 section 本来就在 .cfp 里，
+	 * 条件恒真，等于这段从来没跑过：装机量到配置页顶上一直挂着 H2 54px + 描述 20px +
+	 * 四个 section 各 51px = **278px 死空档**，而且四个组名还在下面的折叠组里又重复一遍。
+	 * 现在只摘"搬家后剩下的那行标题"，section 节点本身留着 —— LuCI 的段级校验信息
+	 * （.cbi-section-error）要往那儿挂，连壳一起删会把报错删掉（宁可留一个 0 高的容器）。 */
 	secs.forEach(function (s) {
 		if (!s.querySelector || s.querySelector('.cbi-value'))
 			return;
-		if (s.querySelector('.grp') || s.closest && s.closest('.cfp'))
-			return;
-		var host = s.querySelector('.cbi-section-node') || s;
-		/* 只有当它真的空了才移除；否则保留（宁可多一个壳，不可丢字段） */
-		if (!host.querySelector('.cbi-value'))
-			s.style.display = 'none';
+		var h = s.querySelector('h3');
+		if (h && h.parentNode === s)
+			s.removeChild(h);
+	});
+
+	/* Map 自己的标题与描述也摘掉：这一屏已经有自己的小标题行（.sec-t「参数」）和下面
+	 * 那行说明，再挂一个 h2 就是给同一屏起两个名字（「实测参数」和「参数」）。
+	 * 那句描述不丢 —— 并进我们那行说明的开头，读一遍就够。
+	 * 只动这张 map 的直接子节点：源页那张 Map 的 .cbi-map-descr 是有用的，不在这儿。 */
+	Array.prototype.slice.call(mapnode.children || []).forEach(function (n) {
+		if (n.tagName === 'H2' || String(n.className || '').indexOf('cbi-map-descr') >= 0)
+			mapnode.removeChild(n);
 	});
 
 	/* 字段都搬到位之后，再把完整解释贴成 ⓘ。顺序不能反：
@@ -2114,7 +2125,7 @@ function ConfigPane() {
 	return {
 		node: el('div', {}, [
 			el('p', { class: 'note', style: { marginBottom: 'var(--s3)' } },
-				T('改动保存后下一轮生效；判定口径见「榜单」页说明。')),
+				T('用带真实 SNI 的 HTTPS 探测实测；改动保存后下一轮生效，判定口径见「榜单」页说明。')),
 			Section(T('参数')),
 			el('div', { class: 'grps-bar' }, [
 				btnAll, el('span', { class: 'sep', text: '·' }), btnNone

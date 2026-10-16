@@ -85,12 +85,18 @@ function makeNode(tag) {
 		__el: true
 	};
 	node.appendChild = function (c) {
-		if (c && c.__txt) {
-			this.childNodes.push(c);
-		} else if (c) {
-			c.parentNode = this;
-			this.childNodes.push(c);
+		if (!c) return c;
+		/* 真 DOM 的 appendChild 会把节点从原父节点上**摘下来**再挂过去。桩件以前不摘，
+		 * 于是"搬家"在这里变成"复制"：搬完的旧容器里还留着同一份节点，
+		 * querySelector 数出来是双份，而"这个容器已经空了"的判断全部失真
+		 * ——r61 收拾空壳那段就是被它坑了一次（数到 2 个 h3 没摘、字段数翻倍）。 */
+		if (c.parentNode && Array.isArray(c.parentNode.childNodes)) {
+			const old = c.parentNode;
+			const i = old.childNodes.indexOf(c);
+			if (i >= 0) old.childNodes.splice(i, 1);
 		}
+		c.parentNode = this;
+		this.childNodes.push(c);
 		return c;
 	};
 	node.removeChild = function (c) {
@@ -813,6 +819,15 @@ eq('缺 interval 时不编时间', t.scheduleLine({ enabled: 1 }).includes('下�
  * ================================================================== */
 function fakeForm(optionNames) {
 	const map = makeNode('div');
+	/* form.js 真会先渲染 Map 自己的标题与描述，桩件不补这两颗，
+	 * "搬空之后收拾壳子"那段就永远测不到（装机上就是 278px 死空档 + 四个重复组名）。 */
+	const h2 = makeNode('h2');
+	h2.appendChild(documentStub.createTextNode('实测参数'));
+	map.appendChild(h2);
+	const descr = makeNode('div');
+	descr.attrs['class'] = 'cbi-map-descr';
+	descr.appendChild(documentStub.createTextNode('用带真实 SNI 的 HTTPS 探测实测。'));
+	map.appendChild(descr);
 	['基本设置', '候选池来源', '测速与判定', 'Gist 上传'].forEach(title => {
 		const sec = makeNode('section');
 		sec.attrs['class'] = 'cbi-section';
@@ -872,6 +887,21 @@ eq('收起后 aria-expanded=false', head0.attrs['aria-expanded'], 'false');
 head0.dispatch('keydown', { preventDefault: noop, key: 'Enter' });
 ok('回车再展开', /\bopen\b/.test(boxes[0].attrs['class']));
 eq('展开后 aria-expanded=true', head0.attrs['aria-expanded'], 'true');
+
+/* r61：搬空之后配置页顶上不该再挂一屏空壳（装机量到 278px 死空档 + 四个重复组名，
+ * 起因是那段收拾代码的条件写成 s.closest('.cfp') 就跳过 —— 恒真，从来没执行过） */
+eq('四个 section 壳子仍在（校验信息 .cbi-section-error 要有地方挂）',
+	mapNode.querySelectorAll('.cbi-section').length, 4);
+eq('但里面那行空标题全摘掉了（组名只剩折叠组里那一份）',
+	mapNode.querySelectorAll('.cbi-section h3').length, 0);
+eq('section 的容器节点一个都没少', mapNode.querySelectorAll('.cbi-section-node').length, 4);
+eq('Map 自己的 h2 标题被摘掉', mapNode.children.filter(c => c.tagName === 'H2').length, 0);
+eq('Map 自己的描述节点被摘掉（那句话并进面板说明，见下）',
+	mapNode.querySelectorAll('.cbi-map-descr').length, 0);
+ok('那句描述没丢：并进面板那行说明的开头（摘掉节点不等于删掉信息）',
+	src.includes("T('用带真实 SNI 的 HTTPS 探测实测；改动保存后下一轮生效"));
+eq('摘壳子没有弄丢字段：map 里 .cbi-value 总数不变',
+	mapNode.querySelectorAll('.cbi-value').length, allOptions.length + 1);
 
 /* 无字段时返回 null，调用方不会误把 undefined 当容器 */
 eq('空表单返回 null', t.regroupForm(makeNode('div')), null);
