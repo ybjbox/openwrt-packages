@@ -112,6 +112,13 @@
 .cfp *{box-sizing:border-box}
 .cfp .n{font-family:var(--mono);font-variant-numeric:tabular-nums;letter-spacing:-.01em}
 .cfp .u{font-size:var(--t-xs);color:var(--ink-3);font-weight:400;margin-left:.15em}
+/* 只给读屏器的一句话（1×1 绝对定位，不参与任何视觉排布）。
+ * 用在"图上有意思、光读出来不完整"的地方：比如标签栏那个数字圆点，
+ * 眼睛看得到上下文，读屏器只听到"榜单 10"。
+ * 不用 display:none —— 那会把内容从无障碍树里整个删掉，等于没写。
+ * 定位父级是 .cfp .tab（它本来就是 position:relative）。 */
+.cfp .sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;
+  overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap}
 .cfp h3,.cfp h4{margin:0;font-weight:600;letter-spacing:.005em}
 .cfp p{margin:0}
 .cfp .sec{display:flex;align-items:baseline;gap:var(--s2);margin:0 0 var(--s3)}

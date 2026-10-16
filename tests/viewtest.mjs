@@ -763,6 +763,14 @@ has('标签带计数', tabs[0], '12');
 eq('无计数的标签不画徽标', byClass(tabs[1], 'tab-n').length, 0);
 eq('有计数的标签画徽标', byClass(tabs[0], 'tab-n').length, 1);
 eq('记录当前标签便于调试', bar.attrs['data-current'], 'board');
+/* r64：徽标那个数字，眼睛能靠下面的读数条认出是"几条结果"，读屏器听不到那层上下文 */
+const pill = byClass(tabs[0], 'tab-n')[0];
+eq('数字圆点对读屏器隐藏（它只该被看见一次）', pill.attrs['aria-hidden'], 'true');
+const sr = byClass(tabs[0], 'sr-only')[0];
+ok('补了一段只给读屏器的话', /条结果/.test(sr.textContent) && /12/.test(sr.textContent), sr.textContent);
+eq('那段话不改变徽标数量（还是一个小圆点 + 一段隐藏文字）', byClass(tabs[0], 'tab-n').length, 1);
+ok('r64 配置页不再发徽标数（分组数是常量，常量不是信息）', !/count: GROUPS\.length/.test(src));
+ok('r64 标签栏的指纹里也不再掺那个常量', !/usable \+ '\|' \+ GROUPS\.length/.test(src));
 
 tabs[1].dispatch('click');
 eq('点标签回调带上 id', picked, 'sources');
@@ -1142,6 +1150,8 @@ ok('r62 配置页那张 map 的 gap 收掉，空壳不再占 flex 位',
 	/\.cfp \.grps-host > \.cbi-map\{gap:0\}/.test(css));
 ok('r62 只收配置页这一张（源页那张 map 的说明还要用它的排布）',
 	(css.match(/\.cfp [^{}]*\.cbi-map\{[^}]*gap:0/g) || []).length === 1);
+ok('r64 .sr-only 用绝对定位藏、不用 display:none（后者会把内容从无障碍树里整个删掉）',
+	/\.cfp \.sr-only\{position:absolute/.test(css) && !/\.cfp \.sr-only\{[^}]*display:none/.test(css));
 
 /* ---- r57：正版 ui-ux-pro-max 的两条落点（相邻目标 ≥8px、文字输入 ≥16px） ---- */
 ok('r57 窄屏标签间距补到 8px（基础规则仍是 4px，桌面不动）',

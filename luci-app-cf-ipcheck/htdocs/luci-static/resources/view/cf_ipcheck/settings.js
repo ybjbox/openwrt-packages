@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r63';
+var VIEW_BUILD = 'r64';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -1724,8 +1724,15 @@ function TabBar(defs, current, onPick) {
 	var bar = el('div', { class: 'tabs', role: 'tablist' });
 	defs.forEach(function (d, i) {
 		var kids = [ el('span', { text: d.label }) ];
-		if (d.count != null && d.count !== '')
-			kids.push(el('span', { class: 'tab-n n', text: String(d.count) }));
+		if (d.count != null && d.count !== '') {
+			/* 小圆点里那个数字，光看"榜单 10"不知道 10 是什么 —— 眼睛能靠上下文猜
+			 * （下面读数条就写着「榜单 / 10 / 按 TTFB 排序保留的条数」），读屏器没有这个
+			 * 上下文，它听到的只是"榜单 10"。所以图形那份藏起来（aria-hidden），
+			 * 另外补一段只有读屏器读得到的话。用内容而不是 aria-label：
+			 * 贴 aria-label 会把可见名整个盖掉，语音控制的人喊"榜单"就可能对不上。 */
+			kids.push(el('span', { class: 'tab-n n', 'aria-hidden': 'true', text: String(d.count) }));
+			kids.push(el('span', { class: 'sr-only', text: T('，%s 条结果').format(String(d.count)) }));
+		}
 		var on = d.id === current;
 		var b = el('button', {
 			class: 'tab' + (on ? ' on' : ''),
@@ -2706,7 +2713,10 @@ function buildPage(mapnode) {
 	P.tabsReplace = function (state) {
 		var items = state.status.items || [];
 		var usable = state.status.usable != null ? state.status.usable : items.length;
-		var counts = usable + '|' + GROUPS.length;
+		/* 指纹里只留在真正会变的数：以前还掺了 GROUPS.length，可那是个常量
+		 * （配置页的分组数写在代码里），它让"标签栏徽标"这个功能看起来在报什么，
+		 * 其实那一颗圆点永远是 4。 */
+		var counts = String(usable);
 		if (P.tabs && counts === lastCounts) {
 			/* 只有当前标签变了：翻 class，不重建 dom */
 			goto(state.tab, false);
@@ -2714,10 +2724,11 @@ function buildPage(mapnode) {
 		}
 		lastCounts = counts;
 		var defs = TAB_DEFS.map(function (d) {
+			/* 只有「榜单」带数：它是这一轮真留下的条数，人在日志页/源页时不用切回来
+			 * 就能知道有没有结果、多少条；0 条时它整个不显示，不会拿个 0 骗人。
+			 * 「配置」那个数（分组数）删了 —— 常量不是信息。 */
 			if (d.id === 'board')
 				return { id: d.id, label: T(d.label), count: usable || '' };
-			if (d.id === 'config')
-				return { id: d.id, label: T(d.label), count: GROUPS.length };
 			return { id: d.id, label: T(d.label) };
 		});
 		var fresh = TabBar(defs, state.tab, function (id) { goto(id, true); });
