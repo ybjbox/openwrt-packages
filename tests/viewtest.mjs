@@ -1124,6 +1124,12 @@ ok('r60 全站只剩两处 opacity 淡化，且都是控件（禁用态与忙碌
 	(css.match(/\.cfp [^{}]*\{[^}]*opacity:\.(?:[0-4]|4[0-9])/g) || [])
 		.every(s => /button:disabled|button\.busy/.test(s)),
 	JSON.stringify((css.match(/\.cfp [^{}]*\{[^}]*opacity:\.\d+/g) || []).map(s => s.slice(0, 28))));
+/* r62：主题的 .cbi-map 是 flex + gap:16px —— 壳子高度归零之后仍各占一个 flex 位，
+ * 四个就是 64px 纯间隙（装机量到"第一组头部离工具条 77px"）。 */
+ok('r62 配置页那张 map 的 gap 收掉，空壳不再占 flex 位',
+	/\.cfp \.grps-host > \.cbi-map\{gap:0\}/.test(css));
+ok('r62 只收配置页这一张（源页那张 map 的说明还要用它的排布）',
+	(css.match(/\.cfp [^{}]*\.cbi-map\{[^}]*gap:0/g) || []).length === 1);
 
 /* ---- r57：正版 ui-ux-pro-max 的两条落点（相邻目标 ≥8px、文字输入 ≥16px） ---- */
 ok('r57 窄屏标签间距补到 8px（基础规则仍是 4px，桌面不动）',

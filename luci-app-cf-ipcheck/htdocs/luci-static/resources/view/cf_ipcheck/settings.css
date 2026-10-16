@@ -328,6 +328,12 @@
 .cfp .flash.bad{color:var(--bad-fg);background:var(--bad-bg);border-color:var(--bad-bd)}
 .cfp .flash b{font-weight:700}
 .cfp .grps-bar{display:flex;align-items:center;gap:var(--s1);margin-bottom:var(--s3)}
+/* 主题把 .cbi-map 排成 display:flex + gap:16px。r61 摘掉搬空的壳子里那行标题之后，
+ * 壳子本身高度是 0，但**每个壳子仍占一个 flex 位**：四个壳子 = 四段 16px 间隙 = 64px，
+ * 装机量到"第一组头部离工具条 77px"（64 间隙 + 12 那一行的下边距 + 1 边框）。
+ * 这一屏真正有内容的只有我们那一个 .grps，把 gap 收掉不牵动别的排布；
+ * 只作用在配置页这张 map 上（源页那张 map 挂在 .src-edit 里，不在这条选择器下）。 */
+.cfp .grps-host > .cbi-map{gap:0}
 .cfp .grp{border:1px solid var(--rule);border-radius:var(--r2);margin-bottom:var(--s3);
   background:var(--panel);overflow:hidden}
 .cfp .grp-h{display:flex;align-items:center;gap:var(--s2);padding:var(--s3) var(--s4);
