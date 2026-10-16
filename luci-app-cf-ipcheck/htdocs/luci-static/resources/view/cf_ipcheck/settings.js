@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r62';
+var VIEW_BUILD = 'r63';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -354,14 +354,16 @@ function ago(iso, now) {
 }
 
 /* 绝对时间用本地时分秒，不印 ISO 串 —— ISO 的 T/Z 对人不友好 */
-function clock(iso, now) {
+/* 只给本地时分秒。以前这里还顺手带一个「（5 小时前）」—— 可它全页只有一个调用点：
+ * 读数条「完成于」那一格，而那一格的大字读数本身就是 ago()，于是同一句话在同一格里
+ * 出现两遍（大字号「5 小时前」+ 小字「08:51:23（5 小时前）」）。
+ * 距今这层信息归大字读数，这一行只负责"到底是几点"。 */
+function clock(iso) {
 	var t = Date.parse(iso);
 	if (!isFinite(t))
 		return DASH;
 	var d = new Date(t);
-	var hms = pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
-	var rel = ago(iso, now);
-	return rel ? hms + '（' + rel + '）' : hms;
+	return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
 }
 
 /* ==========================================================================

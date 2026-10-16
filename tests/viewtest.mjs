@@ -507,7 +507,9 @@ const isoNew = new Date(Date.now() - 5 * 60000).toISOString().replace(/\.\d+Z$/,
 const agoStr = t.ago(isoNew);
 ok('ago 输出相对时间', /分钟前/.test(agoStr));
 eq('ago 不印 ISO 的 T/Z', /[TZ]/.test(agoStr), false);
-eq('clock 输出本地时分秒', /^\d\d:\d\d:\d\d（.+）$/.test(t.clock(isoNew)), true);
+/* r63：只给时分秒。以前这里顺手带一个「（5 小时前）」，而它唯一的调用点就是
+ * 「完成于」那一格的小字，那格的大字读数本来就是 ago() —— 同一句话在同一格里两遍。 */
+eq('clock 只给时分秒，不再带距今', /^\d\d:\d\d:\d\d$/.test(t.clock(isoNew)), true, t.clock(isoNew));
 eq('clock 吃掉 ISO 的 T/Z', /[TZ]/.test(t.clock(isoNew)), false);
 eq('ago 对垃圾输入给空串（不编「刚刚」）', t.ago('昨天下午'), '');
 eq('ago(null) 给空串', t.ago(null), '');
@@ -631,6 +633,16 @@ has('读数带给出榜单条数', strip, '榜单');
 has('读数带给出失败分类', strip, 'timeout 9');
 ok('失败分类用 warn 色', byClass(strip, 'warn').length >= 1);
 has('读数带给出完成时间', strip, '完成于');
+/* 那一格里大字与小字不能各说一遍同一件事 */
+{
+	const cells = byClass(strip, 'cell');
+	const fin = cells.find(c => /完成于/.test(textOf(c)));
+	const big = byClass(fin, 'cell-v')[0].textContent.trim();
+	const small = byClass(fin, 'cell-sub')[0].textContent.trim();
+	ok('「完成于」小字里不再重复大字那句距今（大字 "' + big + '" / 小字 "' + small + '"）',
+		small.indexOf(big) < 0 && !/小时前|分钟前|刚刚|天前/.test(small), small);
+	ok('小字仍是那个时刻本身（HH:MM:SS）', /^\d\d:\d\d:\d\d$/.test(small), small);
+}
 /* 引擎没给 pool 时这一格仍然在（结构稳定），但值是破折号而不是编出来的 0 */
 const bare = t.SummaryStrip({ state: 'done', items: [] });
 has('缺 pool 时值显示成破折号', byClass(bare, 'n')[0].textContent, t.DASH);
