@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-cf-ipcheck
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=59
+PKG_RELEASE:=60
 
 # 许可证与维护者是 openwrt/packages 审稿的硬要求（CONTRIBUTING.md：
 # 「A (PKG_)MAINTAINER definition」「A PKG_LICENSE tag ... use SPDX identifiers」，

@@ -286,7 +286,13 @@
 .cfp .pstep.now{background:var(--panel-2);color:var(--ink);font-weight:500}
 .cfp .pstep.now .pm{color:var(--accent-ink)}
 .cfp .pstep.now .pn{color:var(--ink)}
-.cfp .pstep.off{opacity:.5}
+/* 「未开启」那一档过去靠 opacity:.5 表达"退一级"。装机量过（一轮进行中 + 上传关着，
+ * 那一行真的上屏时）：整组透明度乘下来，文字与计数都是 **1.67:1** —— 而这一格写的
+ * 是「未开启」三个字，是给人读的事实说明，不是装饰。r48 把说明文字与日志时间戳
+ * 从同一种手法里捞出来过，这是最后一处。
+ * 现在不压淡：层级本来就由那三个字自己说清楚（待做的那几行是空的，这一行写着
+ * 「未开启」，标记是 —），颜色这一档交给 --ink-3（实测 5.05，过正文门槛）。 */
+.cfp .pstep.off{opacity:1}
 .cfp .pbar{flex:0 0 34%;height:3px;border-radius:2px;background:var(--panel-2);overflow:hidden}
 /* 进度走 scaleX 而不是改 width：改 width 每 3 秒让这一行重排一次（进度条是 flex 项，
  * 它的宽度变化会传导给整行），transform 只走合成层。填满的 b 收在 overflow:hidden 的

@@ -1087,6 +1087,14 @@ ok('r55 说明文字的字号归自己的令牌（主题的 12px 不管用），
 ok('r55 窄屏给 ⓘ 补 24×24 命中区（伪元素，不动视觉与布局）',
 	/\.cfp \.hmark\{position:relative\}/.test(mob) &&
 	/\.cfp \.hmark::after\{[^}]*width:24px;height:24px/.test(mob));
+/* ---- r60：进度清单「未开启」那一档不再用 opacity 表达层级（装机量到 1.67:1） ---- */
+ok('r60 .pstep.off 不再压透明度（那三个字是给人读的，不是装饰）',
+	/\.cfp \.pstep\.off\{opacity:1\}/.test(css));
+ok('r60 全站只剩两处 opacity 淡化，且都是控件（禁用态与忙碌态），没有一处落在文字上',
+	(css.match(/\.cfp [^{}]*\{[^}]*opacity:\.(?:[0-4]|4[0-9])/g) || [])
+		.every(s => /button:disabled|button\.busy/.test(s)),
+	JSON.stringify((css.match(/\.cfp [^{}]*\{[^}]*opacity:\.\d+/g) || []).map(s => s.slice(0, 28))));
+
 /* ---- r57：正版 ui-ux-pro-max 的两条落点（相邻目标 ≥8px、文字输入 ≥16px） ---- */
 ok('r57 窄屏标签间距补到 8px（基础规则仍是 4px，桌面不动）',
 	/\.cfp \.tabs\{gap:var\(--s2\)\}/.test(mob) && /\.cfp \.tabs\{display:flex;gap:var\(--s1\)/.test(css));
