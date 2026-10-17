@@ -919,14 +919,16 @@ ray_dur() {
 	END { printf "%d %s\n", ray ? 1 : 0, dur }' "$1"
 }
 
-# ---------------- 多样本统计（r71）-----------------------------------------
-# stdin = 每个样本一行：ip \t ttfb_ms \t total_ms \t ok(1/0) \t net_ms(可空)
-#   ok 的口径比"可用"严：rc=0 且 200<=code<400（延迟样本要干净响应，403 那种
-#   响应体极小、total 假性偏低，混进来会把中位数拉歪——与 aggregate 的偏好一致）。
-#   net_ms = 该样本剥掉 server-timing dur 后的网络段耗时；没有 dur 的样本留空。
+# 多样本统计（r71/r72）。stdin = 每个样本一行：
+#   ip \t ttfb_ms \t total_ms \t code \t net_ms(可空)
+#   code=000 表示传输层就没通（rc!=0 / 没拿到任何状态码）；任何三位状态码
+#   （含 403/404/5xx）都算"到达了对端"——丢包率只统计真正没打通的。
+#   但只有 200~399 的干净响应进中位数：403 的错误页几乎没有正文，total 假性
+#   偏低，混进来会把中位数拉歪（与 aggregate 偏好非 4xx 同一个道理）。
+#   net_ms = 剥掉 server-timing dur 后的网络段耗时；没有 dur 的样本留空。
 # stdout = 每 IP 一行：ip \t 中位ttfb \t 中位total \t 丢包率 \t 抖动ms \t 样本数 \t 中位net(可空)
-# 中位数：1 个样本取其本身、2 个取均值、3 个取中间。为什么不用均值：单个离群值
-# （一次 GC、一次拥塞）能把均值拖偏半个身位，中位数这才扛得住。
+#   中位列为空 = 一个干净样本都没有（例如整轮都在吃 403）：调用方据此保留首次
+#   探测的值，**绝不让 0 混进排序**（0 毫秒会直接顶到榜首）。
 verify_stats() {
 	awk -F'\t' '
 	function ins(a, cnt,   i, j, tmp) {   # 插入排序（busybox awk 没有 asort）
@@ -944,37 +946,43 @@ verify_stats() {
 	}
 	{
 		ip = $1; tot[ip]++
-		if ($4 == 1) {
-			ok[ip]++
+		c = $4 + 0
+		if (c > 0) reach[ip]++
+		if (c >= 200 && c < 400) {
+			cl[ip]++
 			t[ip] = t[ip] " " ($2 + 0); s[ip] = s[ip] " " ($3 + 0)
-			if ($5 != "") { nn[ip]++; n[ip] = n[ip] " " ($5 + 0) }
+			if ($5 != "") { nn[ip]++; nt[ip] = nt[ip] " " ($5 + 0) }
 		}
 	}
 	END {
 		for (ip in tot) {
 			ct = split(substr(t[ip], 2), TA, " "); cs = split(substr(s[ip], 2), SA, " ")
-			cn = split(substr(n[ip], 2), NA, " ")
-			loss = (tot[ip] - ok[ip]) / tot[ip]
+			cn = split(substr(nt[ip], 2), NA, " ")
+			r = (ip in reach) ? reach[ip] : 0
+			loss = (tot[ip] - r) / tot[ip]
 			jit = 0
 			if (ct >= 2) {
 				mx = TA[1]; mn = TA[1]
 				for (i = 2; i <= ct; i++) { if (TA[i] + 0 > mx) mx = TA[i] + 0; if (TA[i] + 0 < mn) mn = TA[i] + 0 }
 				jit = mx - mn
 			}
-			# 净延迟也要 %.1f：中位数落在整数上时 awk 的字符串转换会给 "150"，
-			# 与另外两列（TTFB/total）格式不一致，页面上会一列带小数一列不带。
-			printf "%s\t%.1f\t%.1f\t%.2f\t%.1f\t%d\t%s\n", ip, med(TA, ct), med(SA, cs), loss, jit, tot[ip], (cn > 0 ? sprintf("%.1f", med(NA, cn)) : "")
+			printf "%s\t%s\t%s\t%.2f\t%.1f\t%d\t%s\n", ip, \
+				(ct > 0 ? sprintf("%.1f", med(TA, ct)) : ""), \
+				(cs > 0 ? sprintf("%.1f", med(SA, cs)) : ""), \
+				loss, jit, tot[ip], (cn > 0 ? sprintf("%.1f", med(NA, cn)) : "")
 		}
 	}'
 }
 
-# 验证探测（r71）：与 probe_one 同一条路径，只是把响应头也落一份盘。
-# stdout = "ttfb total"（毫秒，一次小数）；失败返回 1 不输出。
-verify_probe() { # $1=IP $2=域名 $3=头文件
+# 验证探测（r71/r72）：与 probe_one 同一条路径，只是把响应头也落一份盘。
+# 与 probe_one 的口径差异是故意的：这里任何三位状态码都算"通了"（stdout 照实
+# 报 code，由 verify_stats 决定它算丢包、算中位数样本还是两者都不算），
+# 只有传输层失败（rc!=0）才返回 1。
+verify_probe() { # $1=IP $2=域名 $3=头文件 -> stdout: "ttfb total code"
 	raw=$(run_probe "$(probe_cmd "$1" "$2" "/" "$3")" 2>/dev/null)
 	rc=$?
 	[ "$rc" = 0 ] && [ -n "$raw" ] || return 1
-	printf '%s' "$raw" | awk -F, 'NF >= 5 && $1 >= 200 && $1 < 400 { printf "%.1f %.1f", $4 * 1000, $5 * 1000; found = 1 }
+	printf '%s' "$raw" | awk -F, 'NF >= 5 { printf "%.1f %.1f %s", $4 * 1000, $5 * 1000, $1; found = 1 }
 		END { exit found ? 0 : 1 }'
 }
 
@@ -993,20 +1001,29 @@ verify_top_n() { # $1=个数
 	hdr=$RUN_DIR/vhdr
 	samp=$RUN_DIR/vsamp
 	rm -rf "$hdr"; mkdir -p "$hdr" 2>/dev/null || true
+	# r9 的权限教训在这换了个位置再演一遍（r72 真机抓到的）：procd 的 umask 077
+	# 会让新建目录变成 700，而 nobody 连"按名字打开一个已存在的文件"都做不到
+	# —— 解析路径需要对目录的 x 权限。当年是 112/126 个候选假性 transport_23，
+	# 这次是 30 颗全部假性丢包 0.67、中位数退化成首测原值，症状不同、根因同一个。
+	# 修法：目录给 711（别人可穿越、不可列表），每个头文件再由 root 预建成 666
+	# —— curl 以 nobody 身份只需要打开这个具体文件，不需要在目录里创建东西。
+	chmod 711 "$hdr" 2>/dev/null || true
 	all=$RUN_DIR/vfields.all
 	: >"$all"
 	head -n "$vtop" | while IFS="$(printf '\t')" read -r ip code c tls ttfb tot err dom; do
 		[ -n "$ip" ] || continue
 		[ -f "$STOP" ] && continue
-		# 样本 1 用首次探测那行（qualified 里的 err 已是 none，即干净响应）
+		# 样本 1 用首次探测那行；code 照实写——qualified 里 err=none 也含 403
+		# （按口径算"可用"），它算到达了对端、但不进中位数，与复探口径一致。
 		s=$samp.$ip
 		: >"$s"
-		printf '%s\t%s\t%s\t1\t\n' "$ip" "$ttfb" "$tot" >>"$s"
+		printf '%s\t%s\t%s\t%s\t\n' "$ip" "$ttfb" "$tot" "$code" >>"$s"
 		: >"$hdr/$ip.ray"
 		k=1
 		while [ "$k" -lt 3 ]; do
 			[ -f "$STOP" ] && break
 			hf=$hdr/$ip.$k
+			: >"$hf"; chmod 666 "$hf" 2>/dev/null || true
 			if m=$(verify_probe "$ip" "$dom" "$hf"); then
 				rd=$(ray_dur "$hf")
 				case "$rd" in '1 '*) printf '1\n' >"$hdr/$ip.ray" ;; esac
@@ -1016,12 +1033,13 @@ verify_top_n() { # $1=个数
 				else
 					net=''
 				fi
-				printf '%s\t%s\t%s\t1\t%s\n' "$ip" \
+				printf '%s\t%s\t%s\t%s\t%s\n' "$ip" \
 					"$(printf '%s' "$m" | cut -d' ' -f1)" \
-					"$(printf '%s' "$m" | cut -d' ' -f2)" "$net" >>"$s"
+					"$(printf '%s' "$m" | cut -d' ' -f2)" \
+					"$(printf '%s' "$m" | cut -d' ' -f3)" "$net" >>"$s"
 			else
-				printf '%s\t0\t0\t0\t\n' "$ip" >>"$s"
-				rm -f "$hf"
+				# 传输层就没通：code 记 000，verify_stats 据此计丢包
+				printf '%s\t0\t0\t000\t\n' "$ip" >>"$s"
 			fi
 			k=$((k + 1))
 			[ "$CFIP_VERIFY_GAP" -gt 0 ] 2>/dev/null && sleep "$CFIP_VERIFY_GAP"
@@ -1035,7 +1053,9 @@ verify_top_n() { # $1=个数
 		rm -f "$s"
 	done
 	mv -f "$all" "$RUN_DIR/vfields.tsv"
-	awk -F'\t' '{ printf "%s\t%s\t%s\n", $1, $2, $3 }' "$RUN_DIR/vfields.tsv" >"$RUN_DIR/verified.tsv"
+	# verified.tsv 只收有干净中位数的行：空行合回去会把首次探测的值冲掉，
+	# 而空是因为这颗整轮都在吃 403 —— 那种情况保留原值才是对的。
+	awk -F'\t' '$2 != "" { printf "%s\t%s\t%s\n", $1, $2, $3 }' "$RUN_DIR/vfields.tsv" >"$RUN_DIR/verified.tsv"
 	rm -rf "$hdr" 2>/dev/null || true
 	rm -f "$samp".* 2>/dev/null || true
 	return 0
@@ -2579,20 +2599,28 @@ selftest() {
 	check '邻居扩展：坏行直接跳过，不退出不报错' "$got" '7'
 
 	# 多样本统计：中位数 / 均值回退 / 丢包 / 抖动 / 净延迟
-	got=$(printf '1.1.1.1\t100\t200\t1\t\n1.1.1.1\t300\t400\t1\t\n1.1.1.1\t200\t300\t1\t\n' | sh "$0" _verifystats)
-	check '多样本：3 个样本取中位（ttfb 200/total 300），抖动 200' "$got" "$(printf '1.1.1.1\t200.0\t300.0\t0.00\t200.0\t3\t')"
-	got=$(printf '1.1.1.1\t100\t200\t1\t\n1.1.1.1\t300\t400\t1\t\n1.1.1.1\t999\t999\t0\t\n' | sh "$0" _verifystats | cut -f4)
-	check '多样本：3 探 1 败 ⇒ 丢包 0.33' "$got" '0.33'
-	got=$(printf '1.1.1.1\t100\t200\t1\t\n1.1.1.1\t300\t400\t1\t\n' | sh "$0" _verifystats | cut -f2,3)
+	got=$(printf '1.1.1.1\t100\t200\t200\t\n1.1.1.1\t300\t400\t200\t\n1.1.1.1\t200\t300\t200\t\n' | sh "$0" _verifystats)
+	check '多样本：3 个干净样本取中位（ttfb 200/total 300），抖动 200' "$got" "$(printf '1.1.1.1\t200.0\t300.0\t0.00\t200.0\t3\t')"
+	got=$(printf '1.1.1.1\t100\t200\t200\t\n1.1.1.1\t300\t400\t200\t\n1.1.1.1\t0\t0\t000\t\n' | sh "$0" _verifystats | cut -f4)
+	check '多样本：3 探 1 败（000）⇒ 丢包 0.33' "$got" '0.33'
+	got=$(printf '1.1.1.1\t100\t200\t200\t\n1.1.1.1\t300\t400\t200\t\n' | sh "$0" _verifystats | cut -f2,3)
 	check '多样本：2 个样本取均值（200.0/300.0）' "$got" "$(printf '200.0\t300.0')"
-	got=$(printf '1.1.1.1\t150\t250\t1\t\n' | sh "$0" _verifystats | cut -f2,6)
+	got=$(printf '1.1.1.1\t150\t250\t200\t\n' | sh "$0" _verifystats | cut -f2,6)
 	check '多样本：1 个样本取其本身，样本数记 1' "$got" "$(printf '150.0\t1')"
-	got=$(printf '1.1.1.1\t100\t200\t1\t50\n1.1.1.1\t200\t300\t1\t150\n1.1.1.1\t300\t400\t1\t250\n' | sh "$0" _verifystats | cut -f7)
+	got=$(printf '1.1.1.1\t100\t200\t200\t50\n1.1.1.1\t200\t300\t200\t150\n1.1.1.1\t300\t400\t200\t250\n' | sh "$0" _verifystats | cut -f7)
 	check '多样本：净延迟同样取中位（150.0）' "$got" '150.0'
-	got=$(printf '1.1.1.1\t100\t200\t1\t\n1.1.1.1\t200\t300\t1\t\n' | sh "$0" _verifystats | cut -f7)
+	got=$(printf '1.1.1.1\t100\t200\t200\t\n1.1.1.1\t200\t300\t200\t\n' | sh "$0" _verifystats | cut -f7)
 	check '多样本：没有 dur 的样本 ⇒ 净延迟为空（不是 0）' "$got" ''
-	got=$(printf '1.1.1.1\t0\t0\t0\t\n1.1.1.1\t0\t0\t0\t\n1.1.1.1\t0\t0\t0\t\n' | sh "$0" _verifystats)
-	check '多样本：全败 ⇒ 丢包 1.00，中位退 0' "$got" "$(printf '1.1.1.1\t0.0\t0.0\t1.00\t0.0\t3\t')"
+	# r72：403 口径。worker 域名对 / 返回 403 是常态（edgetunnel 实测），
+	# 它算"到达了对端"（不计丢包）但不是干净样本（不进中位数）。
+	got=$(printf '1.1.1.1\t250\t260\t403\t\n1.1.1.1\t250\t260\t403\t\n1.1.1.1\t250\t260\t403\t\n' | sh "$0" _verifystats)
+	check '多样本：整轮 403 ⇒ 丢包 0.00（到达了对端）但中位为空（没有干净样本）' "$got" "$(printf '1.1.1.1\t\t\t0.00\t0.0\t3\t')"
+	got=$(printf '1.1.1.1\t250\t260\t403\t\n1.1.1.1\t300\t400\t200\t\n1.1.1.1\t250\t260\t403\t\n' | sh "$0" _verifystats | cut -f2,4)
+	check '多样本：1 干净 + 2 个 403 ⇒ 中位取那个干净样本，丢包仍 0.00' "$got" "$(printf '300.0\t0.00')"
+	got=$(printf '1.1.1.1\t250\t260\t500\t\n1.1.1.1\t250\t260\t404\t\n1.1.1.1\t250\t260\t503\t\n' | sh "$0" _verifystats | cut -f4)
+	check '多样本：5xx/4xx 都算到达（丢包 0.00），只是不进中位数' "$got" '0.00'
+	got=$(printf '1.1.1.1\t0\t0\t000\t\n1.1.1.1\t0\t0\t000\t\n1.1.1.1\t0\t0\t000\t\n' | sh "$0" _verifystats)
+	check '多样本：全败 ⇒ 丢包 1.00，中位为空（调用方保留首测值，0 不许进排序）' "$got" "$(printf '1.1.1.1\t\t\t1.00\t0.0\t3\t')"
 
 	# 响应头取证：CF-RAY / server-timing 的各种形态
 	vh=$T/vh.txt
