@@ -663,6 +663,25 @@ has('读数带给出失败分类（中文说法，不再是引擎码）', strip,
 ok('分类副行里不残留 timeout/dns 这种原始码', !/timeout|dns/.test(textOf(strip)), textOf(strip).slice(0, 120));
 ok('失败分类用 warn 色', byClass(strip, 'warn').length >= 1);
 has('读数带给出完成时间', strip, '完成于');
+ok('r74 正常完成态仍说「完成于」（不误报成上一轮）', !/上一轮完成于/.test(textOf(strip)), textOf(strip).slice(0, 120));
+/* r74：叫停 / 跑完零达标两态展示的是上一轮的榜单（carry_previous 连时间一起搬），
+ * 这一格必须换标签，否则「完成于 3 分钟前」会被读成"这一轮刚完成"。 */
+{
+	const carried = t.SummaryStrip(t.parseStatus(JSON.stringify({
+		state: 'error', reason: 'stopped', started: isoNew, finished: isoNew,
+		pool: 120, qualified: 0, usable: 2, intercepted: 0, counts: {},
+		domains: 'www.cloudflare.com', items: [ { ip: '1.1.1.1', code: 200 } ]
+	})));
+	has('r74 叫停态改说「上一轮完成于」', carried, '上一轮完成于');
+	ok('r74 叫停态里没有裸的「完成于」标签',
+		!/完成于/.test(textOf(carried).replace(/上一轮完成于/g, '')), textOf(carried).slice(0, 160));
+	const nores = t.SummaryStrip(t.parseStatus(JSON.stringify({
+		state: 'error', reason: 'no_results', started: isoNew, finished: isoNew,
+		pool: 120, qualified: 0, usable: 0, intercepted: 0, counts: { timeout: 120 },
+		domains: 'www.cloudflare.com', items: [ { ip: '1.1.1.1', code: 200 } ]
+	})));
+	has('r74 跑完零达标态同样说「上一轮完成于」', nores, '上一轮完成于');
+}
 /* 那一格里大字与小字不能各说一遍同一件事 */
 {
 	const cells = byClass(strip, 'cell');
@@ -832,6 +851,10 @@ const pill = byClass(tabs[0], 'tab-n')[0];
 eq('数字圆点对读屏器隐藏（它只该被看见一次）', pill.attrs['aria-hidden'], 'true');
 const sr = byClass(tabs[0], 'sr-only')[0];
 ok('补了一段只给读屏器的话', /条结果/.test(sr.textContent) && /12/.test(sr.textContent), sr.textContent);
+/* r74：这段补白不能以标点开头 —— 读屏器把相邻 inline 盒子的文本拼成可访问名时
+ * 会插一个分隔停顿，`，10 条结果` 会被念成「榜单 ，10 条结果」（逗号前多一顿）。 */
+ok('r74 读屏补白不以标点开头（拼出来是「榜单 共 N 条结果」，没有「 ，」）',
+	!/^[，,、]/.test(sr.textContent) && /^共 \d+ 条结果$/.test(sr.textContent), sr.textContent);
 eq('那段话不改变徽标数量（还是一个小圆点 + 一段隐藏文字）', byClass(tabs[0], 'tab-n').length, 1);
 ok('r64 配置页不再发徽标数（分组数是常量，常量不是信息）', !/count: GROUPS\.length/.test(src));
 ok('r64 标签栏的指纹里也不再掺那个常量', !/usable \+ '\|' \+ GROUPS\.length/.test(src));

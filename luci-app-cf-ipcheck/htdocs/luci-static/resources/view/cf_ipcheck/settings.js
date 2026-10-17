@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r73';
+var VIEW_BUILD = 'r74';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -1201,9 +1201,15 @@ function SummaryStrip(st) {
 	if (st.domains)
 		cells.push(Readout({ label: T('探测域名'), value: String(st.domains) }));
 
+	/* 叫停与「跑完零达标」两态展示的是上一轮的榜单：carry_previous 把上一轮的
+	 * result 原样搬过来（连 started/finished 都是上一轮的），只改了 state/reason。
+	 * 这一格必须把这层说清 —— 否则「完成于 3 分钟前」会被读成"这一轮刚完成"，
+	 * 而这一轮其实什么都没产出。只改标签、不动数值：数值本身没错，它就是
+	 * 被展示的那份榜单的完成时刻。 */
+	var carried = st.state === 'error' && (st.reason === 'stopped' || st.reason === 'no_results');
 	if (st.finished || st.started)
 		cells.push(Readout({
-			label: T('完成于'), value: ago(st.finished || st.started),
+			label: carried ? T('上一轮完成于') : T('完成于'), value: ago(st.finished || st.started),
 			sub: clock(st.finished || st.started),
 			tone: stale(st) ? 'warn' : null
 		}));
@@ -1818,7 +1824,10 @@ function TabBar(defs, current, onPick) {
 			 * 另外补一段只有读屏器读得到的话。用内容而不是 aria-label：
 			 * 贴 aria-label 会把可见名整个盖掉，语音控制的人喊"榜单"就可能对不上。 */
 			kids.push(el('span', { class: 'tab-n n', 'aria-hidden': 'true', text: String(d.count) }));
-			kids.push(el('span', { class: 'sr-only', text: T('，%s 条结果').format(String(d.count)) }));
+			/* r74：补白不能以标点开头。读屏器把相邻 inline 盒子的文本拼成可访问名
+			 * 时会插一个分隔停顿，`，10 条结果` 会被念成「榜单 ，10 条结果」——
+			 * 逗号前多一个不自然的停顿。去掉前导逗号，拼出来是「榜单 共 10 条结果」。 */
+			kids.push(el('span', { class: 'sr-only', text: T('共 %s 条结果').format(String(d.count)) }));
 		}
 		var on = d.id === current;
 		var b = el('button', {
