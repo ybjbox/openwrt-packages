@@ -1120,11 +1120,12 @@ write_outputs() {
 		# “显式留空”和“没这一项”，真空值取回来是 rc=1，会落回默认模板）。
 		# 行首不拼 :端口 —— 这份文件就是推给 Gist 的那份，客户端要的是纯 IP；
 		# 端口仍然写在 result.json 的 port 字段里，没有丢。
-		# 注释前那个 `#` 由引擎加，模板里只写注释内容：没有它，客户端把后半段
-		# 当成地址的一部分，整行都解析不出来。注释为空时连 `#` 也不留。
+		# 注释前那个 `#` 由引擎在写文件时补（紧贴 IP，中间不留空格 —— 别的工具
+		# 按第一个空格切地址，多一个空格就把地址显示成"IP "），模板里只写注释内容。
+		# 注释为空时连 `#` 也不留。
 		ann=$(render_annotate "$C_ANNOT" "$colo" "$tot" "$spd" | sed -e 's/^[ \t]*//' -e 's/[ \t]*$//')
 		if [ -n "$ann" ]; then
-			printf '%s # %s\n' "$ip" "$ann" >>"$tmp"
+			printf '%s# %s\n' "$ip" "$ann" >>"$tmp"
 		else
 			printf '%s\n' "$ip" >>"$tmp"
 		fi
@@ -1777,9 +1778,11 @@ selftest() {
 	C_ANNOT='cf-ipcheck | {colo} | {total}ms'
 	STARTED='2026-10-17T00:00:00+0800'
 	write_outputs "$(printf '104.16.1.1\t200\t50.0\t60.0\t120.0\t400.0\tnone\twww.cloudflare.com')" 1 1 0 '{"none":1}'
-	check '产物第一行是「IP # 注释」（井号由引擎加，客户端才认得出后半段是注释）' \
-		"$(head -n 1 "$BEST")" '104.16.1.1 # cf-ipcheck | n/a | 400.0ms'
-	check '行首第一段就是纯 IP（端口不再拼进去）' "$(head -n 1 "$BEST" | cut -d' ' -f1)" '104.16.1.1'
+	check '产物第一行是「IP# 注释」（井号紧贴 IP，中间不留空格）' \
+		"$(head -n 1 "$BEST")" '104.16.1.1# cf-ipcheck | n/a | 400.0ms'
+	check '按 # 切出来的地址段没有尾随空格（别的工具就显示这个）' \
+		"$(head -n 1 "$BEST" | cut -d'#' -f1)" '104.16.1.1'
+	check '行首第一段就是纯 IP（端口不再拼进去）' "$(head -n 1 "$BEST" | cut -d' ' -f1)" '104.16.1.1#'
 	C_ANNOT=''
 	write_outputs "$(printf '104.16.1.1\t200\t50.0\t60.0\t120.0\t400.0\tnone\twww.cloudflare.com')" 1 1 0 '{"none":1}'
 	check '注释模板填成空 ⇒ 一行纯 IP，连井号与尾随空格都不留' "$(head -n 1 "$BEST")" '104.16.1.1'
