@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r65';
+var VIEW_BUILD = 'r66';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -2961,7 +2961,7 @@ return view.extend({
 		o.default = '443';
 		o.description = help('probe_port',
 			_('一般保持 443。'),
-			_('HTTPS 探测的目标端口。除非你的优选用途不走 443，否则不要改 —— 改成一个非 443 端口后，很多 Cloudflare 边缘节点会直接拒绝握手，榜单会整体变空。'));
+			_('HTTPS 探测的目标端口。除非你的优选用途不走 443，否则不要改 —— 改成一个非 443 端口后，很多 Cloudflare 边缘节点会直接拒绝握手，榜单会整体变空。这个端口只用于探测，不写进产物：ip.txt 与 Gist 都是一行一个纯 IP（端口在 result.json 的 port 字段里）。'));
 
 		o = s.option(form.Value, 'log_max_kb', _('日志体积上限（KB）'), _('引擎日志的封顶大小。'));
 		o.datatype = 'and(uinteger,min(16),max(65536))';
