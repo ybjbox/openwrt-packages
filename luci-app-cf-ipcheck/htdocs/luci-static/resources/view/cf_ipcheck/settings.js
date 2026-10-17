@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r72';
+var VIEW_BUILD = 'r73';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -3052,6 +3052,11 @@ return view.extend({
 
 		o = src.option(form.Flag, 'neighbor_expand', _('邻居 IP 扩展'), _('对初榜前 5 颗探同段邻居。默认开。'));
 		o.rmempty = false;
+		/* 默认开必须在这里显式声明：Flag 在 uci 里没有该项时画的是「关」，
+		 * 与引擎的默认值 1 相反。装机实测（r72）：老部署的 uci 里没有这一项
+		 * （升级时 apk 把新配置留在 .apk-new），页面显示关、引擎实际跑开 ——
+		 * 用户一动页面点保存，就会把默认开的功能静默写成关。 */
+		o.default = '1';
 		o.description = help('neighbor_expand',
 			_('对初榜前 5 颗探同段邻居。默认开。'),
 			_('打开后，引擎会对初榜前 5 颗 IP 各探测同一 /24 段内 ±4 的邻居。社区清单测的是"别人的线路"，你这条线上最快的 IP 可能就在某颗好 IP 隔壁、却不在任何清单里 —— 这一步就是去隔壁看看。代价是每轮多约 40 次探测（几十秒）。关掉就完全按社区清单测。'));
