@@ -939,7 +939,7 @@ eq('Map 自己的 h2 标题被摘掉', mapNode.children.filter(c => c.tagName ==
 eq('Map 自己的描述节点被摘掉（那句话并进面板说明，见下）',
 	mapNode.querySelectorAll('.cbi-map-descr').length, 0);
 ok('那句描述没丢：并进面板那行说明的开头（摘掉节点不等于删掉信息）',
-	src.includes("T('用带真实 SNI 的 HTTPS 探测实测；改动保存后下一轮生效"));
+	src.includes("T('用带真实 SNI（握手时就把你要访问的域名说出去）的 HTTPS 探测实测；改动保存后下一轮生效"));
 eq('摘壳子没有弄丢字段：map 里 .cbi-value 总数不变',
 	mapNode.querySelectorAll('.cbi-value').length, allOptions.length + 1);
 

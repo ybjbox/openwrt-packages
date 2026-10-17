@@ -1359,7 +1359,7 @@ function BoardPane(st, actions) {
 		kids.push(EmptyBox({
 			title: st.state === 'never_run' ? T('还没有测过') : T('这一轮没有产生榜单'),
 			detail: st.state === 'never_run'
-				? T('点「立即测速」跑第一轮。引擎会先拉社区源、把上一轮进榜的那几条 IP 并回候选池，再用带真实 SNI（握手时就把你要访问的域名说出去）的 HTTPS 逐个实测。')
+				? T('点「立即测速」跑第一轮。引擎会先拉社区源、把上一轮进榜的那几条 IP 并回候选池，再用带真实 SNI 的 HTTPS 逐个实测。')
 				: T('候选池里的 IP 都没有同时过 TTFB 与总耗时两道门槛。放宽阈值（配置 → 测速与判定），或先到「源与检测」看看候选池为什么这么小。'),
 			action: Button({
 				kind: 'primary', label: T('立即测速'), icon: 'play',
@@ -2156,7 +2156,7 @@ function ConfigPane() {
 	return {
 		node: el('div', {}, [
 			el('p', { class: 'note', style: { marginBottom: 'var(--s3)' } },
-				T('用带真实 SNI 的 HTTPS 探测实测；改动保存后下一轮生效，判定口径见「榜单」页说明。')),
+				T('用带真实 SNI（握手时就把你要访问的域名说出去）的 HTTPS 探测实测；改动保存后下一轮生效，判定口径见「榜单」页说明。')),
 			Section(T('参数')),
 			el('div', { class: 'grps-bar' }, [
 				btnAll, el('span', { class: 'sep', text: '·' }), btnNone
