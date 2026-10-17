@@ -800,22 +800,21 @@ function whyNoReply(what, method) {
 		.format(what, RPC_OBJECT, method);
 }
 
-/* 引擎的失败分类码 → 给人看的说法。键照 probe_one 与文档头部那份集合列全，
- * 认不出的原样带出（用在 SummaryStrip 的未达标那一格），transport_N 保留那个 N。 */
-var ERR_KIND = {
-	timeout: '超时',
-	tls: '握手失败',
-	connect: '连不上',
-	dns: '解析失败',
-	http: '返回错误',
-	stopped: '已叫停',
-	invalid_ip: '地址无效'
-};
-
+/* 引擎的失败分类码 → 给人看的说法。键照 probe_one 与文档头部那份集合列全；
+ * 认不出的原样带出（用在 SummaryStrip 的未达标那一格）。
+ * 每个名字都过 T()：这份代码的规矩是用户可见串不写裸字面量，否则 i18n 的提取
+ * 会整个漏掉它们。 */
 function errKindName(k) {
 	var s = String(k);
-	if (ERR_KIND[s])
-		return ERR_KIND[s];
+	switch (s) {
+		case 'timeout': return T('超时');
+		case 'tls': return T('握手失败');
+		case 'connect': return T('连不上');
+		case 'dns': return T('解析失败');
+		case 'http': return T('返回错误');
+		case 'stopped': return T('已叫停');
+		case 'invalid_ip': return T('地址无效');
+	}
 	if (s.indexOf('transport_') === 0)
 		return T('传输出错 %s').format(s.slice(10));
 	return s;

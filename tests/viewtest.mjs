@@ -50,7 +50,7 @@ const hook = "\nglobalThis.__cf_t = {\n" +
 	"\tget P() { return P; }, goto: goto, savedTab: savedTab,\n" +
 	"\tbuildPage: buildPage, runCmd: runCmd,\n" +
 	"\thashTab: hashTab, writeHashTab: writeHashTab, watchHash: watchHash, logStamp: logStamp, actLogFull: actLogFull,\n" +
-	"\terrKindName: (typeof errKindName === 'function' ? errKindName : null), ERR_KIND: (typeof ERR_KIND !== 'undefined' ? ERR_KIND : null),\n" +
+	"\terrKindName: (typeof errKindName === 'function' ? errKindName : null),\n" +
 	"\tactRun: actRun, actCheck: actCheck, actStop: actStop,\n" +
 	"\tsourcesMap: sourcesMap, mountSourcesForm: mountSourcesForm,\n" +
 	"\tpendingSourceEdits: pendingSourceEdits,\n" +
