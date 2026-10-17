@@ -326,7 +326,7 @@ load_config() {
 	C_CANARY=$(cfg canary_check 1)
 	C_SPEED=$(cfg speed_probe 1)
 	C_SPEEDN=$(cfg_range speed_count 10 0 100)
-	# 上限 100MB：这一项直接乘在每轮流量上（speed_count × speed_bytes）。
+	# 上限 104857600 字节（约 104.86MB）：这一项直接乘在每轮流量上（speed_count × speed_bytes）。
 	C_SPEEDKB=$(cfg_range speed_bytes 10485760 131072 104857600)
 	C_SPEEDTO=$(cfg_range speed_timeout 25 5 120)
 	C_SPEEDDOM=$(one_host "$(cfg speed_domain 'speed.cloudflare.com')" speed.cloudflare.com)
@@ -1030,10 +1030,10 @@ render_annotate() { # $1=模板 $2=colo $3=total $4=speed
 }
 
 # ---------------- 下载速度（只对入围 IP）-----------------------------------
-# 为什么要单独测：延迟不够用。真机实测三个都上了榜的 IP，拉 10MB 的吞吐
+# 为什么要单独测：延迟不够用。真机实测三个都上了榜的 IP，拉 10.49MB（10485760 字节）的吞吐
 # 分别是 10.6 / 3.57 / 0.19 MB/s —— 差 50 倍，而它们的 total 挤在同一量级里。
 # 反过来 1MB 样本抖得没法用（同一 IP 两次差 2.8 倍，那基本是在测 TCP 慢启动），
-# 所以默认拉 10MB；并且只串行测 —— 并发一起拉会互抢带宽，测出来全是被压平的假数。
+# 所以默认拉 10485760 字节（10.49MB）；并且只串行测 —— 并发一起拉会互抢带宽，测出来全是被压平的假数。
 # 单位是**十进制 MB/s**（÷1000000），与浏览器/测速站同一口径（Ryan 2026-09-27 定的）。
 # 不是 MiB/s（÷1048576），也不是 Mbps（还要 ×8）—— 换错口径页面数字就跟 speedtest 对不上。
 speed_fmt() { # $1=curl 的 speed_download（字节/秒）-> MB/s 两位小数；测不出来 = '-'
@@ -1114,7 +1114,10 @@ write_outputs() {
 				"$ip" "$code" "$c" "$tls" "$ttfb" "$tot" "$colo" "$spd" "$dom" >>"$sp_tmp"
 		done <"$colored"
 		mv "$sp_tmp" "$colored"
-		[ "$k" = 0 ] || log "吞吐实测 $k 个（每个 $C_SPEEDKB 字节，单位十进制 MB/s）:$sum"
+		# 同一数量三处一个说法（r70）：精确字节数 + 十进制 MB 换算（÷1e6，与 speed_fmt
+		# 同口径）—— 10485760 字节 = 10.49 MB，不是 10MB（那是 MiB 口径）。
+		# awk 只在真有实测时跑一次（每轮至多一次），不在探测路径上。
+		[ "$k" = 0 ] || log "吞吐实测 $k 个（每个 $C_SPEEDKB 字节 = $(printf '%s' "$C_SPEEDKB" | awk '{ printf "%.2f", $1 / 1000000 }') MB，单位十进制 MB/s）:$sum"
 	fi
 
 	: >"$tmp"

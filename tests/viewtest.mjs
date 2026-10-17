@@ -27,13 +27,13 @@ if (!src0.includes(marker)) { console.log('NO-MARKER'); process.exit(1); }
 // 注意：需要「活引用」的（store、P）用 getter 导出，因为模块里会重新赋值/打补丁。
 const hook = "\nglobalThis.__cf_t = {\n" +
 	"\tparseStatus: parseStatus, parseSources: parseSources,\n" +
-	"\ttone: tone, stateWord: stateWord, why: why,\n" +
+	"\ttone: tone, stateWord: stateWord, why: why, whyMore: whyMore,\n" +
 	"\tnum: num, ms: ms, mbps: mbps, ago: ago, clock: clock,\n" +
 	"\tstale: stale, scheduleLine: scheduleLine, DASH: DASH,\n" +
 	"\tLeaderboard: Leaderboard, COLS: COLS, domainKinds: domainKinds,\n" +
 	"\tRunProgress: RunProgress, STAGES: STAGES, SRC_COLS: SRC_COLS,\n" +
 	"\tSummaryStrip: SummaryStrip, BoardPane: BoardPane,\n" +
-	"\tSourceMatrix: SourceMatrix, SourcesPane: SourcesPane, srcMessage: srcMessage,\n" +
+	"\tSourceMatrix: SourceMatrix, SourcesPane: SourcesPane, srcMessage: srcMessage, srcMore: srcMore,\n" +
 	"\tparseLog: parseLog, LogsPane: LogsPane, LogBlock: LogBlock, logTone: logTone,\n" +
 	"\tlogStamp: logStamp, logAnchor: logAnchor, logAnchorTop: logAnchorTop,\n" +
 	"\tTabBar: TabBar, StatusRail: StatusRail, Readout: Readout,\n" +
@@ -537,6 +537,11 @@ eq('done 状态词', t.stateWord({ state: 'done', items: [{}] }), '已完成');
 ok('interrupted 说明锁被回收', /锁/.test(t.why('interrupted')));
 ok('sink_not_writable 提到 rc=23', t.why('sink_not_writable').includes('rc=23'));
 ok('sink_not_writable 不是兜底文案', !t.why('sink_not_writable').includes('引擎报告'));
+/* r70：错误态拆两层 —— 结论常驻（含 rc=23 与下一步），引擎的自愈动作挂 whyMore。
+ * 钉住「搬去悬停的细节没丢」：chmod 711 与 .null 666 是原来长句里的实质信息。 */
+ok('sink_not_writable 的深度细节进了 whyMore（chmod 711 / .null 666 没丢）',
+	/chmod 711/.test(t.whyMore('sink_not_writable')) && /666/.test(t.whyMore('sink_not_writable')));
+eq('没登记深度的原因 whyMore 给空串（不会弹个空展开）', t.whyMore('empty_pool'), '');
 ok('empty_pool 给出下一步', /源|检测/.test(t.why('empty_pool')));
 /* 兜底那句的用处：页面没登记过的原因码不能变成一句英文码糊给用户，
  * 必须仍然说清「发生了什么 + 去哪儿看 + 下一步」。r49 把文案改成人话后这样判。 */
@@ -676,6 +681,13 @@ const noActions = { run: noop, stop: noop, refresh: noop, copy: noop, check: noo
 let pane = t.BoardPane(done, noActions);
 has('正常态渲染榜单', pane, '104.16.1.1');
 has('正常态给出排序说明', pane, '按 TTFB 升序排列');
+/* r70：脚注拆两层 —— 短结论常驻页面，六列的完整定义挂 ⓘ（HelpMark，触屏/键盘可点）。
+ * 钉住「搬去悬停的细节没丢」：TCP/TLS/TTFB/总计/机房/MB/s 六项定义与 SIN 示例都在。 */
+const footNote = byClass(pane, 'note').find(n => /按 TTFB 升序排列/.test(textOf(n)));
+ok('榜单脚注带 ⓘ（完整列头解释不占常驻版面）', !!footNote && byClass(footNote, 'hmark').length === 1);
+ok('悬停里保留六列的完整定义（TCP/TLS/TTFB/总计/机房/MB/s 一个没丢）',
+	!!footNote && byClass(footNote, 'hmark').some(m =>
+		/能否连上这个 IP/.test(m.attrs.title) && /SIN 新加坡/.test(m.attrs.title) && /1 MB = 1000 KB/.test(m.attrs.title)));
 /* r51：章节标题给读屏器一个可跳的层级（过去整块面板里一个标题元素都没有）。
  * 分组头 .grp-h 故意保持 role=button 的 div —— 那是控件，套标题会变成双重语义。 */
 const secHeads = byTag(pane, 'h3');
@@ -687,6 +699,10 @@ pane = t.BoardPane(t.parseStatus(JSON.stringify({ state: 'done', intercepted: 1,
 has('接管态给出红条', pane, '出口被代理接管');
 has('接管态说明跳过机房与吞吐', pane, '跳过机房与吞吐');
 ok('接管态红条用 bad 色', byClass(pane, 'bad').length >= 1);
+/* r70：红条也拆两层 —— 默认探测域名与「不替你改代理」的边界声明挂 ⓘ */
+ok('接管红条带 ⓘ（默认域名与边界声明进了悬停）',
+	byClass(byClass(pane, 'flash')[0], 'hmark').some(m =>
+		/www\.cloudflare\.com/.test(m.attrs.title) && /不替你改代理/.test(m.attrs.title)));
 
 pane = t.BoardPane(t.parseStatus('{"state":"running","started":"x","items":[]}'), noActions);
 has('运行态给等待文案', pane, '正在测速');
@@ -753,6 +769,11 @@ ok('检测中没有"正在保存"这种假阶段', !textOf(sp).includes('正在�
 sp = t.SourcesPane({ state: 'ok', rows: srcRows }, { check: noop });
 has('检测完成渲染矩阵', sp, 'a.example');
 has('检测完成给 CF 段内说明', sp, 'CF 段内');
+/* r70：anycast 与「拉不到」的完整解释挂 ⓘ —— 钉住搬去悬停的细节没丢 */
+const cfNote = byClass(sp, 'note').find(n => /CF 段内/.test(textOf(n)));
+ok('CF 段内说明带 ⓘ（anycast 与 000 的解释挂悬停）',
+	!!cfNote && byClass(cfNote, 'hmark').some(m =>
+		/记 000/.test(m.attrs.title) && /记进日志/.test(m.attrs.title)));
 sp = t.SourcesPane({ state: 'unreachable' }, { check: noop });
 has('检测执行不了说明原因', sp, '调不到 luci.cf-ipcheck 的 check_sources 方法');
 sp = t.SourcesPane({ state: 'empty' }, { check: noop });
@@ -1365,6 +1386,9 @@ hasNot('被拒的空态不说「没有回应」', t.BoardPane(t.parseStatus(null
 
 eq('源检测超时 → hung 态', t.parseSources(t.HUNG).state, 'hung');
 has('源检测 hung 文案说没有回应', t.srcMessage({ state: 'hung' }), '没有回应');
+/* r70：hung 那条拆两层 —— 结论常驻，12 秒的构成与 30 秒平台超时挂 srcMore */
+ok('源检测 hung 的深度细节进了 srcMore（8 秒上限与 30 秒平台超时没丢）',
+	/8 秒上限/.test(t.srcMore({ state: 'hung' })) && /30 秒/.test(t.srcMore({ state: 'hung' })));
 has('源检测被拒文案点名 check_sources', t.srcMessage({ state: 'unreachable' }), '调不到 luci.cf-ipcheck 的 check_sources 方法');
 
 ok('run-now 回 running 判为「还在跑」', t.isRunningReply('{"state":"running"}') === true);

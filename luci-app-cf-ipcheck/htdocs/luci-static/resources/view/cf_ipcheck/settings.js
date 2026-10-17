@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r69';
+var VIEW_BUILD = 'r70';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -423,7 +423,16 @@ function stateWord(st) {
 	}
 }
 
-/* 引擎报的失败原因 → 一句人话。每条都要说清「发生了什么」+「下一步做什么」。 */
+/* 引擎报的失败原因 → 一句人话。每条都要说清「发生了什么」+「下一步做什么」。
+ * r70：错误态也拆两层 —— why() 只回常驻页面的「一句结论」，深度排查细节
+ * （引擎内部怎么自愈、平台侧超时是多少）记在 WHY_MORE 里，由 EmptyBox 的 ⓘ
+ * 悬停/点击就地展开。赋值放在 case 里而不是模块级：与 help() 同一套路，
+ * 且模块级求值会让 _() 在桩件就位之前跑。 */
+var WHY_MORE = {};
+function whyMore(reason) {
+	return WHY_MORE[reason] || '';
+}
+
 function why(reason) {
 	switch (reason) {
 		case 'empty_pool':
@@ -433,7 +442,8 @@ function why(reason) {
 		case 'missing_bin':
 			return T('找不到 %s：包没装好，或者 rpcd 还拿着旧的 ACL 缓存（重启 rpcd 后重试）。').format(CMD);
 		case 'sink_not_writable':
-			return T('探测身份写不了丢弃响应体的目标，本轮在联网之前就中止了。这会让每条探测都以 curl rc=23 失败，看起来像「所有 IP 都不通」，其实是本地写不了。引擎每轮开始会把运行目录（默认 /tmp/cf-ipcheck）chmod 711、把 .null 放成 666，正常不该出现；反复出现就查运行目录所在分区的剩余空间，或「探测身份」是否被改成了不存在的用户。');
+			WHY_MORE.sink_not_writable = T('引擎每轮开始会把运行目录（默认 /tmp/cf-ipcheck）chmod 711、把 .null 放成 666，所以正常不该出现这一条；它出现通常意味着运行目录所在分区满了，或有别的进程改过了那儿的权限。');
+			return T('探测身份写不了丢弃响应体的目标，本轮在联网之前就中止了：每条探测都会以 curl rc=23 失败，看着像「所有 IP 都不通」，其实是本地写不了。反复出现就查运行目录所在分区的剩余空间，或「探测身份」是否被改成了不存在的用户。');
 		case 'interrupted':
 			return T('上一轮没跑完就断了（进程被杀、断电或重启），运行锁已被回收，这一条是自动判出来的。下面是上一次成功完成的榜单；直接点「立即测速」即可重来。');
 		case 'stopped':
@@ -875,13 +885,16 @@ function setBusy(btn, on) {
 		btn.setAttribute('aria-busy', on ? 'true' : 'false');
 }
 
-/* 空态 / 加载态：一句说清为什么空，再给一个能解决它的动作 */
+/* 空态 / 加载态：一句说清为什么空，再给一个能解决它的动作。
+ * p.more：错误/异常状态的深度排查细节。常驻的只有「一句结论」，背景知识
+ * （引擎内部怎么自愈、平台侧超时多少）挂 ⓘ 悬停/点击就地展开 —— 与表单
+ * 字段同一套机制（HelpMark），r70 起错误三态也走这条。 */
 function EmptyBox(p) {
 	var box = [
 		el('i', { class: 'empty-ic' }),
 		el('div', { class: 'empty-b' }, [
 			el('div', { class: 'empty-t', text: p.title }),
-			el('div', { class: 'empty-d', text: p.detail })
+			el('div', { class: 'empty-d' }, [ p.detail, p.more ? HelpMark(p.more) : null ])
 		])
 	];
 	if (p.action)
@@ -889,14 +902,18 @@ function EmptyBox(p) {
 	return el('div', { class: 'empty' + (p.spin ? ' spin' : '') }, box);
 }
 
-/* 页内提示条：这版 LuCI 两个 toast API 都没有，全靠它 */
+/* 页内提示条：这版 LuCI 两个 toast API 都没有，全靠它。
+ * p.more 同 EmptyBox：结论留页面上，深度细节挂 ⓘ。 */
 function Flash(p) {
 	if (!p)
 		return null;
-	return el('div', { class: 'flash' + (p.tone ? ' ' + p.tone : '') }, [
+	var kids = [
 		el('b', { text: p.title + (p.text ? '：' : '') }),
 		p.text ? el('span', { text: p.text }) : null
-	]);
+	];
+	if (p.more)
+		kids.push(HelpMark(p.more));
+	return el('div', { class: 'flash' + (p.tone ? ' ' + p.tone : '') }, kids);
 }
 
 /* ==========================================================================
@@ -1275,13 +1292,17 @@ function RunProgress(st) {
  * r49 抽出来共用：过去只有「正常完成」那条分支会带这段脚注，于是本轮失败或读不到
  * 但仍展示上一轮榜单时，同样这 9 列一个字都不解释 —— 而那一刻恰恰最需要看懂列头。
  * 脚注里为什么不用 <abbr> 虚线悬浮（树内插件的做法）：悬浮在触屏上拿不到
- * （本插件实测过 556 处 title 在手机上读不到），而这些是每轮都要看的列头，写成明文。 */
+ * （本插件实测过 556 处 title 在手机上读不到），而这些是每轮都要看的列头，结论写成明文。
+ * r70 起拆两层：一句结论常驻页面，六列的完整定义（TCP/TLS/TTFB/总计/机房/MB/s）
+ * 挂 ⓘ —— 那是 HelpMark，触屏/键盘点一下就地展开，不是只能悬浮的 <abbr>。 */
 function BoardTable(st, kids) {
 	kids.push(SummaryStrip(st));
 	kids.push(Section(T('榜单')));
 	kids.push(Leaderboard(st.items));
-	kids.push(el('p', { class: 'note' },
-		T('按 TTFB 升序排列，同值再看总耗时。四个时间列都是毫秒，从浅到深：TCP=能否连上这个 IP；TLS=在它上面能否完成加密握手；TTFB（首字节耗时）=握手加上传请求到收到第一个字节；总计=整段响应收完，含下载内容，会随文件大小变化。排序看的是 TTFB，因为它与内容大小无关。机房=这个 IP 实际把你带到的 Cloudflare 节点城市三字码（如 SIN 新加坡、NRT 东京）。MB/s 为十进制（1 MB = 1000 KB），只对前若干个 IP 实测、仅作参考不参与排序，未测或失败显示 %s。').format(DASH)));
+	kids.push(el('p', { class: 'note' }, [
+		T('按 TTFB 升序排列，同值再看总耗时；四个时间列都是毫秒。TTFB（首字节耗时）是主排序依据；机房列是 Cloudflare 节点城市三字码；MB/s 为十进制、只作参考不参与排序，未测或失败显示 %s。').format(DASH),
+		HelpMark(T('四个时间列从浅到深：TCP=能否连上这个 IP；TLS=在它上面能否完成加密握手；TTFB（首字节耗时）=握手加上传请求到收到第一个字节；总计=整段响应收完，含下载内容，会随文件大小变化。排序看的是 TTFB，因为它与内容大小无关。机房=这个 IP 实际把你带到的 Cloudflare 节点城市三字码（如 SIN 新加坡、NRT 东京）。MB/s 为十进制（1 MB = 1000 KB），只对前若干个 IP 实测、仅作参考不参与排序，未测或失败显示 %s。').format(DASH))
+	]));
 	return kids;
 }
 
@@ -1294,8 +1315,10 @@ function BoardPane(st, actions) {
 			title: T('出口被代理接管'),
 			/* 光说"数字不可信"不够 —— 用户下一步要问的是"那我怎么让它可信"。
 			 * 接管来自路由器上的透明代理，所以指向代理侧的直连/绕过名单，
-			 * 本插件不替你改任何代理配置（配置面最小是这插件的边界）。 */
-			text: T('候选 IP 没参与选路，下面这些数字测的是「本机 → 代理 → CF」的耗时，不能用来判断 IP 好坏。本轮已自动跳过机房与吞吐两列。要拿到真值：在路由器那侧的透明代理里把探测域名（默认 www.cloudflare.com）和 Cloudflare 网段列入直连/绕过名单，或临时停一下代理，再点「立即测速」重跑一轮。本插件不替你改代理配置。'),
+			 * 本插件不替你改任何代理配置（配置面最小是这插件的边界）。
+			 * r70：结论常驻，探测域名的默认值与边界声明挂 ⓘ。 */
+			text: T('候选 IP 没参与选路，下面这些数字测的是「本机 → 代理 → CF」的耗时，不能用来判断 IP 好坏；本轮已自动跳过机房与吞吐两列。要拿到真值：在路由器那侧的透明代理里把探测域名和 Cloudflare 网段列入直连/绕过名单，或临时停一下代理，再点「立即测速」重跑一轮。'),
+			more: T('探测域名默认 www.cloudflare.com（在「探测域名」里改）。本插件不替你改代理配置 —— 配置面最小是这插件的边界。'),
 			tone: 'bad'
 		}));
 	}
@@ -1343,6 +1366,7 @@ function BoardPane(st, actions) {
 		kids.push(EmptyBox({
 			title: T('本轮没有跑完'),
 			detail: why(st.reason),
+			more: whyMore(st.reason),
 			action: Button({
 				kind: 'primary', label: T('立即测速'), icon: 'play',
 				onClick: actions.run
@@ -1464,7 +1488,7 @@ function SourcesPane(src, actions) {
 		label: T('检测源可用性'), icon: 'probe',
 		disabled: store.get().busy && store.get().busy.check,
 		busy: store.get().busy && store.get().busy.check,
-		title: T('逐条实拉【已经生效】的那份清单。上面编辑框里改过的内容，要先点页面底部的「保存并应用」才会生效。'),
+		title: T('逐条实拉「已经生效」的那份清单。上面编辑框里改过的内容，要先点页面底部的「保存并应用」才会生效。'),
 		onClick: actions.check
 	})));
 
@@ -1505,16 +1529,26 @@ function SourcesPane(src, actions) {
 		kids.push(EmptyBox({
 			title: T('检测没有结果'),
 			detail: srcMessage(src),
+			more: srcMore(src),
 			action: Button({ label: T('检测源可用性'), icon: 'probe', onClick: actions.check })
 		}));
 		return el('div', {}, kids);
 	}
 
 	kids.push(SourceMatrix(src.rows));
-	kids.push(el('p', { class: 'note' },
-		T('「CF 段内」是判定一个源还能不能用的关键：这个源提取出的 IPv4 里，有多少落在 Cloudflare 官方网段内。占比高说明它还在提供真正的 CF anycast（同一个 IP 在全球多个节点同时广播，你连到的自然是最近的那个）；掉到 90% 以下通常意味着它开始夹带别人自己的中转 / VPS 地址。HTTP 列写「拉不到」表示这条压根没取到（连不上、被拒、超时都算，引擎内部一律记 000，那不是源返回的状态码），这一条会被跳过并记进日志。')));
+	/* r70：结论常驻，anycast 与「拉不到」的完整解释挂 ⓘ */
+	kids.push(el('p', { class: 'note' }, [
+		T('「CF 段内」= 这个源提取出的 IPv4 里有多少落在 Cloudflare 官方网段内，是判定一个源还能不能用的关键：占比高说明它还在提供真正的 CF anycast，掉到 90% 以下通常意味着开始夹带别人自己的中转 / VPS 地址。'),
+		HelpMark(T('CF anycast 指同一个 IP 在全球多个节点同时广播，你连到的自然是最近的那个。HTTP 列写「拉不到」表示这条压根没取到（连不上、被拒、超时都算，引擎内部一律记 000，那不是源返回的状态码），这一条会被跳过并记进日志。'))
+	]));
 
 	return el('div', {}, kids);
+}
+
+/* srcMessage 的完整版：与 whyMore() 同一套路（r70）—— 结论常驻，深度细节挂 ⓘ。 */
+var SRC_MORE = {};
+function srcMore(src) {
+	return SRC_MORE[src && src.state] || '';
 }
 
 function srcMessage(src) {
@@ -1522,7 +1556,8 @@ function srcMessage(src) {
 		case 'unreachable':
 			return whyNoReply(T('检测没跑成'), 'check_sources');
 		case 'hung':
-			return T('检测没有回应：路由器在 %s 秒内没返回。引擎这一项最坏约 12 秒（每条源 8 秒上限、13 条一批并发），比这更慢通常是这台电脑到路由器的路有问题。先确认浏览器能正常打开路由器其它页面（本机代理/TUN 接管会把到 10.0.0.0/8 的流量吞掉），再点一次「检测源可用性」；反复如此就 ssh 到路由器跑一次 %s check-sources 看它卡在哪条上。（平台侧 rpcd 的 exec 超时是 30 秒，真超了页面会报「输出读不懂」而不是这一句。）').format(Math.round(CMD_LIMIT['check-sources'] / 1000), CMD);
+			SRC_MORE.hung = T('引擎这一项最坏约 12 秒（每条源 8 秒上限、13 条一批并发），比这更慢通常是这台电脑到路由器的路有问题。另外，平台侧 rpcd 的 exec 超时是 30 秒，真超了页面会报「输出读不懂」而不是这一句。');
+			return T('检测没有回应：路由器 %s 秒内没返回。先确认浏览器能打开路由器其它页面（本机代理/TUN 会把到 10.0.0.0/8 的流量吞掉），再点一次「检测源可用性」；反复如此就 ssh 跑 %s check-sources 看它卡在哪条上。').format(Math.round(CMD_LIMIT['check-sources'] / 1000), CMD);
 		case 'parse_error':
 			return T('检测回的内容读不懂（引擎本该回一段固定格式的结果）。原文片段：%s —— 先确认装上的引擎和页面是同一版（本页右上角的版本号应与包版本一致），再点一次「检测源可用性」；仍然读不懂就 ssh 跑 %s check-sources 看它到底吐了什么。').format(String(src.raw || '').slice(0, 160), CMD);
 		case 'empty':
@@ -2941,14 +2976,14 @@ return view.extend({
 		o.rmempty = false;
 		o.description = help('enabled',
 			_('关掉后不再自动跑。'),
-			_('关闭时后台只空转，不消耗流量。打开后按上面的定时周期循环：距上一轮【起轮】满一个周期就开始下一轮，所以从关翻到开时若上一轮还在周期内，不会立刻重跑 —— 现在就想测就点「立即测速」。改完点保存就生效，不需要重启服务。'));
+			_('关闭时后台只空转，不消耗流量。打开后按上面的定时周期循环：距上一轮「起轮」满一个周期就开始下一轮，所以从关翻到开时若上一轮还在周期内，不会立刻重跑 —— 现在就想测就点「立即测速」。改完点保存就生效，不需要重启服务。'));
 
 		o = s.option(form.Value, 'interval_hours', _('定时周期（小时）'), _('两轮之间的间隔。'));
 		o.datatype = 'and(uinteger,min(1),max(168))';
 		o.default = '6';
 		o.description = help('interval_hours',
 			_('两轮之间的间隔。'),
-			_('范围 1~168 小时，从上一轮【起轮】的时刻开始算（不是从它结束算），所以一轮跑多久不会把下一轮越推越远。周期越短读数越新鲜，但每轮都要拉一遍社区源并探测候选池，流量与 CPU 开销都会上去 —— 真机一轮约 100MB，软路由上 6 小时是个折中。手动点「立即测速」同样会把下一轮顺延一个周期。'));
+			_('范围 1~168 小时，从上一轮「起轮」的时刻开始算（不是从它结束算），所以一轮跑多久不会把下一轮越推越远。周期越短读数越新鲜，但每轮都要拉一遍社区源并探测候选池，流量与 CPU 开销都会上去 —— 真机一轮约 105MB（10 × 10.49MB），软路由上 6 小时是个折中。手动点「立即测速」同样会把下一轮顺延一个周期。'));
 
 		o = s.option(form.Value, 'probe_domains', _('探测域名'), _('逗号分隔，须经 Cloudflare。'));
 		o.default = 'www.cloudflare.com';
@@ -3045,21 +3080,21 @@ return view.extend({
 		o.default = '10';
 		o.description = help('speed_count',
 			_('N × 单次字节数 = 每轮流量。'),
-			_('只对榜单前 N 个测吞吐。流量 = N × 单次下载字节数，按默认值算就是 10 × 10MB ≈ 100MB/轮。填 0 等于关掉吞吐测试（但仍保留那一列，显示为 —）。'));
+			_('只对榜单前 N 个测吞吐。流量 = N × 单次下载字节数，按默认值算就是 10 × 10485760 字节 ≈ 104.86MB/轮。填 0 等于关掉吞吐测试（但仍保留那一列，显示为 —）。'));
 
-		o = thr.option(form.Value, 'speed_bytes', _('单次下载字节数'), _('默认 10MB。'));
+		o = thr.option(form.Value, 'speed_bytes', _('单次下载字节数'), _('默认 10485760 字节（10.49MB）。'));
 		o.datatype = 'and(uinteger,min(131072),max(104857600))';
 		o.default = '10485760';
 		o.description = help('speed_bytes',
-			_('默认 10MB。'),
-			_('每次吞吐测试下载多少字节。样本太小，测到的全是刚起步那段爬坡（TCP 慢启动），数字抖得没法比较；太大又白白烧流量。10MB 是个经验值。最小 128KB，最大 100MB。'));
+			_('默认 10485760 字节（10.49MB）。'),
+			_('每次吞吐测试下载多少字节。样本太小，测到的全是刚起步那段爬坡（TCP 慢启动），数字抖得没法比较；太大又白白烧流量。10485760 字节（10.49MB）是个经验值。最小 131072 字节（约 131.07KB），最大 104857600 字节（约 104.86MB）。'));
 
 		o = thr.option(form.Value, 'speed_timeout', _('单次吞吐测试超时（秒）'), _('比单 IP 超时大得多。'));
 		o.datatype = 'and(uinteger,min(5),max(120))';
 		o.default = '25';
 		o.description = help('speed_timeout',
 			_('比单 IP 超时大得多。'),
-			_('吞吐测试单独用的超时。下载一个 10MB 文件本来就比一次握手慢几个数量级，所以不能复用单 IP 超时，否则每个 IP 都会被判超时。'));
+			_('吞吐测试单独用的超时。下载一个 10.49MB（10485760 字节）文件本来就比一次握手慢几个数量级，所以不能复用单 IP 超时，否则每个 IP 都会被判超时。'));
 
 		o = thr.option(form.Value, 'speed_domain', _('吞吐测试地址'), _('同样用 --resolve 钉到候选 IP。'));
 		o.default = 'speed.cloudflare.com';
@@ -3145,10 +3180,13 @@ return view.extend({
 				mountSourcesForm(srcNode, P.srcEdit);
 			}, function () {
 				/* 这张 Map 渲染失败不能把整页带走：源页留一句实话，
-				 * 其余面板照常（检测仍然能检配置文件里已有的源）。 */
+				 * 其余面板照常（检测仍然能检配置文件里已有的源）。
+				 * r70：结论常驻，rpcd reload 那条排查挂 ⓘ。 */
 				clear(P.srcEdit);
-				P.srcEdit.appendChild(el('p', { class: 'note' },
-					T('源清单的编辑表单没能加载。下面仍然可以检测配置文件里已有的源；要增删源，可以先改配置文件（/etc/config/cf_ipcheck 里的 community_sources）再刷新本页。刷新后还是不行，多半是路由器的后台服务 rpcd 还拿着旧的表单缓存，在路由器上执行 /etc/init.d/rpcd reload 再试。')));
+				P.srcEdit.appendChild(el('p', { class: 'note' }, [
+					T('源清单的编辑表单没能加载：下面仍然可以检测配置文件里已有的源；要增删源，可以先改 /etc/config/cf_ipcheck 里的 community_sources，再刷新本页。'),
+					HelpMark(T('刷新后还是不行，多半是路由器的后台服务 rpcd 还拿着旧的表单缓存 —— 在路由器上执行 /etc/init.d/rpcd reload，然后再刷新本页。检测只读配置文件，编辑表单加载失败不影响检测已有的源。'))
+				]));
 			}).then(function () {
 				/* 恢复上次停留的标签；没有记录就落到榜单页 */
 				/* 地址里那段优先：从分享链接/收藏进来要落在链接指的那一屏；
