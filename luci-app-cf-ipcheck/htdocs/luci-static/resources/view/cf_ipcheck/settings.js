@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r64';
+var VIEW_BUILD = 'r65';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -427,9 +427,9 @@ function stateWord(st) {
 function why(reason) {
 	switch (reason) {
 		case 'empty_pool':
-			return T('候选池是空的：社区源一条都没拉到，官方网段又关着。到「源与检测」页补几条源（补完要「保存并应用」才生效），再点检测，看是不是哪些源改了路径；或临时打开「Cloudflare 官方网段」。');
+			return T('候选池是空的：社区源一条都没拉到，官方网段又关着。到「源与检测」页补几条源（补完要「保存并应用」才生效），再点一次「检测源可用性」，看是不是哪些源改了路径；或临时打开「Cloudflare 官方网段」。');
 		case 'missing_curl':
-			return T('这台机器上没有 curl。所有探测都由 curl --resolve 发起，请安装 curl 与 ca-bundle。');
+			return T('这台机器上没有 curl（路由器上负责发请求的那个命令行工具）。所有探测都由它发起，请安装 curl 与 ca-bundle（根证书包）。');
 		case 'missing_bin':
 			return T('找不到 %s：包没装好，或者 rpcd 还拿着旧的 ACL 缓存（重启 rpcd 后重试）。').format(CMD);
 		case 'sink_not_writable':
@@ -800,6 +800,27 @@ function whyNoReply(what, method) {
 		.format(what, RPC_OBJECT, method);
 }
 
+/* 引擎的失败分类码 → 给人看的说法。键照 probe_one 与文档头部那份集合列全，
+ * 认不出的原样带出（用在 SummaryStrip 的未达标那一格），transport_N 保留那个 N。 */
+var ERR_KIND = {
+	timeout: '超时',
+	tls: '握手失败',
+	connect: '连不上',
+	dns: '解析失败',
+	http: '返回错误',
+	stopped: '已叫停',
+	invalid_ip: '地址无效'
+};
+
+function errKindName(k) {
+	var s = String(k);
+	if (ERR_KIND[s])
+		return ERR_KIND[s];
+	if (s.indexOf('transport_') === 0)
+		return T('传输出错 %s').format(s.slice(10));
+	return s;
+}
+
 /* 读数单元：标签 / 值 / 单位 / 副行 */
 function Readout(p) {
 	var v = [
@@ -901,7 +922,7 @@ function StatusRail(st, busy, actions) {
 	if (sched)
 		id.push(el('span', { class: 'rail-note', text: sched }));
 	if (st.intercepted == 1)
-		id.push(el('span', { class: 'rail-tag', text: T('出口被接管') }));
+		id.push(el('span', { class: 'rail-tag', text: T('出口被代理接管') }));
 	/* 版本号常驻在这里：不用翻页脚、不用开控制台就能报给我「我看到的是 r 几」 */
 	id.push(el('span', { class: 'build', title: T('浏览器里正在跑的视图版本'), text: VIEW_BUILD }));
 
@@ -1108,7 +1129,9 @@ function SummaryStrip(st) {
 		sub: T('按 TTFB 排序保留的条数')
 	}));
 
-	/* 失败分类：只在引擎给了 counts 且确有失败时出现 */
+	/* 失败分类：只在引擎给了 counts 且确有失败时出现。
+	 * 键是引擎的码，给人看要换成中文；认不出来的一律原样带出，宁可露一个陌生码
+	 * 也别编一句看着笃定的假话（真机就露过一次 `00`，那是一次并发写坏的记录）。 */
 	var none = st.counts && st.counts.none != null;
 	var failed = 0;
 	if (st.counts) {
@@ -1121,7 +1144,7 @@ function SummaryStrip(st) {
 		var parts = [];
 		for (var k2 in st.counts) {
 			if (Object.prototype.hasOwnProperty.call(st.counts, k2) && k2 !== 'none' && st.counts[k2])
-				parts.push(k2 + ' ' + st.counts[k2]);
+				parts.push(errKindName(k2) + ' ' + st.counts[k2]);
 		}
 		cells.push(Readout({
 			label: T('未达标'), value: num(failed), tone: 'warn',
@@ -1300,12 +1323,12 @@ function BoardPane(st, actions) {
 			title: hung ? T('路由器没有回应')
 				: (st.state === 'unreachable' ? T('读不到引擎的输出') : T('引擎的输出读不懂')),
 			detail: hung
-				? T('连着几次都没等到 %s 的返回，这通常不是插件的问题。先确认这台电脑能打开路由器后台（本机代理/TUN 接管会把到 10.0.0.0/8 的流量吞掉），再看 LuCI 会话是不是已经过期。页面仍在后台每隔一会儿重试，恢复了会自己跟上；等不及就点「重新读取」。').format(CMD)
+				? T('连着几次都没等到 %s 的返回，这通常不是插件的问题。先确认这台电脑能打开路由器后台（本机代理/TUN 接管会把到 10.0.0.0/8 的流量吞掉），再看 LuCI 会话是不是已经过期。页面仍在后台每隔一会儿重试，恢复了会自己跟上；等不及就点「刷新」。').format(CMD)
 				: (st.state === 'unreachable'
 					? whyNoReply(T('读不到引擎的输出'), 'status')
-					: T('拿到的不是引擎该回的那段结构化文本，读不懂。原文片段：%s —— 先核对右上角版本号与装上的包版本是否一致（不一致就是浏览器还在吃旧的视图缓存，强刷一次），再点「重新读取」。').format(String(st.raw || '').slice(0, 160))),
+					: T('拿到的不是引擎该回的那种格式，读不懂。原文片段：%s —— 先核对右上角版本号与装上的包版本是否一致（不一致就是浏览器还在吃旧的视图缓存，强刷一次），再点「刷新」。').format(String(st.raw || '').slice(0, 160))),
 			action: Button({
-				label: T('重新读取'), icon: 'refresh',
+				label: T('刷新'), icon: 'refresh',
 				onClick: actions.refresh
 			})
 		}));
@@ -1337,7 +1360,7 @@ function BoardPane(st, actions) {
 		kids.push(EmptyBox({
 			title: st.state === 'never_run' ? T('还没有测过') : T('这一轮没有产生榜单'),
 			detail: st.state === 'never_run'
-				? T('点「立即测速」跑第一轮。引擎会先拉社区源、把上一轮的入围 IP 并回候选池，再用带真实 SNI 的 HTTPS 逐个实测。')
+				? T('点「立即测速」跑第一轮。引擎会先拉社区源、把上一轮进榜的那几条 IP 并回候选池，再用带真实 SNI（握手时就把你要访问的域名说出去）的 HTTPS 逐个实测。')
 				: T('候选池里的 IP 都没有同时过 TTFB 与总耗时两道门槛。放宽阈值（配置 → 测速与判定），或先到「源与检测」看看候选池为什么这么小。'),
 			action: Button({
 				kind: 'primary', label: T('立即测速'), icon: 'play',
@@ -1454,7 +1477,7 @@ function SourcesPane(src, actions) {
 	var pend = pendingSourceEdits(src);
 	if (pend.length)
 		kids.push(el('p', { class: 'note warn' },
-			T('编辑框里有 %d 条还没生效（结果里没有它们）：%s —— 要检它们请先「保存并应用」再点一次检测。')
+			T('编辑框里有 %d 条还没生效（结果里没有它们）：%s —— 要检它们请先「保存并应用」再点一次「检测源可用性」。')
 				.format(pend.length, pend.slice(0, 3).join('、') + (pend.length > 3 ? ' …' : ''))));
 
 	if (!src) {
@@ -1463,7 +1486,7 @@ function SourcesPane(src, actions) {
 			title: T('还没有检测过'),
 			detail: T('「检测源可用性」逐条实拉配置里那份社区源清单，列出 HTTP 状态、提取到的 IPv4 数量，以及其中落在 Cloudflare 官方网段内的比例。段内占比掉到 90% 以下，通常说明这个源换了内容。'),
 			action: Button({
-				kind: 'primary', label: T('开始检测'), icon: 'probe',
+				kind: 'primary', label: T('检测源可用性'), icon: 'probe',
 				onClick: actions.check
 			})
 		}));
@@ -1483,7 +1506,7 @@ function SourcesPane(src, actions) {
 		kids.push(EmptyBox({
 			title: T('检测没有结果'),
 			detail: srcMessage(src),
-			action: Button({ label: T('重新检测'), icon: 'probe', onClick: actions.check })
+			action: Button({ label: T('检测源可用性'), icon: 'probe', onClick: actions.check })
 		}));
 		return el('div', {}, kids);
 	}
@@ -1502,9 +1525,9 @@ function srcMessage(src) {
 		case 'hung':
 			return T('检测没有回应：路由器在 %s 秒内没返回。引擎这一项最坏约 12 秒（每条源 8 秒上限、13 条一批并发），比这更慢通常是这台电脑到路由器的路有问题。先确认浏览器能正常打开路由器其它页面（本机代理/TUN 接管会把到 10.0.0.0/8 的流量吞掉），再点一次「检测源可用性」；反复如此就 ssh 到路由器跑一次 %s check-sources 看它卡在哪条上。（平台侧 rpcd 的 exec 超时是 30 秒，真超了页面会报「输出读不懂」而不是这一句。）').format(Math.round(CMD_LIMIT['check-sources'] / 1000), CMD);
 		case 'parse_error':
-			return T('检测回的内容读不懂（引擎本该回一段结构化文本）。原文片段：%s —— 先确认装上的引擎和页面是同一版（本页右上角的版本号应与包版本一致），再点一次「检测源可用性」；仍然读不懂就 ssh 跑 %s check-sources 看它到底吐了什么。').format(String(src.raw || '').slice(0, 160), CMD);
+			return T('检测回的内容读不懂（引擎本该回一段固定格式的结果）。原文片段：%s —— 先确认装上的引擎和页面是同一版（本页右上角的版本号应与包版本一致），再点一次「检测源可用性」；仍然读不懂就 ssh 跑 %s check-sources 看它到底吐了什么。').format(String(src.raw || '').slice(0, 160), CMD);
 		case 'empty':
-			return T('一条源都没检出：配置里的「社区优选源 URL」是空的。在上面展开「源清单」填几条 HTTPS 地址，点页面底部「保存并应用」，再回来点检测。');
+			return T('一条源都没检出：配置里的「社区优选源 URL」是空的。在上面展开「源清单」填几条 HTTPS 地址，点页面底部「保存并应用」，再回来点「检测源可用性」。');
 		default:
 			return T('还没有检测结果。点上面的「检测源可用性」跑一次 —— 它只读配置文件里那份清单，不会改动任何设置。');
 	}
@@ -1606,7 +1629,7 @@ function logMessage(lg) {
 		case 'empty':
 			return T('日志文件还是空的。引擎每轮开始就会往里写（取源、候选池、达标数、吞吐），跑一轮再回来看看。');
 		default:
-			return T('没有可显示的日志。日志存在路由器的内存盘里，重启就清零 —— 先点「立即测速」跑一轮，或点「重新读取」再试一次。');
+			return T('没有可显示的日志。日志存在路由器的内存盘里，重启就清零 —— 先点「立即测速」跑一轮，或点「刷新」再试一次。');
 	}
 }
 
@@ -1657,7 +1680,7 @@ function LogsPane(lg, actions) {
 	var busy = store.get().busy && store.get().busy.logs;
 
 	kids.push(Section(T('引擎日志'), Button({
-		label: lg ? T('重新读取') : T('读取日志'), icon: 'refresh',
+		label: lg ? T('刷新') : T('读取日志'), icon: 'refresh',
 		disabled: busy, busy: busy,
 		onClick: actions.refresh
 	})));
@@ -1693,7 +1716,7 @@ function LogsPane(lg, actions) {
 		kids.push(EmptyBox({
 			title: titles[lg.state] || titles.unreachable,
 			detail: logMessage(lg),
-			action: Button({ label: T('重新读取'), icon: 'refresh', onClick: actions.refresh })
+			action: Button({ label: T('刷新'), icon: 'refresh', onClick: actions.refresh })
 		}));
 		return el('div', {}, kids);
 	}
@@ -1702,7 +1725,7 @@ function LogsPane(lg, actions) {
 	kids.push(LogBlock(lg.text, full));
 	kids.push(el('div', { class: 'note' }, [
 		el('span', { text: full
-			? T('最新的在最上面。行首现在是**完整原始时间戳**（路由器自己的本地时间并带时区偏移，国内是 +0800，不是 UTC）。只给最近这一段（最多约 60 KB）；日志总量按「配置 → 基本设置 → 日志体积上限」封顶，超限会丢掉较早的内容并在这里留一行说明。')
+			? T('最新的在最上面。行首现在是完整原始时间戳（路由器自己的本地时间并带时区偏移，国内是 +0800，不是 UTC）。只给最近这一段（最多约 60 KB）；日志总量按「配置 → 基本设置 → 日志体积上限」封顶，超限会丢掉较早的内容并在这里留一行说明。要切回只显示时刻，点旁边那个「只看时刻」。')
 			: T('最新的在最上面。行首时间只显示时刻（今天的显示 HH:MM:SS，昨天与更早带上日期），鼠标停在上面能看到原始时间戳与距今多久 —— 手机上悬浮不出来，就用旁边那个「显示完整时刻」。只给最近这一段（最多约 60 KB）；日志总量按「配置 → 基本设置 → 日志体积上限」封顶，超限会丢掉较早的内容并在这里留一行说明。') }),
 		Button({ kind: 'lnk', label: full ? T('只看时刻') : T('显示完整时刻'), title: T('行首时间在「只有时刻」和「完整原始时间戳（带时区）」之间切换。按钮上的字说的是点下去之后会变成什么。'), onClick: actions.full }),
 		Button({ kind: 'lnk', label: T('复制全部'), title: T('按时间先后复制原始日志（与页面上的倒序显示相反），方便直接粘给别人看。'), onClick: actions.copy })
@@ -2184,7 +2207,7 @@ function pollGapSec() {
 /* 没读到时的状态怎么算。返回的永远是「上一帧读数 + 一句老实话」，
  * 绝不返回一个把榜单抹空的空壳 —— 除非手上本来就没东西可保。
  * gaveUp 之后 staleFor 归零且不再变，指纹就不会一直变、面板不会反复重建
- * （重建会换掉「重新读取」按钮节点，真实鼠标的点击有概率被吞掉）。 */
+ * （重建会换掉「刷新」按钮节点，真实鼠标的点击有概率被吞掉）。 */
 function afterMiss(prev, hung, manual) {
 	/* 用户亲手点一次「刷新」失败不该往「连着几次没读到」里记账：
 	 * 那是人在试探，不是链路在抖。不分开的话，多点四下就自己判了认输。 */
@@ -2656,7 +2679,7 @@ function boardKeyOf(st) {
 		 * 改了「定时周期」后那格「完成于」的滞留告警永远不会刷新。 */
 		st.interval, st.started, st.pool, st.qualified, st.usable, st.domains,
 		/* 滞留秒数按 10 秒一档进指纹：横幅能更新，又不会每拍都重建面板；
-		 * 认输之后 staleFor 是 null，指纹彻底稳定，「重新读取」按钮不会被反复换掉。 */
+		 * 认输之后 staleFor 是 null，指纹彻底稳定，「刷新」按钮不会被反复换掉。 */
 		Math.floor((st.staleFor || 0) / 10), st.gaveUp ? 1 : 0 ].join('|');
 }
 
@@ -2957,11 +2980,11 @@ return view.extend({
 			_('抽稀后加进候选池。默认关。'),
 			_('打开后会把 Cloudflare 官方公布的网段抽稀后并进候选池。官方网段有几百万个地址，全测不现实，所以只随机取样一部分。默认关是因为社区源通常已经把近期好用的段捞过一遍了；只有当社区源集体失效、或你想自己从头趟一遍时才有必要打开。'));
 
-		o = src.option(form.Flag, 'reuse_last', _('带上上一轮入围 IP'), _('让榜单跨轮连续。'));
+		o = src.option(form.Flag, 'reuse_last', _('带上上一轮进榜的 IP'), _('让榜单跨轮连续。'));
 		o.rmempty = false;
 		o.description = help('reuse_last',
 			_('让榜单跨轮连续。'),
-			_('把上一轮已经入围的 IP 并回候选池一起测。好处是榜单不会「一轮好一轮空」地跳；代价是如果一个 IP 已经劣化，它会多占一个候选名额，要再过一两轮才掉出去。'));
+			_('把上一轮进榜的那几条 IP 并回候选池一起测。好处是榜单不会「一轮好一轮空」地跳；代价是如果一个 IP 已经劣化，它会多占一个候选名额，要再过一两轮才掉出去。'));
 
 		/* community_sources 不在这里声明 —— 它由 sourcesMap() 单开一张 Map，
 		 * 渲染进「源与检测」页的宿主（原因与真机取证见 6b 的注释）。
@@ -2982,7 +3005,7 @@ return view.extend({
 		o.default = '8';
 		o.description = help('concurrency',
 			_('软路由上 8~16 比较稳。'),
-			_('同时探测的 IP 数。调高能把一轮跑得更快，但每个连接都要占一个 socket 与一份内存；软路由的内存和 conntrack 表通常很紧张，超过 16 容易在测速期间把正常上网也拖慢。'));
+			_('同时探测的 IP 数。调高能把一轮跑得更快，但每个连接都要占一个 socket 与一份内存；软路由的内存和连接跟踪表（conntrack）通常很紧张，超过 16 容易在测速期间把正常上网也拖慢。'));
 
 		o = thr.option(form.Value, 'probe_timeout', _('单 IP 超时（秒）'), _('连接与整请求共用。'));
 		o.datatype = 'and(uinteger,min(1),max(30))';
@@ -3010,13 +3033,13 @@ return view.extend({
 		o.default = '10';
 		o.description = help('keep_count',
 			_('按 TTFB 升序取前 N。'),
-			_('排序规则是 TTFB 升序，同值再看总耗时（r44 换的：总耗时含响应体下载时间，一次偶发 403 的错误页几乎没有 body，按总耗时排会白赚约 500 毫秒抢到榜首）。保留条数不影响测速本身，只影响写出多少条以及页面上列多少行；留 10 条左右足够客户端做故障切换。'));
+			_('排序规则是 TTFB 升序，同值再看总耗时。为什么不看总耗时：它含响应体下载时间，一次偶发 403 的错误页几乎没有正文，按总耗时排会白赚约 500 毫秒抢到榜首。保留条数不影响测速本身，只影响写出多少条以及页面上列多少行；留 10 条左右足够客户端做故障切换。'));
 
-		o = thr.option(form.Flag, 'speed_probe', _('入围后再测下载速度'), _('串行拉大文件测 MB/s。'));
+		o = thr.option(form.Flag, 'speed_probe', _('进榜后再测下载速度'), _('串行拉大文件测 MB/s。'));
 		o.rmempty = false;
 		o.description = help('speed_probe',
 			_('串行拉大文件测 MB/s。'),
-			_('对已经入围的 IP 逐个（串行，不并发）拉一个较大的文件，算出吞吐。这一步很费流量，所以默认只测前若干个 IP。测出来的 MB/s 只作参考，不参与排序。'));
+			_('对进榜的那几条 IP 逐个（串行，不并发）拉一个较大的文件，算出吞吐。这一步很费流量，所以默认只测前若干个 IP。测出来的 MB/s 只作参考，不参与排序。'));
 
 		o = thr.option(form.Value, 'speed_count', _('测吞吐的 IP 个数'), _('N × 单次字节数 = 每轮流量。'));
 		o.datatype = 'and(uinteger,min(0),max(100))';
@@ -3030,7 +3053,7 @@ return view.extend({
 		o.default = '10485760';
 		o.description = help('speed_bytes',
 			_('默认 10MB。'),
-			_('每次吞吐测试下载多少字节。样本太小会被 TCP 慢启动主导，数字抖得没法比较；太大又白白烧流量。10MB 是个经验值。最小 128KB，最大 100MB。'));
+			_('每次吞吐测试下载多少字节。样本太小，测到的全是刚起步那段爬坡（TCP 慢启动），数字抖得没法比较；太大又白白烧流量。10MB 是个经验值。最小 128KB，最大 100MB。'));
 
 		o = thr.option(form.Value, 'speed_timeout', _('单次吞吐测试超时（秒）'), _('比单 IP 超时大得多。'));
 		o.datatype = 'and(uinteger,min(5),max(120))';
@@ -3049,7 +3072,7 @@ return view.extend({
 		o.rmempty = false;
 		o.description = help('colo_probe',
 			_('取 cdn-cgi/trace 的 colo。'),
-			_('对入围 IP 请求一次 /cdn-cgi/trace，取里面的 colo= 字段，就知道这个 IP 实际把你带到哪个 Cloudflare 机房。多花一次请求，但能一眼看出你的流量是不是绕道了。'));
+			_('对进榜的那几条 IP 请求一次 /cdn-cgi/trace，取里面的 colo= 字段，就知道这个 IP 实际把你带到哪个 Cloudflare 机房。多花一次请求，但能一眼看出你的流量是不是绕道了。'));
 
 		o = thr.option(form.Value, 'colo_domain', _('机房查询兜底域名'), _('取不到时换一个再试。'));
 		o.default = 'www.cloudflare.com';
@@ -3067,7 +3090,7 @@ return view.extend({
 		o.default = 'nobody';
 		o.description = help('probe_user',
 			_('默认 nobody，别轻易改。'),
-			_('探测以哪个用户身份发起。默认 nobody 是刻意的：iptables 的透明代理 mangle 链通常会豁免本机发起的连接，但那是针对 root 的豁免；换成 nobody 后走的路径更接近真实转发流量，也就更能测出真实体验。除非你非常清楚自己在做什么，否则保持默认。'));
+			_('探测以哪个用户身份发起。默认 nobody 是刻意的：透明代理通常放行了本机 root 发起的连接（iptables mangle 链里的那条例外），那种流量根本没走代理；换成 nobody 后走的路线和真实转发流量一致，测出来的才是你的实际体验。除非你非常清楚自己在做什么，否则保持默认。'));
 
 		o = thr.option(form.Value, 'annotate', _('ip.txt 注释模板'), _('{colo} / {total} / {speed} 三个占位符。'));
 		o.default = 'cf-ipcheck | {colo} | {total}ms';
@@ -3126,7 +3149,7 @@ return view.extend({
 				 * 其余面板照常（检测仍然能检配置文件里已有的源）。 */
 				clear(P.srcEdit);
 				P.srcEdit.appendChild(el('p', { class: 'note' },
-					T('源清单的编辑表单没能加载。下面仍然可以检测配置文件里已有的源；要增删源，可以先改配置文件（/etc/config/cf_ipcheck 里的 community_sources）再刷新本页。刷新后还是不行，多半是 rpcd 还拿着旧的表单缓存，在路由器上执行 /etc/init.d/rpcd reload 再试。')));
+					T('源清单的编辑表单没能加载。下面仍然可以检测配置文件里已有的源；要增删源，可以先改配置文件（/etc/config/cf_ipcheck 里的 community_sources）再刷新本页。刷新后还是不行，多半是路由器的后台服务 rpcd 还拿着旧的表单缓存，在路由器上执行 /etc/init.d/rpcd reload 再试。')));
 			}).then(function () {
 				/* 恢复上次停留的标签；没有记录就落到榜单页 */
 				/* 地址里那段优先：从分享链接/收藏进来要落在链接指的那一屏；

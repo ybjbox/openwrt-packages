@@ -607,7 +607,7 @@ sample_lines() {
 }
 
 # 预算这样分（三路各有各的位置，否则谁都不占）：
-#   1) reuse_last：上一轮入围 IP 原样保底，保证榜单连续；
+#   1) reuse_last：上一轮进榜 IP 原样保底，保证榜单连续；
 #   2) 社区源：最多占剩下名额的一半 —— 这些是别人实测出来的好 IP，
 #      不该被官方网段的上千个 /24 采样淹没；不足一半时官方多补；
 #   3) 官方网段：用剩余名额在 /24 采样表上等间隔抽稀。
@@ -680,6 +680,18 @@ probe_one() {
 	printf '%s\t0\t0\t0\t0\t0\t%s\t%s\n' "$ip" "$err" "$dom"
 }
 
+# 进度用的"已完成条数"：分片里有内容才算完成（文件在 fork 时就建好了，
+# 空的那个还在跑）。只用内置 test，不 fork 进程 —— 每批都要调一次。
+probe_done() {
+	c=0
+	q=1
+	while [ "$q" -le "$n" ]; do
+		[ -s "$parts/$q.tsv" ] && c=$((c + 1))
+		q=$((q + 1))
+	done
+	printf '%s' "$c"
+}
+
 # 多域名 -> 每个 IP 一行。探测是 ip × domain 的笛卡尔积（不同域名走不同的
 # CF 前置机，同一 IP 的延迟能差几倍），但榜单的语义是“哪个 IP 好用”，
 # 所以这里先按 IP 合并。r44 起的选择顺序是三级：
@@ -702,7 +714,7 @@ aggregate_per_ip() {
 		if ((A[5] + 0) != (B[5] + 0)) return (A[5] + 0) < (B[5] + 0)
 		return (A[6] + 0) < (B[6] + 0)
 	}
-	NF >= 7 {
+	NF == 8 {
 		ip = $1
 		if (!(ip in seen)) { seen[ip] = ++n; order[n] = ip }
 		if ($7 == "none") {
@@ -722,8 +734,10 @@ aggregate_per_ip() {
 
 # 失败分类统计：只看“这个 IP 最终算成功还是算哪类失败”，所以必须在
 # aggregate_per_ip 之后跑，否则同一个 IP 的两个域名会各计一次。
+# 只认恰好 8 字段的行：字段数不对说明这一行本身是坏的（拼行 / 写到一半被杀），
+# 放进统计就会冒出一个引擎从没产生过的键，真机就是这么冒出过 `00` 的。
 err_counts() {
-	awk -F'\t' 'NF >= 7 { c[$7]++ } END { for (k in c) printf "%s:%d\n", k, c[k] }' | sort
+	awk -F'\t' 'NF == 8 { c[$7]++ } END { for (k in c) printf "%s:%d\n", k, c[k] }' | sort
 }
 
 # stdin = 聚合后的 TSV -> stdout = {"none":3,"timeout":1}（键序固定，便于自测）
@@ -1046,7 +1060,7 @@ write_outputs() {
 	counts=${5:-'{}'}
 	tmp=$RUN_DIR/best.tmp
 	printf '%s\n' "$ranked" >"$RUN_DIR/ranked.tsv"
-	# 落地机房只对入围 IP 查一次，结果并进同一张表：
+	# 落地机房只对进榜的那几条 IP 查一次，结果并进同一张表：
 	# best-ip.txt 与 result.json 都从 colored.tsv 生成，避免两个输出内容不一致
 	# （页面上的「落地机房」列读的就是 result.json 的 colo 字段）。
 	#
@@ -1085,7 +1099,12 @@ write_outputs() {
 				spd=$(speed_of "$ip")
 				k=$((k + 1))
 				progress_set speed $k "$C_SPEEDN"
-				sum="$sum $ip=${spd}MB/s"
+				# '-' 拼进 `X=-MB/s` 读起来像"等于负 MB/s"（真机日志里就是这样）
+				if [ -z "$spd" ] || [ "$spd" = '-' ]; then
+					sum="$sum $ip=未测出"
+				else
+					sum="$sum $ip=${spd}MB/s"
+				fi
 			fi
 			printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
 				"$ip" "$code" "$c" "$tls" "$ttfb" "$tot" "$colo" "$spd" "$dom" >>"$sp_tmp"
@@ -1259,13 +1278,20 @@ do_run() {
 	fi
 
 	probed=$RUN_DIR/probed.tsv
-	: >"$probed"
+	# 一路一个分片，全部收尾后再合并成 probed.tsv。原先 8 路共用一个 `>>`，真机
+	# 2026-10-17 08:53 那轮量到过字符级交错：两行被粘成一行（IP 成
+	# `103.21.244.102103.31.4.2`、err 成 `timeouttimeout`）外加一个空行，后果是
+	# 分类里冒出引擎从没产生过的键 `00`、counts 合计 88 ≠ pool 89，一条候选被
+	# 静默吞掉。那颗是 timeout 所以榜单没塌，换成两条成功记录就会少一颗进榜。
+	parts=$RUN_DIR/parts
+	rm -rf "$parts"
+	mkdir -p "$parts"
 	# 先问一次出口有没有被接管：接管了的话后面的数字全都没意义，
 	# 但仍要跑（他可能想知道 clash 自己走哪条路），所以只是打标，不中断。
 	progress_set canary 0 1
 	intercepted=$(canary_check)
 	progress_set canary 1 1
-	[ "$intercepted" = 1 ] && log '本轮结果标记为不可信：逐 IP 差异被出口代理抹平'
+	[ "$intercepted" = 1 ] && log '本轮结果不可信：出口被代理接管，逐 IP 差异被它抹平'
 	# 分母是「候选 × 域名」：探测是笛卡尔积，页面那条进度要说的是总共要发多少请求。
 	ndom=0
 	for d in $(printf '%s' "$C_DOMAINS" | tr ',' ' '); do ndom=$((ndom + 1)); done
@@ -1273,14 +1299,23 @@ do_run() {
 	ptotal=$((pool_n * ndom))
 	progress_set probe 0 $ptotal
 	i=0
+	n=0
 	for ip in $pool; do
 		for dom in $(printf '%s' "$C_DOMAINS" | tr ',' ' '); do
-			probe_one "$ip" "$dom" >>"$probed" &
+			n=$((n + 1))
+			probe_one "$ip" "$dom" >"$parts/$n.tsv" &
 			i=$((i + 1))
-			[ "$i" -ge "$C_CONC" ] && { wait; i=0; progress_set probe "$(wc -l <"$probed" 2>/dev/null || printf 0)" $ptotal; }
+			[ "$i" -ge "$C_CONC" ] && { wait; i=0; progress_set probe "$(probe_done)" $ptotal; }
 		done
 	done
 	wait
+	# 按编号连续合并，不用 glob：没匹配上的 `*.tsv` 会原样交给 cat 变成一条假记录。
+	j=1
+	while [ "$j" -le "$n" ]; do
+		[ -s "$parts/$j.tsv" ] && cat "$parts/$j.tsv"
+		j=$((j + 1))
+	done >"$probed"
+	rm -rf "$parts"
 	progress_set probe $ptotal $ptotal
 
 	# ip × domain 的原始记录先按 IP 合并，再排序截断
@@ -1314,7 +1349,11 @@ do_run() {
 			endwhy=no_results
 		fi
 		carry_previous "$endwhy"
-		log "本轮没有达标结果，不覆盖上一轮榜单（收尾=$endwhy）"
+		if [ "$endwhy" = stopped ]; then
+			log '本轮没有达标结果，不覆盖上一轮榜单（这一轮是你按的停止）'
+		else
+			log '本轮没有达标结果，不覆盖上一轮榜单（跑完了，但没有一条过两道门槛）'
+		fi
 		progress_clear
 		return 0
 	fi
@@ -1709,6 +1748,22 @@ selftest() {
 	check '分类统计输出成合法 JSON 对象' "$got" '{"none":2,"timeout":1}'
 	got=$(printf '' | counts_json 2>/dev/null)
 	check '没有记录时分类是空对象' "$got" '{}'
+	# ---- r65 E1：字段数不对的行不许进统计。真机 8 路共用一个 `>>` 追加，被粘出
+	# 过一行 15 字段的（两颗 IP 连成 `103.21.244.102103.31.4.2`）外加一个空行，
+	# 分类里因此冒出引擎从没产生过的键 `00`，counts 合计 88 ≠ pool 89。----
+	badmix=$(printf '104.16.1.1\t200\t90.0\t40.0\t100.0\t400.0\tnone\ta\n104.16.2.2\t200\t90.0\t40.0\t100.0\t400.0\tnone\tb\n103.21.244.102103.31.4.2\t00\t00\t00\t00\t00\t00\ttimeouttimeout\twww.cloudflare.comwww.cloudflare.com\t0\t0\t0\t0\t0\n1.2.3.4\t200\t1.0\t1.0\t1.0\t1.0\tnone\n\n')
+	got=$(printf '%s\n' "$badmix" | aggregate_per_ip | cut -f1 | tr '\n' ' ')
+	check '拼行与截断行都不进聚合（只留两条好行）' "$got" '104.16.1.1 104.16.2.2 '
+	got=$(printf '%s\n' "$badmix" | aggregate_per_ip | counts_json 2>/dev/null)
+	check '分类里不会有引擎从没产生的键，合计等于好行数' "$got" '{"none":2}'
+	# 进度只数"分片里已经有内容"的那些：文件在 fork 时就建好了，空的还在跑。
+	parts=$ST_SCRATCH/parts
+	n=3
+	mkdir -p "$parts"
+	printf 'x\n' >"$parts/1.tsv"
+	: >"$parts/2.tsv"
+	check '进度只数有内容的分片（空的是还没跑完）' "$(probe_done)" '1'
+	rm -rf "$parts"
 
 	# ---- r44：4xx 串行复测（retest_4xx）------------------------------------
 	# 现场是这一轮的真机数据：131 个候选里 2 个回 403，事后单独复测同一颗是 200。
@@ -2118,7 +2173,7 @@ EOF
 
 case "${1:-}" in
 	run)     do_run ;;
-	run-now) log '收到页面指令 run-now'
+	run-now) log '收到页面指令：立即测速'
 			 if lock_live; then
 				 printf '{"state":"running"}\n'
 				 exit 0
@@ -2137,7 +2192,7 @@ case "${1:-}" in
 	show)    if [ -s "$BEST" ]; then cat "$BEST"; else echo '尚无结果，先执行 cf-ipcheck run'; fi ;;
 	pool)    load_config; build_pool ;;
 	canary)  load_config; printf '{"intercepted":%s}\n' "$(canary_check)" ;;
-	check-sources) log '收到页面指令 check-sources'
+	check-sources) log '收到页面指令：检测源可用性'
 	               check_sources ;;
 	logs)    load_config; trim_log; print_log ;;
 	colo)    if ! valid_ip4 "${2:-}"; then
@@ -2146,7 +2201,7 @@ case "${1:-}" in
 			 fi
 			 load_config; colo_of "${2:-}"
 			 printf '\n' ;;
-	stop)    log '收到页面指令 stop'
+	stop)    log '收到页面指令：停止本轮'
 	         : >"$STOP"; echo '已请求停止（当前这一轮结束后不再继续探测）' ;;
 	daemon)  while :; do
 				 load_config

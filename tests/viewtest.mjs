@@ -50,6 +50,7 @@ const hook = "\nglobalThis.__cf_t = {\n" +
 	"\tget P() { return P; }, goto: goto, savedTab: savedTab,\n" +
 	"\tbuildPage: buildPage, runCmd: runCmd,\n" +
 	"\thashTab: hashTab, writeHashTab: writeHashTab, watchHash: watchHash, logStamp: logStamp, actLogFull: actLogFull,\n" +
+	"\terrKindName: (typeof errKindName === 'function' ? errKindName : null), ERR_KIND: (typeof ERR_KIND !== 'undefined' ? ERR_KIND : null),\n" +
 	"\tactRun: actRun, actCheck: actCheck, actStop: actStop,\n" +
 	"\tsourcesMap: sourcesMap, mountSourcesForm: mountSourcesForm,\n" +
 	"\tpendingSourceEdits: pendingSourceEdits,\n" +
@@ -630,7 +631,8 @@ let strip = t.SummaryStrip(done);
 has('读数带给出候选池', strip, '候选池');
 has('读数带给出达标数', strip, '达标');
 has('读数带给出榜单条数', strip, '榜单');
-has('读数带给出失败分类', strip, 'timeout 9');
+has('读数带给出失败分类（中文说法，不再是引擎码）', strip, '超时 9');
+ok('分类副行里不残留 timeout/dns 这种原始码', !/timeout|dns/.test(textOf(strip)), textOf(strip).slice(0, 120));
 ok('失败分类用 warn 色', byClass(strip, 'warn').length >= 1);
 has('读数带给出完成时间', strip, '完成于');
 /* 那一格里大字与小字不能各说一遍同一件事 */
@@ -647,6 +649,24 @@ has('读数带给出完成时间', strip, '完成于');
 const bare = t.SummaryStrip({ state: 'done', items: [] });
 has('缺 pool 时值显示成破折号', byClass(bare, 'n')[0].textContent, t.DASH);
 eq('缺 counts 时不画未达标格', hasText(bare, '未达标'), false);
+
+/* C2：那一格的副行不能再是引擎的原始码。真机上它显示过 "00 1 · timeout 18"，
+ * 是六张读数卡里唯一一条不是中文的，而页面上没有任何地方解释过这些码。 */
+{
+	const withCounts = t.SummaryStrip({
+		state: 'done', items: [], pool: 89, qualified: 69, usable: 10,
+		counts: { none: 69, timeout: 18, tls: 2, transport_23: 1 },
+		domains: 'www.cloudflare.com',
+		started: '2026-10-17T08:51:59+0800', finished: '2026-10-17T08:54:08+0800'
+	});
+	const cell = byClass(withCounts, 'cell').find(c => /未达标/.test(textOf(c)));
+	const sub = byClass(cell, 'cell-sub')[0].textContent.trim();
+	ok('未达标副行换成中文说法，不留 timeout/tls（"' + sub + '"）',
+		/超时 18/.test(sub) && /握手失败 2/.test(sub) && !/timeout|tls/.test(sub), sub);
+	ok('transport_23 那种翻成「传输出错 23」，把那个数留住', /传输出错 23/.test(sub), sub);
+	eq('认不出的码原样带出，不编一句看着笃定的假话', t.errKindName('00'), '00');
+	eq('stopped 说成「已叫停」', t.errKindName('stopped'), '已叫停');
+}
 
 /* ================================================================== *
  * 6. 榜单面板：五种状态各有各的说法，且互相不串味
@@ -675,7 +695,7 @@ hasNot('运行态不画空榜单表', pane, '按总耗时升序');
 
 pane = t.BoardPane(t.parseStatus(null), noActions);
 has('unreachable 点名是哪个方法，并给出 ucode 这条路的排查项', pane, '调不到 luci.cf-ipcheck 的 status 方法');
-has('unreachable 给出重新读取', pane, '重新读取');
+has('unreachable 给出那颗「刷新」按钮（与工具栏同一颗，名字必须一样）', pane, '刷新');
 
 pane = t.BoardPane(t.parseStatus('not json at all'), noActions);
 has('parse_error 保留原文片段', pane, 'not json at all');
@@ -724,7 +744,7 @@ has('拉不到的源标「拉不到」', sm, '拉不到');
 
 let sp = t.SourcesPane(null, { check: noop });
 has('未检测时说明这一页干嘛', sp, '还没有检测过');
-has('按钮叫「开始检测」（不许叫保存并检测 —— 检测不写配置）', sp, '开始检测');
+has('按钮叫「检测源可用性」（与面板上那颗同名；不许叫保存并检测 —— 检测不写配置）', sp, '检测源可用性');
 ok('这一页不再出现"保存并检测"这种做不到的承诺', !textOf(sp).includes('保存并检测'));
 has('文案把提交路径说清（保存并应用才生效）', sp, '保存并应用');
 sp = t.SourcesPane({ state: 'checking' }, { check: noop });
@@ -2148,6 +2168,39 @@ ok('按钮上的字跟着改成"只看时刻"', byClass(logsPane, 'lnk').some(b 
 t.actLogFull();
 fireTimers(0);
 eq('再点一下回到只显示时刻', firstLts(), '04:28:44');
+
+/* ================================================================== *
+ * 12. 文案体检钉住的几条（r65）：这几条都是"看一眼就懂不了"的形态问题，
+ * 靠人读源码守不住，所以各钉一条字符串级断言。
+ * ================================================================== */
+{
+	/* 提取必须同时覆盖 T('…') 与 _('…')。写成 /T|_\(/ 会只认得后半边，
+	 * 于是 T() 里的问题全部"通过"—— 那是空判，不是干净（r65 差点就这么交上去）。 */
+	const strings = [...src0.matchAll(/(?:^|[^\w$])(?:T|_)\(\s*'((?:[^'\\]|\\.)*)'/gm)].map(m => m[1]);
+	ok('这一趟真的抓到了两类串（判据不能空转）',
+		strings.length > 150 && strings.some(s => /立即测速/.test(s)) && strings.some(s => /带上上一轮/.test(s)),
+		String(strings.length));
+	const join = strings.join('\n');
+	const shown = (re) => { const m = join.match(re); return m ? m[0].slice(0, 46) : '(无)'; };
+	ok('C1 用户可见文案里没有 markdown 记号（** __ `）—— 页面上没人渲染它',
+		!/\*\*|__|`/.test(join), shown(/\*\*[^*]{0,30}|__\S{0,20}|`\S{0,20}/));
+	ok('C3 文案里不带内部改动号（r44 那种），也不留英文 body',
+		!/（r\d\d|\bbody\b/.test(join), shown(/（r\d\d[^）]{0,30}|\bbody\b[^ ]{0,20}/));
+	eq('C5「入围」这个词清零（它混指达标与进榜两层意思）',
+		strings.filter(s => /入围/.test(s)).length, 0);
+	ok('C5 进榜这个说法接管了那 5 处（过门槛叫达标、留下前 N 条叫进榜）',
+		strings.filter(s => /进榜/.test(s)).length >= 5, String(strings.filter(s => /进榜/.test(s)).length));
+	eq('C6 一个动作一个名字：「重新读取 / 开始检测 / 重新检测」都不在了',
+		strings.filter(s => /重新读取|开始检测|重新检测/.test(s)).length, 0);
+	ok('C6 规范名站得住：刷新 与 检测源可用性 都在源码里出现过',
+		/T\('刷新'\)/.test(src0) && /T\('检测源可用性'\)/.test(src0), 'ok');
+	ok('C6 正文里引号指的按钮名与屏幕上的字面一致（不再有「点『重新读取』』）',
+		!/点「重新读取」|点一次检测|回来点检测|再点检测/.test(join), shown(/点「[^」]{2,8}」|点一次检测|回来点检测|再点检测/));
+	eq('C8 接管状态只留一个名字（出口被代理接管）',
+		strings.filter(s => /^出口被接管$/.test(s)).length, 0);
+	ok('C7 术语第一次出现时给一句注解：SNI 那处带括号解释',
+		/SNI（[^）]+）/.test(join), shown(/SNI[^，。]{0,24}/));
+}
 
 console.log(fails === 0 ? '=== view 渲染断言全部通过' : `=== view 渲染断言失败 ${fails} 项`);
 process.exit(fails === 0 ? 0 : 1);
