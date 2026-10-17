@@ -170,7 +170,11 @@ trim_log() {
 	tail -c "$keep" "$LOG" 2>/dev/null | sed '1d' >"$LOG.tmp" || { rm -f "$LOG.tmp"; return 0; }
 	printf '%s 日志已超过上限 %s KB，较早的内容被丢弃（保留最近约 %s KB）\n' \
 		"$(date '+%Y-%m-%dT%H:%M:%S%z')" "$cap" "$((keep / 1024))" >>"$LOG.tmp"
-	chmod 644 "$LOG.tmp" 2>/dev/null || true
+	# 重写后的权限必须跟新建时一致（umask 077 ⇒ 600），不能图省事写 644：
+	# 运行目录是 711（只给探测身份穿过去用），所以**文件位就是唯一的屏障**，
+	# 一旦 644，同机任何用户知道路径就能读整份日志 —— 而日志里现在还有
+	# 那条 Gist 稳定链接（拿到链接即可读，secret gist 只是不被索引）。
+	chmod 600 "$LOG.tmp" 2>/dev/null || true
 	mv -f "$LOG.tmp" "$LOG" 2>/dev/null || { rm -f "$LOG.tmp"; return 0; }
 	return 0
 }
@@ -1163,6 +1167,23 @@ json_escape_file() { # $1=path -> 输出带引号的 JSON 字符串
 	printf '"%s"' "$(sed -e 's/[\\"]/\\&/g' -e 's/$/\\n/' "$1" | tr -d '\n')"
 }
 
+# 从 PATCH 的响应里挑出**我们写的那个文件**的 raw_url，并把它每版都变的那段
+# 40 位 blob sha 去掉 —— 去掉之后这条链接才是不变的、可以拿去订阅的。
+# （实测：19:49 那次响应里是 /raw/ceb9fea…/cf-ip.txt，20:13 那次是
+# /raw/618baa04…/cf-ip.txt；而不带 sha 的 /raw/cf-ip.txt 两次都返回 200，
+# 内容 md5 与本地 best-ip.txt 一字不差。）
+gist_stable_raw() { # $1=响应 JSON $2=文件名 -> 稳定 raw 链接（取不到就空串）
+	printf '%s' "$1" | awk -v want="$2" '
+	BEGIN { RS = "\"" }
+	$0 == want { seen = 1 }
+	seen && !got && $0 ~ /^https:\/\/gist\.githubusercontent/ { got = $0 }
+	END {
+		if (got == "") exit 0
+		sub(/\/raw\/[0-9a-fA-F]{40}\//, "/raw/", got)
+		printf "%s", got
+	}'
+}
+
 upload_gist() {
 	[ -s "$BEST" ] || { log '无结果可上传'; return 1; }
 	[ -n "$C_GIST" ] || { log '未配置 gist_id，跳过上传'; return 1; }
@@ -1193,13 +1214,21 @@ upload_gist() {
 	esac
 	content=$(json_escape_file "$BEST")
 	payload=$(printf '{"files":{"%s":{"content":%s}}}' "$C_GISTFILE" "$content")
-	if printf 'header = "Authorization: Bearer %s"\n' "$tok" | \
+	if gist_resp=$(printf 'header = "Authorization: Bearer %s"\n' "$tok" | \
 		"${CURL_BIN:-curl}" -4 -fsS -X PATCH "https://api.github.com/gists/$C_GIST" \
 		--config - \
 		-H 'Accept: application/vnd.github+json' \
 		-H 'Content-Type: application/json' \
-		--data-binary "$payload" >/dev/null 2>&1; then
+		--data-binary "$payload" 2>/dev/null); then
 		log 'Gist 已更新'
+		# 链接本身当凭证看待（secret gist 只是不被索引，拿到 URL 的人都能读），
+		# 所以只写进 root 私有的日志文件里 —— 见 trim_log 那处权限。
+		gist_link=$(gist_stable_raw "$gist_resp" "$C_GISTFILE")
+		if [ -n "$gist_link" ]; then
+			log "稳定链接（不随更新变化，可直接订阅）：$gist_link"
+		else
+			log '稳定链接没从响应里取到（GitHub 换了字段形状），本轮只记“已更新”'
+		fi
 	else
 		log 'Gist 上传失败'
 		return 1
@@ -1789,6 +1818,46 @@ selftest() {
 	check '端口仍然在 result.json 里' "$(grep -o '"port":[0-9]*' "$RESULT")" '"port":8443'
 	check '上一轮榜单还能被 reuse 读回（去端口不影响提取）' \
 		"$(C_REUSE=1; pool_reuse | tr -d '\n'; C_REUSE=0)" '104.16.1.1'
+	# ---- r69：Gist 稳定链接的取法。API 的 raw_url 里那段 40 位 blob sha 每次
+	# 上传都变（真机 19:49 是 ceb9fea…、20:13 是 618baa04…），去掉它才不变。----
+	g1='{"files":{"cf-ip.txt":{"filename":"cf-ip.txt","raw_url":"https://gist.githubusercontent.com/example/abc123/raw/618baa047124bd0bfb8d833e7288c284d6cd8aa2/cf-ip.txt"}}}'
+	check '稳定链接剥掉每版都变的 40 位 blob sha' \
+		"$(gist_stable_raw "$g1" cf-ip.txt)" 'https://gist.githubusercontent.com/example/abc123/raw/cf-ip.txt'
+	g2='{"files":{"old.txt":{"raw_url":"https://gist.githubusercontent.com/example/abc123/raw/1111111111111111111111111111111111111111/old.txt"},"cf-ip.txt":{"raw_url":"https://gist.githubusercontent.com/example/abc123/raw/2222222222222222222222222222222222222222/cf-ip.txt"}}}'
+	check '多文件 gist 里取的是我们写的那个文件，不是排在前面那个' \
+		"$(gist_stable_raw "$g2" cf-ip.txt)" 'https://gist.githubusercontent.com/example/abc123/raw/cf-ip.txt'
+	check '响应里没有这个文件 ⇒ 空串（日志改说没取到，绝不编一条链接）' \
+		"$(gist_stable_raw '{"files":{}}' cf-ip.txt)" ''
+	# ---- r69：封顶重写日志时不许把它放宽成同机可读（运行目录 711，文件位是唯一屏障）----
+	C_LOGKB=1
+	printf '较早的一行，应该被丢掉\n' >"$LOG"
+	j=0
+	while [ "$j" -lt 30 ]; do
+		printf '0123456789 0123456789 0123456789 0123456789 0123456789 0123456789 0123456789\n' >>"$LOG"
+		j=$((j + 1))
+	done
+	trim_log
+	# 这条断言只在"文件系统真的表达权限"的环境里成立（Git Bash/MSYS 上 chmod 是
+	# 装样子，回读永远是 644）。先探一下，探不出来就明确 SKIP —— 比假装 PASS 诚实，
+	# CI 的 BusyBox 与真机上都是实判。
+	printf 'x' >"$ST_SCRATCH/mode-probe"
+	chmod 600 "$ST_SCRATCH/mode-probe" 2>/dev/null
+	if [ "$(stat -c '%a' "$ST_SCRATCH/mode-probe" 2>/dev/null)" = 600 ]; then
+		check '封顶重写后日志权限是 600（改之前是 644，同机任何用户可读）' \
+			"$(stat -c '%a' "$LOG" 2>/dev/null)" '600'
+	else
+		printf '[SKIP] 本文件系统不表达权限，600 那条交给 CI/真机判\n'
+	fi
+	rm -f "$ST_SCRATCH/mode-probe"
+	check '封顶确实发生了（留了一行说明，不是悄悄截短）' \
+		"$(grep -c '日志已超过上限' "$LOG")" '1'
+	dropped=$(grep -c '较早的一行' "$LOG")
+	kept=$(grep -c '0123456789' "$LOG")
+	note_last=$(tail -n 1 "$LOG" | grep -c '日志已超过上限')
+	check '只留最近一半：最早那行没了、中间数据行还在、说明写在最末' \
+		"$([ "$dropped" = 0 ] && [ "$kept" -ge 3 ] && [ "$note_last" = 1 ] && echo ok)" 'ok'
+	rm -f "$LOG"
+	C_LOGKB=512
 
 	# ---- r44：4xx 串行复测（retest_4xx）------------------------------------
 	# 现场是这一轮的真机数据：131 个候选里 2 个回 403，事后单独复测同一颗是 200。
