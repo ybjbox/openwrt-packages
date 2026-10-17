@@ -232,7 +232,7 @@ else
     # 为什么不直接正则扫引擎全文：Gist 载荷、Cloudflare /ips 的响应、自检里的
     # 样例 JSON 也都是 "key": 形状，扫全文会把它们误当契约（files/content/result）。
     STATUS_KEYS="state started finished pool qualified usable intercepted counts domains items reason budget port enabled interval stage stage_done stage_total upload"
-    ITEM_KEYS="ip code connect_ms tls_ms ttfb_ms total_ms colo speed_mbytes domain"
+    ITEM_KEYS="ip code connect_ms tls_ms ttfb_ms total_ms colo speed_mbytes domain loss jitter_ms net_ttfb_ms ray_ok"
     SOURCE_KEYS="url http rc ips cf_in"
 
     # 先把反斜杠去掉：顶层 JSON 写 "key":，items 那串写 \"key\":，去斜杠后同形。

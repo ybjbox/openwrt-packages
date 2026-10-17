@@ -258,6 +258,12 @@
 .cfp .rk{color:var(--ink-3);font-size:var(--t-xs);font-weight:600}
 .cfp .brow.top .rk{color:var(--accent-ink)}
 .cfp .ip{font-family:var(--mono);font-size:var(--t-sm)}
+/* r71：多样本验证的行内旁注。挂在 IP 单元格副行——定列网格不加子元素，
+ * 只有真有问题（丢包/抖动）时才出现，不把行顶高。 */
+.cfp .ipflags{display:flex;gap:.5em;line-height:1.3}
+.cfp .ipflag{font-size:var(--t-xs);color:var(--ink-3)}
+.cfp .ipflag.warn{color:var(--warn-fg)}
+.cfp .ttfb-net{display:block;font-size:var(--t-xs);color:var(--ink-3);line-height:1.3}
 .cfp .code-ok{color:var(--ok-fg);font-weight:600}
 .cfp .code-odd{color:var(--warn-fg);font-weight:600}
 .cfp .spd{display:inline-flex;align-items:center;justify-content:flex-end;gap:.4em;width:100%;

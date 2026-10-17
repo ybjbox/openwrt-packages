@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r70';
+var VIEW_BUILD = 'r71';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -1061,6 +1061,19 @@ function boardHead(cols) {
 
 /* 数据行。第一名左侧加一道强调竖条；吞吐列带一条相对最小值/最大值的迷你横条。 */
 function boardRow(it, i, cols, maxSpeed) {
+	/* r71 行内旁注：丢包与抖动。不新增列（.brow 是定列网格，多一个子元素就会
+	 * 顶出隐式列把整表带歪），挂在 IP 单元格的副行——只有真有问题时才出现
+	 * （丢包>0 或抖动>100ms），平时不占视觉，也不会把行顶高。
+	 * ray_ok=0 也占一个旁注位：复探响应里没有 CF-RAY 头，这颗 IP 可疑
+	 * （引擎同时在日志里记一笔）——0 才提示，null（没验过）不提示。 */
+	var ipFlags = [];
+	if (it.loss != null && isFinite(Number(it.loss)) && Number(it.loss) > 0)
+		ipFlags.push(el('span', { class: 'ipflag warn', text: '丢包 ' + Math.round(Number(it.loss) * 100) + '%' }));
+	if (it.jitter_ms != null && isFinite(Number(it.jitter_ms)) && Number(it.jitter_ms) > 100)
+		ipFlags.push(el('span', { class: 'ipflag', text: '抖动 ' + ms(it.jitter_ms) }));
+	if (it.ray_ok === 0)
+		ipFlags.push(el('span', { class: 'ipflag warn', text: '未验到 CF-RAY' }));
+
 	var cells = cols.map(function (c) {
 		/* 状态码：2xx 用 ok 色，其余（403/404 也算达标）用 warn 色 */
 		if (c.key === 'code') {
@@ -1068,6 +1081,23 @@ function boardRow(it, i, cols, maxSpeed) {
 			var cls = (code != null && code >= 200 && code < 300) ? 'code-ok' : 'code-odd';
 			return el('div', { class: 'bc ' + c.cls, role: 'cell' },
 				el('span', { class: 'n ' + cls, text: c.get(it, i) }));
+		}
+		/* IP：副行挂多样本验证的旁注（丢包/抖动） */
+		if (c.key === 'ip') {
+			var ipNode = el('span', { class: 'n' + (c.mono ? ' ip' : ''), text: c.get(it, i) });
+			if (ipFlags.length)
+				return el('div', { class: 'bc ' + c.cls, role: 'cell' }, [ipNode, el('div', { class: 'ipflags' }, ipFlags)]);
+			return el('div', { class: 'bc ' + c.cls, role: 'cell' }, ipNode);
+		}
+		/* TTFB：验过且响应头带 server-timing 时，副行给剥掉边缘处理耗时后的净延迟。
+		 * null（没验过或没有该头）不显示——页面要能区分「没验」和「没有这一项」。 */
+		if (c.key === 'ttfb') {
+			var ttfbNode = el('span', { class: 'n', text: c.get(it, i) });
+			var nt = it.net_ttfb_ms;
+			if (nt != null && isFinite(Number(nt)))
+				return el('div', { class: 'bc ' + c.cls, role: 'cell' },
+					[ttfbNode, el('span', { class: 'ttfb-net', text: '净 ' + ms(nt) })]);
+			return el('div', { class: 'bc ' + c.cls, role: 'cell' }, ttfbNode);
 		}
 		/* 吞吐：数字 + 迷你条（条宽 = 相对本轮最大值，一眼看出快慢悬殊） */
 		if (c.key === 'spd') {
@@ -3020,6 +3050,12 @@ return view.extend({
 			_('让榜单跨轮连续。'),
 			_('把上一轮进榜的那几条 IP 并回候选池一起测。好处是榜单不会「一轮好一轮空」地跳；代价是如果一个 IP 已经劣化，它会多占一个候选名额，要再过一两轮才掉出去。'));
 
+		o = src.option(form.Flag, 'neighbor_expand', _('邻居 IP 扩展'), _('对初榜前 5 颗探同段邻居。默认开。'));
+		o.rmempty = false;
+		o.description = help('neighbor_expand',
+			_('对初榜前 5 颗探同段邻居。默认开。'),
+			_('打开后，引擎会对初榜前 5 颗 IP 各探测同一 /24 段内 ±4 的邻居。社区清单测的是"别人的线路"，你这条线上最快的 IP 可能就在某颗好 IP 隔壁、却不在任何清单里 —— 这一步就是去隔壁看看。代价是每轮多约 40 次探测（几十秒）。关掉就完全按社区清单测。'));
+
 		/* community_sources 不在这里声明 —— 它由 sourcesMap() 单开一张 Map，
 		 * 渲染进「源与检测」页的宿主（原因与真机取证见 6b 的注释）。
 		 * 这一节剩下的两个开关仍是候选池的一部分。 */
@@ -3068,6 +3104,13 @@ return view.extend({
 		o.description = help('keep_count',
 			_('按 TTFB 升序取前 N。'),
 			_('排序规则是 TTFB 升序，同值再看总耗时。为什么不看总耗时：它含响应体下载时间，一次偶发 403 的错误页几乎没有正文，按总耗时排会白赚约 500 毫秒抢到榜首。保留条数不影响测速本身，只影响写出多少条以及页面上列多少行；留 10 条左右足够客户端做故障切换。'));
+
+		o = thr.option(form.Value, 'verify_top', _('多样本验证个数'), _('初榜前 N 个各测 3 次取中位数。'));
+		o.datatype = 'and(uinteger,min(0),max(100))';
+		o.default = '30';
+		o.description = help('verify_top',
+			_('初榜前 N 个各测 3 次取中位数。'),
+			_('对初榜前 N 个 IP 各再串行探测 2 次（连同首次共 3 个样本），用中位数参与最终排名，顺带得到丢包率与抖动。家宽上单次采样的抖动有 ±50~100 毫秒，比榜单相邻名次的差距还大 —— 不验证的话"谁排第一"基本是运气，每次轮次的第一名都可能换人。填 0 关闭（回到单次采样）。'));
 
 		o = thr.option(form.Flag, 'speed_probe', _('进榜后再测下载速度'), _('串行拉大文件测 MB/s。'));
 		o.rmempty = false;

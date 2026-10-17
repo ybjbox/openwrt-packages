@@ -630,6 +630,29 @@ has('多域名时出现「胜出域名」列', lb, '胜出域名');
 eq('空榜单不渲染', t.Leaderboard([]), null);
 
 /* ================================================================== *
+ * 4b. r71：多样本验证的行内旁注（丢包/抖动挂 IP 副行、净延迟挂 TTFB 副行）
+ * 定列网格不加子元素；null 与「验了但没问题」必须能区分。
+ * ================================================================== */
+const vItem = {
+	ip: '172.64.52.43', code: 200, connect_ms: 65, tls_ms: 171, ttfb_ms: 312.8, total_ms: 916.9,
+	colo: 'SIN', speed_mbytes: 8.45, domain: 'www.cloudflare.com',
+	loss: 0.33, jitter_ms: 87.5, net_ttfb_ms: 233.5, ray_ok: 1
+};
+const vLb = t.Leaderboard([ vItem ]);
+eq('r71 旁注不新增列（仍是 9 列）', byClass(byClass(vLb, 'head')[0], 'bc').length, 9);
+has('r71 丢包>0 时 IP 副行出「丢包 33%」', vLb, '丢包 33%');
+has('r71 抖动>100ms 时 IP 副行出「抖动 120.5」', t.Leaderboard([ Object.assign({}, vItem, { jitter_ms: 120.5 }) ]), '抖动 120.5');
+has('r71 净延迟挂 TTFB 副行', vLb, '净 233.5');
+const cleanLb = t.Leaderboard([ Object.assign({}, vItem, { loss: 0, jitter_ms: 50, net_ttfb_ms: null }) ]);
+ok('r71 零丢包 + 小抖动时旁注不出现', !/丢包|抖动/.test(textOf(cleanLb)), textOf(cleanLb).slice(0, 160));
+ok('r71 net_ttfb_ms 为 null 时不显示净延迟（区分「没验」与「没有该头」）', !/净 /.test(textOf(cleanLb)));
+const unvLb = t.Leaderboard([ { ip: '1.1.1.1', code: 200, connect_ms: 1, tls_ms: 1, ttfb_ms: 1, total_ms: 1, colo: 'n/a', speed_mbytes: null, domain: 'd', loss: null, jitter_ms: null, net_ttfb_ms: null, ray_ok: null } ]);
+ok('r71 四项全 null（没验过）时任何旁注都不出现', !/丢包|抖动|净 /.test(textOf(unvLb)), textOf(unvLb).slice(0, 160));
+has('r71 ray_ok=0 时提示「未验到 CF-RAY」', t.Leaderboard([ Object.assign({}, vItem, { ray_ok: 0 }) ]), '未验到 CF-RAY');
+ok('r71 ray_ok=null（没验过）时不提示 CF-RAY', !/CF-RAY/.test(textOf(unvLb)));
+ok('r71 抖动 87.5（<=100）不显示抖动旁注', !/抖动/.test(textOf(vLb)));
+
+/* ================================================================== *
  * 5. 汇总读数带：只呈现引擎真给了的数
  * ================================================================== */
 let strip = t.SummaryStrip(done);

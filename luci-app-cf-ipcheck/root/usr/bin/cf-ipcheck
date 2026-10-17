@@ -29,6 +29,11 @@ set -u
 CONF=cf_ipcheck
 RUN_DIR=${CFIP_RUN_DIR:-/tmp/cf-ipcheck}
 ETC_DIR=${CFIP_ETC_DIR:-/etc/cf-ipcheck}
+# cfst 兼容 CSV（r71）的持久路径。放顶层而不只在 load_config：selftest 会绕过
+# load_config 直接驱动 write_outputs/upload_gist，那时也得有定义（set -u）。
+CSV=$ETC_DIR/best-ip.csv
+# Gist 里 CSV 的文件名默认值；load_config 会按 gist_file 现算覆盖它。
+C_CSVFILE=${C_CSVFILE:-cf-ip.csv}
 STATUS=$RUN_DIR/status.json
 RESULT=$RUN_DIR/result.json
 BEST=$ETC_DIR/best-ip.txt
@@ -65,6 +70,16 @@ CFIP_4XX_RETEST_MAX=${CFIP_4XX_RETEST_MAX:-20}
 # 复测之间的间隔（秒）。同样是护栏不是功能：留 1 秒是为了不再制造一次小并发。
 # 可覆盖只为了 selftest 能秒跑完这几条分支。
 CFIP_4XX_RETEST_GAP=${CFIP_4XX_RETEST_GAP:-1}
+# 多样本验证（r71）：对初榜前 verify_top 个各再串行探测 2 次，连同首次共 3 个样本。
+# 为什么必须多样本：单次采样在家宽上噪声 ±50~100ms，比榜单相邻位次的差还大，
+# "谁排第一"不可复现（生态同类项目普遍 4 次取样，见调研结论）。3 是能取到中位数的
+# 最小奇数；复探之间的间隔同理不制造并发。环境变量只给 selftest 秒跑用。
+CFIP_VERIFY_GAP=${CFIP_VERIFY_GAP:-1}
+# 邻居扩展（r71）的两个常数。为什么不进 uci：它们是"怎么找"的细节不是"要不要"——
+# 要不要由 neighbor_expand 一个开关表达，配置面保持最小。只扩初榜前 5 颗、每颗 ±4：
+# 再多一个邻居就多一次探测，而邻居价值随距离衰减——同 /24 隔 5 位以上基本换了机柜。
+NBR_TOP=5
+NBR_RADIUS=4
 LOG=$RUN_DIR/cf-ipcheck.log
 # 运行进度：单行 `<阶段> 已完成 总数`，页面画分环节清单时只在 state=running 时读它。
 # 只在本来就便宜的地方写（每条源一次、每批探测一次、每个 colo/吞吐一次）；
@@ -344,6 +359,19 @@ load_config() {
 	# 日志上限（KB）。下限 16 KB 是因为再小就等于「一轮日志还没写完就被截掉」，
 	# 想不起作用就把这一项填大，而不是填 0 —— 0 会让日志无限长，正是要防的事。
 	C_LOGKB=$(cfg_range log_max_kb 512 16 65536)
+	# 多样本验证个数（r71）：初榜前 N 个各再串行探测 2 次（共 3 样本）取中位数。
+	# 单次采样的家宽噪声比位次差还大，不验证的话"谁第一"是运气；0 = 关闭（旧行为）。
+	C_VERIFY=$(cfg_range verify_top 30 0 100)
+	# 邻居扩展（r71）：对初榜前 5 颗各探同 /24 的 ±4 邻居。社区清单测的是"别人的
+	# 线路"，这颗线路上最快的 IP 可能就在某颗好 IP 隔壁却不在任何清单里。0 = 关闭。
+	C_NBR=$(cfg_range neighbor_expand 1 0 1)
+	# CSV  companion 文件名（r71）：与 gist_file 同源，.txt 换成 .csv（没有 .txt
+	# 后缀就原样加 .csv）。不新增 uci 选项——它就是给 edgetunnel 的 ADDCSV 消费的
+	# 第二份产物，配置面上多一个开关的代价大于它的灵活性。
+	case "$C_GISTFILE" in
+		*.txt) C_CSVFILE=${C_GISTFILE%.txt}.csv ;;
+		*)     C_CSVFILE=$C_GISTFILE.csv ;;
+	esac
 	src_raw=$(cfg_list community_sources)
 	# 只吃 https://：这份清单的全部作用就是告诉你的代理"往这些地址连"，
 	# 走 http 的话它在链路上就能被人改包。混进来的其它行丢掉并说清丢了几条。
@@ -853,6 +881,166 @@ retest_4xx() { # stdin=聚合后的 TSV -> stdout=复测后的 TSV
 	rm -f "$rt_in" "$rt_out"
 }
 
+# ---------------- 邻居 IP 扩展（r71）---------------------------------------
+# stdin = 每行一个 IPv4（通常是初榜前几名）-> stdout = 同 /24 内 ±NBR_RADIUS 的邻居。
+# 为什么值得探：社区清单测的是"别人的线路"，这颗线路上最快的 IP 可能就在某颗好 IP
+# 隔壁却不在任何清单里（生态里 SenPaiScanner 同款做法）。第四段夹在 1~254：
+# .0 是网络地址、.255 是广播地址，探它们只会拿到超时，白占名额。
+neighbor_ips() {
+	awk -v r="$NBR_RADIUS" '
+	{
+		if (split($0, o, ".") != 4) next
+		for (d = -r; d <= r; d++) {
+			h = o[4] + d
+			if (h >= 1 && h <= 254 && d != 0)
+				printf "%s.%s.%s.%d\n", o[1], o[2], o[3], h
+		}
+	}'
+}
+
+# ---------------- 响应头取证（r71）-----------------------------------------
+# $1 = curl -D 落盘的响应头文件 -> stdout: "<ray_ok> <dur>"（dur 无 server-timing 时为空）。
+# CF-RAY 存在 ⇒ 这颗 IP 真的属于 Cloudflare 网络（better-cloudflare-ip 同款做法，
+# 我们只用它作证据记日志，不据此踢 IP —— 头被裁时它会误报）。
+# server-timing 的 dur= 是边缘/Worker 的处理耗时（毫秒）；只有 Worker/Pages 域名才有，
+# www.cloudflare.com 这类没有，所以空是常态。形态可能是 `dur=12.3` 或
+# `dur=12.3, desc;x=1`，只取第一个 dur。
+ray_dur() {
+	[ -f "${1:-}" ] || { printf '0 \n'; return 0; }
+	awk '
+	{
+		if (tolower($1) == "cf-ray:") ray = 1
+		if (tolower($1) == "server-timing:") {
+			# 只在还没取到时找第一个 dur=
+			if (dur == "" && match($0, /dur=[0-9.]+/))
+				dur = substr($0, RSTART + 4, RLENGTH - 4)
+		}
+	}
+	END { printf "%d %s\n", ray ? 1 : 0, dur }' "$1"
+}
+
+# ---------------- 多样本统计（r71）-----------------------------------------
+# stdin = 每个样本一行：ip \t ttfb_ms \t total_ms \t ok(1/0) \t net_ms(可空)
+#   ok 的口径比"可用"严：rc=0 且 200<=code<400（延迟样本要干净响应，403 那种
+#   响应体极小、total 假性偏低，混进来会把中位数拉歪——与 aggregate 的偏好一致）。
+#   net_ms = 该样本剥掉 server-timing dur 后的网络段耗时；没有 dur 的样本留空。
+# stdout = 每 IP 一行：ip \t 中位ttfb \t 中位total \t 丢包率 \t 抖动ms \t 样本数 \t 中位net(可空)
+# 中位数：1 个样本取其本身、2 个取均值、3 个取中间。为什么不用均值：单个离群值
+# （一次 GC、一次拥塞）能把均值拖偏半个身位，中位数这才扛得住。
+verify_stats() {
+	awk -F'\t' '
+	function ins(a, cnt,   i, j, tmp) {   # 插入排序（busybox awk 没有 asort）
+		for (i = 2; i <= cnt; i++) {
+			tmp = a[i]; j = i - 1
+			while (j >= 1 && a[j] + 0 > tmp + 0) { a[j + 1] = a[j]; j-- }
+			a[j + 1] = tmp
+		}
+	}
+	function med(a, cnt) {
+		if (cnt <= 0) return ""
+		ins(a, cnt)
+		if (cnt == 2) return (a[1] + a[2]) / 2
+		return a[(cnt + 1) / 2]
+	}
+	{
+		ip = $1; tot[ip]++
+		if ($4 == 1) {
+			ok[ip]++
+			t[ip] = t[ip] " " ($2 + 0); s[ip] = s[ip] " " ($3 + 0)
+			if ($5 != "") { nn[ip]++; n[ip] = n[ip] " " ($5 + 0) }
+		}
+	}
+	END {
+		for (ip in tot) {
+			ct = split(substr(t[ip], 2), TA, " "); cs = split(substr(s[ip], 2), SA, " ")
+			cn = split(substr(n[ip], 2), NA, " ")
+			loss = (tot[ip] - ok[ip]) / tot[ip]
+			jit = 0
+			if (ct >= 2) {
+				mx = TA[1]; mn = TA[1]
+				for (i = 2; i <= ct; i++) { if (TA[i] + 0 > mx) mx = TA[i] + 0; if (TA[i] + 0 < mn) mn = TA[i] + 0 }
+				jit = mx - mn
+			}
+			# 净延迟也要 %.1f：中位数落在整数上时 awk 的字符串转换会给 "150"，
+			# 与另外两列（TTFB/total）格式不一致，页面上会一列带小数一列不带。
+			printf "%s\t%.1f\t%.1f\t%.2f\t%.1f\t%d\t%s\n", ip, med(TA, ct), med(SA, cs), loss, jit, tot[ip], (cn > 0 ? sprintf("%.1f", med(NA, cn)) : "")
+		}
+	}'
+}
+
+# 验证探测（r71）：与 probe_one 同一条路径，只是把响应头也落一份盘。
+# stdout = "ttfb total"（毫秒，一次小数）；失败返回 1 不输出。
+verify_probe() { # $1=IP $2=域名 $3=头文件
+	raw=$(run_probe "$(probe_cmd "$1" "$2" "/" "$3")" 2>/dev/null)
+	rc=$?
+	[ "$rc" = 0 ] && [ -n "$raw" ] || return 1
+	printf '%s' "$raw" | awk -F, 'NF >= 5 && $1 >= 200 && $1 < 400 { printf "%.1f %.1f", $4 * 1000, $5 * 1000; found = 1 }
+		END { exit found ? 0 : 1 }'
+}
+
+# 多样本验证主流程（r71）。$1 = 验证个数；stdin = qualified 行（8 字段 TSV）。
+# 产出两个边表（都不碰 probed/aggregated 的 8 字段结构，err_counts 依赖它）：
+#   $RUN_DIR/vfields.tsv   ip \t 中位ttfb \t 中位total \t 丢包 \t 抖动 \t 样本数 \t 净延迟 \t ray
+#   $RUN_DIR/verified.tsv  ip \t 中位ttfb \t 中位total   —— 供合并回 qualified 再排名
+# 串行复探、遇 STOP 即停：验证的目的是"量得准"，再开并发就把自己变成拥塞源。
+# 注意 head|while 是子壳：变量带不出来，所以每颗 IP 的中间量都落盘（samp/ray 文件），
+# 收尾时统一汇总——这正是"输出重定向失败会打断整轮"要防的形状，落盘前先建目录。
+verify_top_n() { # $1=个数
+	vtop=${1:-0}
+	: >"$RUN_DIR/vfields.tsv"
+	: >"$RUN_DIR/verified.tsv"
+	[ "$vtop" -gt 0 ] 2>/dev/null || return 0
+	hdr=$RUN_DIR/vhdr
+	samp=$RUN_DIR/vsamp
+	rm -rf "$hdr"; mkdir -p "$hdr" 2>/dev/null || true
+	all=$RUN_DIR/vfields.all
+	: >"$all"
+	head -n "$vtop" | while IFS="$(printf '\t')" read -r ip code c tls ttfb tot err dom; do
+		[ -n "$ip" ] || continue
+		[ -f "$STOP" ] && continue
+		# 样本 1 用首次探测那行（qualified 里的 err 已是 none，即干净响应）
+		s=$samp.$ip
+		: >"$s"
+		printf '%s\t%s\t%s\t1\t\n' "$ip" "$ttfb" "$tot" >>"$s"
+		: >"$hdr/$ip.ray"
+		k=1
+		while [ "$k" -lt 3 ]; do
+			[ -f "$STOP" ] && break
+			hf=$hdr/$ip.$k
+			if m=$(verify_probe "$ip" "$dom" "$hf"); then
+				rd=$(ray_dur "$hf")
+				case "$rd" in '1 '*) printf '1\n' >"$hdr/$ip.ray" ;; esac
+				dur=$(printf '%s' "$rd" | cut -d' ' -f2)
+				if [ -n "$dur" ]; then
+					net=$(printf '%s' "$m" | awk -v d="$dur" '{ n = $1 - d; if (n < 0) n = 0; printf "%.1f", n }')
+				else
+					net=''
+				fi
+				printf '%s\t%s\t%s\t1\t%s\n' "$ip" \
+					"$(printf '%s' "$m" | cut -d' ' -f1)" \
+					"$(printf '%s' "$m" | cut -d' ' -f2)" "$net" >>"$s"
+			else
+				printf '%s\t0\t0\t0\t\n' "$ip" >>"$s"
+				rm -f "$hf"
+			fi
+			k=$((k + 1))
+			[ "$CFIP_VERIFY_GAP" -gt 0 ] 2>/dev/null && sleep "$CFIP_VERIFY_GAP"
+		done
+		row=$(verify_stats <"$s")
+		ray=0
+		[ -s "$hdr/$ip.ray" ] && ray=1
+		if [ -n "$row" ]; then
+			printf '%s\t%s\n' "$row" "$ray" >>"$all"
+		fi
+		rm -f "$s"
+	done
+	mv -f "$all" "$RUN_DIR/vfields.tsv"
+	awk -F'\t' '{ printf "%s\t%s\t%s\n", $1, $2, $3 }' "$RUN_DIR/vfields.tsv" >"$RUN_DIR/verified.tsv"
+	rm -rf "$hdr" 2>/dev/null || true
+	rm -f "$samp".* 2>/dev/null || true
+	return 0
+}
+
 # ---------------- 出口接管自检（canary）--------------------------------------
 # 判定只看一件事：**有没有拿到 HTTP 状态码**。
 # canary 用的是 RFC 5737/5735 保留地址，全球不可路由、没有任何服务在听，
@@ -903,10 +1091,17 @@ run_probe() { # $1 = 交给 shell 执行的命令串
 	fi
 }
 
-probe_cmd() { # $1=IP $2=域名 $3=额外 path -> 拼出 curl 命令串
+probe_cmd() { # $1=IP $2=域名 $3=额外 path $4=响应头转储文件(可省) -> 拼出 curl 命令串
 	# 命令串里写绝对路径：它是整条交给 `su -c` 的，那条 shell 的 PATH 不一定有 /usr/bin。
-	printf "%s -4 -o %s -sS --connect-timeout %s --max-time %s --resolve %s:%s:%s https://%s%s -w '%%{http_code},%%{time_connect},%%{time_appconnect},%%{time_starttransfer},%%{time_total}'" \
-		"${CURL_BIN:-curl}" "$NULL_DEV" "$C_TIMEOUT" "$C_TIMEOUT" "$2" "$C_PORT" "$1" "$2" "${3:-/}"
+	# $4 给多样本验证用（r71）：同一个 curl 把响应头落一份盘，顺带验 CF-RAY 与
+	# server-timing，不多一次请求。注意 -D 与 -o 不冲突（头进文件、身体进 null）。
+	if [ -n "${4:-}" ]; then
+		printf "%s -4 -o %s -sS --connect-timeout %s --max-time %s --resolve %s:%s:%s -D %s https://%s%s -w '%%{http_code},%%{time_connect},%%{time_appconnect},%%{time_starttransfer},%%{time_total}'" \
+			"${CURL_BIN:-curl}" "$NULL_DEV" "$C_TIMEOUT" "$C_TIMEOUT" "$2" "$C_PORT" "$1" "$4" "$2" "${3:-/}"
+	else
+		printf "%s -4 -o %s -sS --connect-timeout %s --max-time %s --resolve %s:%s:%s https://%s%s -w '%%{http_code},%%{time_connect},%%{time_appconnect},%%{time_starttransfer},%%{time_total}'" \
+			"${CURL_BIN:-curl}" "$NULL_DEV" "$C_TIMEOUT" "$C_TIMEOUT" "$2" "$C_PORT" "$1" "$2" "${3:-/}"
+	fi
 }
 
 # 开跑前先以探测身份真写一次 sink。写不动的症状和"网全挂了"完全一样（curl 在联网
@@ -1043,9 +1238,25 @@ speed_fmt() { # $1=curl 的 speed_download（字节/秒）-> MB/s 两位小数�
 	esac
 }
 
+# r71 净速率：stdin = curl -w 的四个量（speed_download size_download time_total
+# time_starttransfer），stdout = 字节/秒（整数）。剥掉首字节之前的等待与连接建立：
+# curl 的 speed_download 是全量平均，把 TCP 慢启动那段爬坡也算进去，所有 IP 一致
+# 偏低、还把稳态差距抹平。size/(total−ttfb) 至少去掉头部效应；退化情形
+# （total<=ttfb，几乎同时完成）退回 speed_download 原值。
+net_rate() {
+	awk '{
+		sd = $1 + 0; sz = $2 + 0; tt = $3 + 0; ts = $4 + 0
+		if (sz > 0 && tt > ts) printf "%.0f", sz / (tt - ts); else printf "%.0f", sd
+	}'
+}
+
 speed_of() { # $1=IP -> "12.34"（MB/s）或 '-'
 	valid_ip4 "$1" || { printf '%s' '-'; return 0; }
-	out=$(run_probe "${CURL_BIN:-curl} -4 -o $NULL_DEV -sS --connect-timeout $C_TIMEOUT --max-time $C_SPEEDTO --resolve $C_SPEEDDOM:$C_PORT:$1 https://$C_SPEEDDOM/__down?bytes=$C_SPEEDKB -w '%{speed_download}'" 2>/dev/null)
+	# r71：一次取回四个量。净速率 = size/(total−ttfb)：curl 的 speed_download 是
+	# 全量平均，把 TCP 慢启动那段爬坡也算进去——所有 IP 一致偏低，还把稳态差距抹平
+	# （生态同款做法：预热期数据不计入有效测量）。剥掉首字节前的等待至少去掉头部
+	# 效应；退化情形（total<=ttfb，几乎同时完成）退回 speed_download 原值。
+	out=$(run_probe "${CURL_BIN:-curl} -4 -o $NULL_DEV -sS --connect-timeout $C_TIMEOUT --max-time $C_SPEEDTO --resolve $C_SPEEDDOM:$C_PORT:$1 https://$C_SPEEDDOM/__down?bytes=$C_SPEEDKB -w '%{speed_download} %{size_download} %{time_total} %{time_starttransfer}'" 2>/dev/null)
 	rc=$?
 	# 半路超时/连接失败时 curl 照样吐一个 speed_download（被截断的假吞吐），
 	# 所以只认退出码 0；否则宁可是 '-'，也不给一个看着像数的假值。
@@ -1053,7 +1264,30 @@ speed_of() { # $1=IP -> "12.34"（MB/s）或 '-'
 		printf '%s' '-'
 		return 0
 	fi
-	speed_fmt "$out"
+	net=$(printf '%s' "$out" | net_rate)
+	speed_fmt "$net"
+}
+
+# cfst 兼容 CSV 行（r71）：$1 = vfields.tsv 路径，stdin = colored.tsv（9 字段）。
+# 七列与 XIU2/CloudflareSpeedTest 的 result.csv 同规格——edgetunnel 的 ADDCSV 直接
+# 消费（按 DLS  Mbps 阈值过滤），社区生态里这是事实标准格式。已发送/已接收反映多样本
+# 验证的真实样本数（未验证的 1/1）；丢包率来自验证；速度未测写 0.00（与 cfst 一致，
+# edgetunnel 的 DLS 会把 0.00 滤掉，不会把未测当成快）。
+csv_rows() {
+	# 用 FILENAME == vf 判首文件而不是 NR == FNR：vfields.tsv 可能是空文件
+	# （verify_top=0 时就是空的），NR == FNR 在首文件为空时会把第二文件的第一行
+	# 当成首文件的记录吃掉——榜首那颗的丢包/样本数就整行错位。
+	# 末尾的 `-` 是 colored.tsv 的 stdin：awk 只给文件参数时根本不读标准输入。
+	awk -F'\t' -v vf="${1:-/dev/null}" '
+	FILENAME == vf { sent[$1] = $6 + 0; loss[$1] = $4 + 0; next }
+	NF >= 9 {
+		n = ($1 in sent && sent[$1] > 0) ? sent[$1] : 1
+		l = ($1 in loss) ? loss[$1] : 0
+		recv = n - int(l * n + 0.5)
+		if (recv < 0) recv = 0
+		sp = ($8 == "" || $8 == "-") ? "0.00" : $8
+		printf "%s,%d,%d,%.2f,%s,%s,%s\n", $1, n, recv, l, $5, sp, $7
+	}' "${1:-/dev/null}" -
 }
 
 write_outputs() {
@@ -1142,13 +1376,24 @@ write_outputs() {
 		printf '{"state":"done","started":"%s","finished":"%s","pool":%s,"qualified":%s,"usable":%s,"intercepted":%s,"counts":%s,"domains":"%s","budget":%s,"port":%s,"items":[' \
 			"${STARTED:-}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$pool_n" "$qualified" \
 			"$(grep -c . "$colored" || true)" "$intercepted" "$counts" "$C_DOMAINS" "$C_BUDGET" "$C_PORT"
-		awk 'BEGIN{FS="\t"}
-			NF >= 9 {
-				if (n++) printf ","
-				sp = ($8 == "" || $8 == "-") ? "null" : $8
-				printf "{\"ip\":\"%s\",\"code\":%s,\"connect_ms\":%s,\"tls_ms\":%s,\"ttfb_ms\":%s,\"total_ms\":%s,\"colo\":\"%s\",\"speed_mbytes\":%s,\"domain\":\"%s\"}",
-					$1, $2, $3, $4, $5, $6, $7, sp, $9
-			}' "$colored"
+		# r71：多样本验证的四个派生键（loss/jitter_ms/net_ttfb_ms/ray_ok）从边表按 IP
+		# 并入。未验证的 IP 四项都是 null——页面据此区分"没验过"和"验了没丢包"，
+		# 不会把 null 读成 0 说成"零丢包"。边表由 do_run 保证存在（可能为空）。
+		# 同理用 FILENAME 判首文件：空边表时 NR == FNR 会吃掉 colored 第一行。
+		[ -f "$RUN_DIR/vfields.tsv" ] || : >"$RUN_DIR/vfields.tsv"
+		awk -v vf="$RUN_DIR/vfields.tsv" '
+		BEGIN { FS = "\t" }
+		FILENAME == vf { loss[$1] = $4; jit[$1] = $5; net[$1] = $7; ray[$1] = $8; next }
+		NF >= 9 {
+			if (n++) printf ","
+			sp = ($8 == "" || $8 == "-") ? "null" : $8
+			l = ($1 in loss) ? loss[$1] : "null"
+			j = ($1 in jit) ? jit[$1] : "null"
+			nt = ($1 in net && net[$1] != "") ? net[$1] : "null"
+			ry = ($1 in ray) ? ray[$1] : "null"
+			printf "{\"ip\":\"%s\",\"code\":%s,\"connect_ms\":%s,\"tls_ms\":%s,\"ttfb_ms\":%s,\"total_ms\":%s,\"colo\":\"%s\",\"speed_mbytes\":%s,\"domain\":\"%s\",\"loss\":%s,\"jitter_ms\":%s,\"net_ttfb_ms\":%s,\"ray_ok\":%s}",
+				$1, $2, $3, $4, $5, $6, $7, sp, $9, l, j, nt, ry
+		}' "$RUN_DIR/vfields.tsv" "$colored"
 		printf ']}\n'
 	} >"$RUN_DIR/result.tmp" && mv "$RUN_DIR/result.tmp" "$RESULT"
 	# 状态的两个副本也走「先写临时、再 rename」：cp 被打断会留下半截 JSON，
@@ -1160,6 +1405,13 @@ write_outputs() {
 	# 反过来（榜单先写）真机上撞过：轮次被杀在中间，文件已经是下一轮的、
 	# status 还停在上一轮，页面和文件各说一套。
 	mv "$tmp" "$BEST"
+	# cfst 兼容 CSV（r71）与 best-ip.txt 同源，写在它之后：这份是给 edgetunnel 的
+	# ADDCSV 消费的第二产物，契约上 best-ip.txt 仍是第一产物，CSV 是加法不是替换。
+	# 同样先写临时再 rename——半截 CSV 会被 edgetunnel 当成缺列直接拒。
+	{
+		printf 'IP 地址,已发送,已接收,丢包率,平均延迟,下载速度(MB/s),地区码\n'
+		csv_rows "$RUN_DIR/vfields.tsv" <"$colored"
+	} >"$RUN_DIR/best-ip.csv.tmp" && mv "$RUN_DIR/best-ip.csv.tmp" "$CSV" || rm -f "$RUN_DIR/best-ip.csv.tmp"
 }
 
 # ---------------- Gist 上传（可选；失败只记日志，不影响本地结果）----------
@@ -1217,6 +1469,14 @@ upload_gist() {
 	esac
 	content=$(json_escape_file "$BEST")
 	payload=$(printf '{"files":{"%s":{"content":%s}}}' "$C_GISTFILE" "$content")
+	# r71：同一 gist 里的第二个文件——cfst 兼容 CSV，给 edgetunnel 的 ADDCSV 直接
+	# 订阅。best-ip.txt 仍是主产物；CSV 缺失（老部署没跑过 r71）时只传一个文件，
+	# 不会因为新文件把上传整个弄失败。
+	if [ -s "$CSV" ]; then
+		csv_content=$(json_escape_file "$CSV")
+		payload=$(printf '{"files":{"%s":{"content":%s},"%s":{"content":%s}}}' \
+			"$C_GISTFILE" "$content" "$C_CSVFILE" "$csv_content")
+	fi
 	if gist_resp=$(printf 'header = "Authorization: Bearer %s"\n' "$tok" | \
 		"${CURL_BIN:-curl}" -4 -fsS -X PATCH "https://api.github.com/gists/$C_GIST" \
 		--config - \
@@ -1231,6 +1491,12 @@ upload_gist() {
 			log "稳定链接（不随更新变化，可直接订阅）：$gist_link"
 		else
 			log '稳定链接没从响应里取到（GitHub 换了字段形状），本轮只记“已更新”'
+		fi
+		if [ -s "$CSV" ]; then
+			csv_link=$(gist_stable_raw "$gist_resp" "$C_CSVFILE")
+			if [ -n "$csv_link" ]; then
+				log "CSV 稳定链接（edgetunnel ADDCSV 可直接订阅）：$csv_link"
+			fi
 		fi
 	else
 		log 'Gist 上传失败'
@@ -1354,19 +1620,74 @@ do_run() {
 		[ -s "$parts/$j.tsv" ] && cat "$parts/$j.tsv"
 		j=$((j + 1))
 	done >"$probed"
-	rm -rf "$parts"
-	progress_set probe $ptotal $ptotal
 
 	# ip × domain 的原始记录先按 IP 合并，再排序截断
-	progress_set rank 0 1
 	agg=$RUN_DIR/aggregated.tsv
 	aggregate_per_ip <"$probed" >"$agg"
 	# 回了 4xx 的那几颗串行给一次复测机会（并发撞 WAF 的抖动，事后复测常常是 200）。
 	# 放在 counts 之前：复测改写了行内容，分类统计必须跟着改后的事实走。
 	retest_4xx <"$agg" >"$RUN_DIR/agg2.tsv" && mv -f "$RUN_DIR/agg2.tsv" "$agg"
 
+	# r71 邻居扩展：拿初榜前 NBR_TOP 颗的同 /24 ±NBR_RADIUS 补探测。社区清单测的是
+	# "别人的线路"，这颗线路上最快的 IP 可能在好 IP 隔壁却不在任何清单里。新候选走
+	# 同一套分片并发（编号接着主探测往下排，绝不重用旧编号——重用会把两轮记录粘成
+	# 一行，正是上面那段注释里 103.21.244.102103.31.4.2 事故的形状），探完追加进
+	# probed.tsv，再重新走一遍合并与 4xx 复测。进度并进 probe 阶段，不新开阶段。
+	if [ "$C_NBR" = 1 ] && [ ! -f "$STOP" ]; then
+		printf '%s\n' "$pool" >"$RUN_DIR/pool.lst"
+		nbr=$(rank_all <"$agg" | head -n "$NBR_TOP" | cut -f1 | neighbor_ips | sort -u | grep -vxF -f "$RUN_DIR/pool.lst" || true)
+		nbr_n=$(printf '%s\n' "$nbr" | grep -c . || true)
+		if [ "$nbr_n" -gt 0 ]; then
+			log "邻居扩展 $nbr_n 个（初榜前 $NBR_TOP 颗的 /24 ±$NBR_RADIUS）"
+			ptotal=$((ptotal + nbr_n * ndom))
+			nbase=$n
+			i=0
+			for ip in $nbr; do
+				for dom in $(printf '%s' "$C_DOMAINS" | tr ',' ' '); do
+					n=$((n + 1))
+					probe_one "$ip" "$dom" >"$parts/$n.tsv" &
+					i=$((i + 1))
+					[ "$i" -ge "$C_CONC" ] && { wait; i=0; }
+				done
+			done
+			wait
+			j=$((nbase + 1))
+			while [ "$j" -le "$n" ]; do
+				[ -s "$parts/$j.tsv" ] && cat "$parts/$j.tsv"
+				j=$((j + 1))
+			done >>"$probed"
+			pool_n=$((pool_n + nbr_n))
+			aggregate_per_ip <"$probed" >"$agg"
+			retest_4xx <"$agg" >"$RUN_DIR/agg2.tsv" && mv -f "$RUN_DIR/agg2.tsv" "$agg"
+		fi
+	fi
+	rm -rf "$parts"
+	progress_set probe $ptotal $ptotal
+
+	progress_set rank 0 1
 	qual=$RUN_DIR/qualified.tsv
 	rank_all <"$agg" >"$qual"
+	# r71 多样本验证：初榜前 C_VERIFY 个各再串行探 2 次（连同首次共 3 样本）取中位数。
+	# 单次采样的家宽噪声（±50~100ms）比相邻位次的差还大，不验证的话"谁第一"是运气。
+	# 中位数合回 qualified 后重新过门槛+排序——单次采样运气好混进来的，会被中位数
+	# 揭穿掉出榜（这是预期行为：验证的意义就是让榜单可复现）。
+	: >"$RUN_DIR/vfields.tsv"
+	if [ "$C_VERIFY" -gt 0 ] && [ ! -f "$STOP" ]; then
+		vrows=$(grep -c . "$qual" || true)
+		if [ "$vrows" -gt 0 ] 2>/dev/null; then
+			verify_top_n "$C_VERIFY" <"$qual"
+			if [ -s "$RUN_DIR/verified.tsv" ]; then
+				awk -F'\t' 'NR == FNR { v[$1] = $2 "\t" $3; next }
+					{ if ($1 in v) { split(v[$1], m, "\t"); $5 = m[1]; $6 = m[2] } print }' \
+					OFS='\t' "$RUN_DIR/verified.tsv" "$qual" >"$RUN_DIR/qual2.tsv" && \
+					mv -f "$RUN_DIR/qual2.tsv" "$qual"
+				rank_all <"$qual" >"$RUN_DIR/qual2.tsv" && mv -f "$RUN_DIR/qual2.tsv" "$qual"
+			fi
+			vkept=$(grep -c . "$RUN_DIR/vfields.tsv" || true)
+			vout=$(grep -c . "$qual" || true)
+			log "多样本验证 $vkept 个（各 3 次取中位数）；验证后达标 $vout 个"
+		fi
+	fi
 	qualified=$(grep -c . "$qual" || true)
 	ranked=$(head -n "$C_KEEP" "$qual")
 	kept=$(printf '%s\n' "$ranked" | grep -c . || true)
@@ -2238,6 +2559,91 @@ selftest() {
 	C_INTERVAL=6
 	rm -f "$LAST_RUN"
 
+	# ---- r71 邻居扩展 / 多样本验证 / 净速率 / CSV / 响应头取证（全部离线）----
+	# 临时文件一律放 $ETC_DIR 下的子目录：ST_SCRATCH 在 CFIP_* 显式设置时是空的，
+	# 而 $ETC_DIR 两条路径下都在（无 CFIP 时它就是 scratch/etc，不会碰真目录）。
+	T=$ETC_DIR/.r71t
+	rm -rf "$T"; mkdir -p "$T" 2>/dev/null || true
+	# 邻居：±4 展开、.0/.255 不探、坏行跳过
+	got=$(printf '172.64.52.43\n' | sh "$0" _neighbors | grep -c . || true)
+	check '邻居扩展：±4 去掉自己共 8 个' "$got" '8'
+	got=$(printf '172.64.52.43\n' | sh "$0" _neighbors | grep -c '^172\.64\.52\.43$' || true)
+	check '邻居扩展：不把自己算进去' "$got" '0'
+	got=$(printf '1.2.3.4\n' | sh "$0" _neighbors | grep -c '^1\.2\.3\.0$' || true)
+	check '邻居扩展：不碰 .0 网络地址' "$got" '0'
+	got=$(printf '1.2.3.4\n' | sh "$0" _neighbors | grep -c . || true)
+	check '邻居扩展：贴边时只生成合法的那几个（4→1,2,3,5..8 共 7 个）' "$got" '7'
+	got=$(printf '1.2.3.253\n' | sh "$0" _neighbors | grep -c . || true)
+	check '邻居扩展：上边界夹到 254（253→249..254 共 5 个）' "$got" '5'
+	got=$(printf 'notanip\n1.2.3.4\n' | sh "$0" _neighbors | grep -c . || true)
+	check '邻居扩展：坏行直接跳过，不退出不报错' "$got" '7'
+
+	# 多样本统计：中位数 / 均值回退 / 丢包 / 抖动 / 净延迟
+	got=$(printf '1.1.1.1\t100\t200\t1\t\n1.1.1.1\t300\t400\t1\t\n1.1.1.1\t200\t300\t1\t\n' | sh "$0" _verifystats)
+	check '多样本：3 个样本取中位（ttfb 200/total 300），抖动 200' "$got" "$(printf '1.1.1.1\t200.0\t300.0\t0.00\t200.0\t3\t')"
+	got=$(printf '1.1.1.1\t100\t200\t1\t\n1.1.1.1\t300\t400\t1\t\n1.1.1.1\t999\t999\t0\t\n' | sh "$0" _verifystats | cut -f4)
+	check '多样本：3 探 1 败 ⇒ 丢包 0.33' "$got" '0.33'
+	got=$(printf '1.1.1.1\t100\t200\t1\t\n1.1.1.1\t300\t400\t1\t\n' | sh "$0" _verifystats | cut -f2,3)
+	check '多样本：2 个样本取均值（200.0/300.0）' "$got" "$(printf '200.0\t300.0')"
+	got=$(printf '1.1.1.1\t150\t250\t1\t\n' | sh "$0" _verifystats | cut -f2,6)
+	check '多样本：1 个样本取其本身，样本数记 1' "$got" "$(printf '150.0\t1')"
+	got=$(printf '1.1.1.1\t100\t200\t1\t50\n1.1.1.1\t200\t300\t1\t150\n1.1.1.1\t300\t400\t1\t250\n' | sh "$0" _verifystats | cut -f7)
+	check '多样本：净延迟同样取中位（150.0）' "$got" '150.0'
+	got=$(printf '1.1.1.1\t100\t200\t1\t\n1.1.1.1\t200\t300\t1\t\n' | sh "$0" _verifystats | cut -f7)
+	check '多样本：没有 dur 的样本 ⇒ 净延迟为空（不是 0）' "$got" ''
+	got=$(printf '1.1.1.1\t0\t0\t0\t\n1.1.1.1\t0\t0\t0\t\n1.1.1.1\t0\t0\t0\t\n' | sh "$0" _verifystats)
+	check '多样本：全败 ⇒ 丢包 1.00，中位退 0' "$got" "$(printf '1.1.1.1\t0.0\t0.0\t1.00\t0.0\t3\t')"
+
+	# 响应头取证：CF-RAY / server-timing 的各种形态
+	vh=$T/vh.txt
+	printf 'HTTP/2 200\r\ncf-ray: abc123-SIN\r\nserver-timing: dur=12.3\r\n' >"$vh"
+	got=$(sh "$0" _raydur "$vh")
+	check '响应头：CF-RAY + server-timing dur=12.3' "$got" '1 12.3'
+	printf 'HTTP/2 200\r\nserver-timing: dur=8.5, desc;x=1\r\ncf-ray: x\r\n' >"$vh"
+	got=$(sh "$0" _raydur "$vh")
+	check '响应头：复合形态只取第一个 dur（8.5）' "$got" '1 8.5'
+	printf 'HTTP/2 200\r\ncontent-type: text/html\r\n' >"$vh"
+	got=$(sh "$0" _raydur "$vh")
+	check '响应头：两者都没有 ⇒ "0 "（ray 0、dur 空）' "$got" '0 '
+	got=$(sh "$0" _raydur "$T/no-such-file")
+	check '响应头：文件不存在 ⇒ "0 "，不报错' "$got" '0 '
+	rm -f "$vh"
+
+	# 净速率：剥 TTFB / 退化回退
+	got=$(printf '1000000 10485760 10.0 1.0\n' | sh "$0" _netrate)
+	check '净速率：10485760 字节 / 9 秒 = 1165084 B/s' "$got" '1165084'
+	got=$(printf '500000 1000 0.5 0.5\n' | sh "$0" _netrate)
+	check '净速率：total<=ttfb 的退化情形退回 speed_download' "$got" '500000'
+	got=$(printf '700000 0 3.0 1.0\n' | sh "$0" _netrate)
+	check '净速率：size=0（没下到东西）时也退回原值' "$got" '700000'
+
+	# CSV 行：七列格式、未测速度 0.00、未验证 1/1、空边表不吃首行
+	vf=$T/vf.tsv
+	: >"$vf"
+	printf '1.1.1.1\t200.0\t300.0\t0.33\t150.0\t3\t150.0\t1\n' >"$vf"
+	printf '1.1.1.1\t200\t10\t5\t200.0\t300.0\tNRT\t11.81\twww.cloudflare.com\n2.2.2.2\t200\t10\t5\t150.0\t250.0\tSIN\t-\twww.cloudflare.com\n' >"$T/cl.tsv"
+	got=$(sh "$0" _csvrows "$vf" <"$T/cl.tsv" | head -1)
+	check 'CSV 行：已验证 IP 用真实样本数与丢包（3,2,0.33）' "$got" '1.1.1.1,3,2,0.33,200.0,11.81,NRT'
+	got=$(sh "$0" _csvrows "$vf" <"$T/cl.tsv" | tail -1)
+	check 'CSV 行：未验证 IP 记 1/1、丢包 0.00、未测速度 0.00' "$got" '2.2.2.2,1,1,0.00,150.0,0.00,SIN'
+	got=$(sh "$0" _csvrows /dev/null <"$T/cl.tsv" | grep -c . || true)
+	check 'CSV 行：空边表时两行都在（NR==FNR 陷阱会吃掉首行）' "$got" '2'
+	rm -f "$vf" "$T/cl.tsv"
+
+	# 新选项的范围夹取（脏值不许打死整轮）
+	check 'verify_top 脏值退回默认 30' "$(cfg_range verify_top_x 30 0 100)" '30'
+	check 'verify_top 超上限夹到 100' "$(cfg_range verify_top_x 200 0 100)" '100'
+	check 'verify_top 低于下限夹到 0' "$(cfg_range verify_top_x -5 0 100)" '0'
+	check 'neighbor_expand 超上限夹到 1' "$(cfg_range neighbor_expand_x 5 0 1)" '1'
+
+	# probe_cmd 第 4 参：响应头转储
+	got=$(sh "$0" _probecmd 1.2.3.4 example.com / "$T/h.out" | grep -c -- "-D $T/h.out" || true)
+	check 'probe_cmd 第 4 参：带上 -D 转储响应头' "$got" '1'
+	got=$(sh "$0" _probecmd 1.2.3.4 example.com / "$T/h.out" | grep -c -- '--resolve example.com:443:1.2.3.4' || true)
+	check 'probe_cmd 第 4 参：不破坏原有 --resolve 与 -o' "$got" '1'
+	got=$(sh "$0" _probecmd 1.2.3.4 example.com / | grep -c -- '-D ' || true)
+	check 'probe_cmd 不给第 4 参时完全没有 -D（旧形状不变）' "$got" '0'
+	rm -rf "$T"
 	if [ -n "$ST_SCRATCH" ]; then
 		rm -rf "$ST_SCRATCH"
 	fi
@@ -2339,10 +2745,19 @@ case "${1:-}" in
 	_cfin)   cf_count_in "${2:-}" ;;
 	_probecmd)
 		load_config
-		probe_cmd "${2:-1.2.3.4}" "${3:-example.com}" "${4:-/}"
+		probe_cmd "${2:-1.2.3.4}" "${3:-example.com}" "${4:-/}" "${5:-}"
 		printf '\n' ;;
 	_annot)  render_annotate "${2:-}" "${3:-}" "${4:-}" "${5:--}" ;;
 	_speedfmt) speed_fmt "${2:-}" ;;
+	# r71 新增内部入口：邻居生成 / 多样本统计 / 响应头取证 / 净速率 / CSV 行。
+	# 全部离线可跑（不联网），selftest 直接驱动。
+	_neighbors) neighbor_ips ;;
+	_verifystats) verify_stats ;;
+	_raydur) ray_dur "${2:-}" ;;
+	_netrate) net_rate ;;
+	_csvrows)
+		# $2 = vfields.tsv 路径，stdin = colored.tsv
+		csv_rows "${2:-/dev/null}" ;;
 	_locklive) lock_live && echo alive || echo dead ;;
 	*)       usage; exit 2 ;;
 esac

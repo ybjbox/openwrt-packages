@@ -20,6 +20,10 @@ config global 'global'
 	# （包括下面每条源的出处标注）。要留档就在页面上看「源可用性检测」，或备份这份文件。
 	option use_official_ranges '0'   # api.cloudflare.com/client/v4/ips 的网段（按 /24 采样）
 	option reuse_last '1'            # 把上一轮入围 IP 带回候选池
+	# 邻居扩展（r71）：对初榜前 5 颗各探同一 /24 段内 ±4 的邻居。社区清单测的是
+	# "别人的线路"，你这条线上最快的 IP 可能就在某颗好 IP 隔壁、却不在任何清单里。
+	# 代价是每轮多约 40 次探测（几十秒）。填 0 关闭，完全按社区清单测。
+	option neighbor_expand '1'
 	# 社区源只是"别人替你挑出来的种子"，好坏仍以本机实测为准。
 	# 每条下面的注释格式：段内/提取数 · 原始出处（2026-09-27 用
 	# api.cloudflare.com/client/v4/ips 逐条算过占比）。bestcf.pages.dev 是别人的
@@ -63,6 +67,11 @@ config global 'global'
 	option ttfb_limit '3000'
 	option total_limit '5000'
 	option keep_count '10'
+
+	# 多样本验证（r71）：对初榜前 N 个各再串行探测 2 次（连同首次共 3 个样本），
+	# 用中位数参与最终排名，顺带得到丢包率与抖动。家宽单次采样抖动 ±50~100ms，
+	# 比相邻名次差距还大，不验证的话"谁排第一"是运气。填 0 关闭（回到单次采样）。
+	option verify_top '30'
 
 	# 只给入围 IP 查落地机房（cdn-cgi/trace 的 colo=），多一轮请求
 	option colo_probe '1'
