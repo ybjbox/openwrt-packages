@@ -44,7 +44,7 @@ CFNETS_TTL=21600
 # 上一轮**起轮**的时刻（一行秒级 epoch）。daemon 用它判断"现在到点没有"。
 # 为什么存 /etc 而不是 /tmp：/tmp 重启就空，于是"设备重启 = 立刻跑一轮"；而 procd 的
 # reload 触发（改完 UCI 点保存并应用就会 stop+start）同理，改一次配置就白烧一轮
-# ——真机一轮要吃掉约 100MB。存在 /etc 后这两条都不会再莫名起轮，
+# ——真机一轮要吃掉约 104.86MB。存在 /etc 后这两条都不会再莫名起轮，
 # 而这份写入和 result.json 同频（每轮一次），flash 磨损可以忽略。
 LAST_RUN=$ETC_DIR/lastrun
 
@@ -2212,7 +2212,7 @@ selftest() {
 	C_GISTTOK=''
 
 	# ---- 周期守门（r41）：改完 UCI 点「保存并应用」会 stop+start daemon，
-	# 没有这道门就是"改一条源、白烧一轮约 100MB"。
+	# 没有这道门就是"改一条源、白烧一轮约 104.86MB"。
 	C_INTERVAL=6
 	rm -f "$LAST_RUN"
 	check 'lastrun 缺失 ⇒ 当没跑过，立刻起轮（别出现永远不测）' "$(last_run_epoch)" '0'
@@ -2311,7 +2311,7 @@ case "${1:-}" in
 				 # 周期守门：距离上一轮起轮不满 interval_hours 就不跑。
 				 # 没有这道门的话，procd 的 reload 触发（改完 UCI 点「保存并应用」
 				 # → init.d 的 reload_service = stop+start）会让每次改配置都白烧一轮
-				 # ——真机一轮约 100MB，而他改的往往只是一条源地址。
+				 # ——真机一轮约 104.86MB，而他改的往往只是一条源地址。
 				 # 按 60 秒一片睡、每片重读配置：关掉总开关或把周期改短都能在一分钟内
 				 # 反映出来，不必等完一觉。
 				 left=$(due_gap)
