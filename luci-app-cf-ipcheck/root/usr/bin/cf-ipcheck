@@ -683,6 +683,51 @@ sample_lines() {
 # 早先是 `sort -u | head -n $C_BUDGET`：官方网段展开后有近六千个 /24 采样，
 # 按字符串序取前 256 个，等于永远只在 103/104 开头那一段里挑，
 # 社区源与 141/162/172/188/198 段一条都进不来。
+# 从 DoH 的 JSON 里取 A 记录的 /16（纯函数）。
+# 为什么不用本机 nslookup：代理插件会把 DNS 劫持成 fake-IP，root 与 nobody 一样
+# 都拿到 198.18.x（实测踩过：池子收敛到 198.18.0.0/16，整轮候选全在假段）。
+pool_parse_doh() {
+	awk '{
+		gsub(/"data":"/, "\n")
+		n = split($0, L, "\n")
+		for (i = 1; i <= n; i++) {
+			ip = L[i]
+			sub(/".*$/, "", ip)
+			if (split(ip, o, ".") == 4 && o[1] + 0 <= 255 && o[2] + 0 <= 255)
+				print o[1] "." o[2] ".0.0/16"
+		}
+	}' | sort -u
+}
+
+# 丢掉明显不是 Cloudflare 边缘的段：回环/内网/链路本地/fake-IP（198.18/15）/组播。
+# 这不是洁癖：真机上代理插件回的就是 198.18.x，收敛到那儿整轮都会白跑。
+pool_filter_cidrs() {
+	awk -F'/' '
+	{
+		split($1, o, ".")
+		a = o[1] + 0; b = o[2] + 0
+		if (a == 0 || a == 10 || a == 127) next
+		if (a == 172 && b >= 16 && b <= 31) next
+		if (a == 192 && b == 168) next
+		if (a == 198 && (b == 18 || b == 19)) next
+		if (a >= 224) next
+		print
+	}'
+}
+
+# 用 DoH 查真实 A 记录（$1=域名 -> 每行一个 /16）。走 curl 是因为本机 DNS 不可信；
+# 阿里 DoH 在国内可达性最好，失败再退腾讯 DoH。
+pool_doh() {
+	c=${CURL_BIN:-curl}
+	for url in "https://dns.alidns.com/resolve?name=$1&type=A" "https://doh.pub/dns-query?name=$1&type=A"; do
+		body=$(run_probe "$c -4 -sS --connect-timeout 4 --max-time 6 '$url'" 2>/dev/null)
+		[ -n "$body" ] || continue
+		out=$(printf '%s' "$body" | pool_parse_doh)
+		[ -n "$out" ] && { printf '%s\n' "$out"; return 0; }
+	done
+	return 0
+}
+
 # 从 nslookup 输出里取 A 记录的 /16（r78，纯函数，供 selftest 驱动）。
 # 只认 "Name:" 之后的 "Address" 行：busybox 在开头也会打 "Server:/Address:"，
 # 那是本地 DNS 的地址，不能当候选段。
@@ -705,9 +750,12 @@ pool_derive() {
 	[ "$C_FOLLOW" = 1 ] || return 0
 	# 必须用探测身份解析：root 的 DNS 可能被代理插件劫持成 fake-IP（198.18.x），
 	# 拿它推导只会得到 198.18.0.0/16 这种假段。
+	out=''
 	for d in $(printf '%s' "$C_DOMAINS" | tr ',' ' '); do
-		run_probe "nslookup $d" 2>/dev/null
-	done | pool_parse_nslookup | sort -u
+		out="$out
+$(pool_doh "$d")"
+	done
+	printf '%s\n' "$out" | pool_filter_cidrs | sort -u
 }
 
 # stdin = IP 列表；$1 = 空格分隔的 CIDR 列表 -> 只留落在这些段里的（纯函数）。
@@ -2336,6 +2384,10 @@ selftest() {
 	check '池抽样：8 个全落在给定段内' "$got" '8'
 	got=$(sh "$0" _poolsample 0 '104.21.0.0/16' 2>/dev/null | grep -c . || true)
 	check '池抽样：要 0 个就一个都不输出' "$got" '0'
+	got=$(printf '%s' '{"Status":0,"Answer":[{"name":"st.xy-nas.eu.org.","type":1,"data":"104.21.65.176"},{"name":"st.xy-nas.eu.org.","type":1,"data":"172.67.147.224"}]}' | sh "$0" _pooldoh 2>/dev/null | tr '\n' ' ')
+	check 'DoH 解析：两条 A 记录都变成 /16' "$got" '104.21.0.0/16 172.67.0.0/16 '
+	got=$(printf '198.18.0.0/16\n10.0.0.0/8\n172.16.0.0/16\n192.168.0.0/16\n104.21.0.0/16\n' | sh "$0" _poolfilter 2>/dev/null | tr '\n' ' ')
+	check '池兜底：fake-IP 与内网段一律丢掉，只留公网段' "$got" '104.21.0.0/16 '
 
 	# 官方网段接口字段：现网返回 ipv4_cidrs，早年是 ipv4_prefixes，两个都得认
 	got=$(printf '%s' '{"result":{"ipv4_cidrs":["173.245.48.0/24","104.28.1.0/24"]}}' | sh "$0" _cidrs 2>/dev/null | tr '
@@ -3070,6 +3122,8 @@ case "${1:-}" in
 	_raydur) ray_dur "${2:-}" ;;
 	_netrate) net_rate ;;
 	_poolparse) pool_parse_nslookup ;;
+	_pooldoh) pool_parse_doh ;;
+	_poolfilter) pool_filter_cidrs ;;
 	_poolin) pool_in_cidrs "${2:-}" ;;
 	_poolsample) pool_sample "${2:-0}" "${3:-}" ;;
 	# 注意别写成 "${2:-/__down?bytes={bytes}}" —— 默认值里那个 } 会被 shell 当成
