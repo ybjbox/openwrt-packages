@@ -1506,6 +1506,21 @@ ok('日志画在自己的滚动容器里', byClass(lp, 'logbox').length === 1);
 has('说明只给最近一段', lp, '60 KB');
 has('给复制入口', lp, '复制全部');
 
+/* r76：日志页自动刷新。默认开（按钮显示「停止刷新」）；停掉后按钮变「自动刷新」，
+ * 说明行里始终保留一个「立即刷新」的手动入口。 */
+{
+	const onLp = t.LogsPane({ state: 'ok', text: '一行\n' }, { refresh: noop, copy: noop, full: noop, auto: noop }, true);
+	has('r76 自动刷新开着时按钮是「停止刷新」', onLp, '停止刷新');
+	hasNot('r76 开着时不再出现「自动刷新」字样（一个按钮一个意思）', onLp, '自动刷新');
+	has('r76 说明行常驻「立即刷新」手动入口', onLp, '立即刷新');
+	const offLp = t.LogsPane({ state: 'ok', text: '一行\n' }, { refresh: noop, copy: noop, full: noop, auto: noop }, false);
+	has('r76 停掉后按钮变「自动刷新」', offLp, '自动刷新');
+	hasNot('r76 停掉后不显示「停止刷新」', offLp, '停止刷新');
+	has('r76 停掉后手动入口还在', offLp, '立即刷新');
+	eq('r76 store 里 logAuto 默认是开', t.store.get().logAuto, true);
+	ok('r76 两参调用（老写法）按"开"处理，不炸', byTag(t.LogsPane({ state: 'ok', text: 'x\n' }, { refresh: noop, copy: noop }), 'button').length >= 1);
+}
+
 /* ================================================================== *
  * 15b. r45：日志最新在上 + 行首时间显示简化（原始串留在悬停里）
  * ================================================================== */

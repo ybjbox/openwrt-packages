@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r75';
+var VIEW_BUILD = 'r76';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -692,6 +692,18 @@ function createStore(initial) {
  *   busy     —— {run/stop/refresh/check: bool}，用来把按钮置成 loading
  *   flash    —— {title, text, tone} | null，页内提示（这版 LuCI 没有 toast）
  */
+/* 日志页自动刷新（r76）。默认开着：进「日志」页就每 4 秒取一次最新，像 tail -f。
+ * 用户点过「停止刷新」就记住这个选择 —— 否则每次进页面都自说自话重新刷，
+ * 那个开关等于摆设。存 localStorage 而不是 uci：这是"这一台浏览器此刻想不想看"
+ * 的临时偏好，不该占设备的配置项，也不该影响别人看到的页面。 */
+var LOG_AUTO_KEY = 'cf-ipcheck.logs.auto';
+function loadLogAuto() {
+	try { return window.localStorage.getItem(LOG_AUTO_KEY) !== '0'; } catch (e) { return true; }
+}
+function saveLogAuto(on) {
+	try { window.localStorage.setItem(LOG_AUTO_KEY, on ? '1' : '0'); } catch (e2) {}
+}
+
 var store = createStore({
 	status: { state: 'never_run', items: [] },
 	sources: null,
@@ -699,7 +711,8 @@ var store = createStore({
 	tab: 'board',
 	busy: {},
 	flash: null,
-	logFull: false
+	logFull: false,
+	logAuto: loadLogAuto()
 });
 
 /* ==========================================================================
@@ -1745,14 +1758,21 @@ function logAnchorTop(box, anchor) {
 	return null;
 }
 
-function LogsPane(lg, actions) {
+function LogsPane(lg, actions, auto) {
 	var kids = [];
 	var busy = store.get().busy && store.get().busy.logs;
+	var autoOn = auto !== false;	/* 缺省按"开"处理，老调用（两参）照旧 */
 
+	/* r76：这个按钮是自动刷新的开关（开着时显示「停止刷新」）。手动取一次的入口
+	 * 挪到底部说明行的「立即刷新」——"一直跟着看"和"只想刷一下"是两种需求，
+	 * 一个按钮用一个名字表达一种动作，别让同一颗按钮看上下文变两个意思。 */
 	kids.push(Section(T('引擎日志'), Button({
-		label: lg ? T('刷新') : T('读取日志'), icon: 'refresh',
-		disabled: busy, busy: busy,
-		onClick: actions.refresh
+		label: autoOn ? T('停止刷新') : T('自动刷新'),
+		icon: autoOn ? 'stop' : 'play',
+		title: autoOn
+			? T('点一下停止自动刷新（现在每 4 秒取一次最新日志）。')
+			: T('点一下恢复自动刷新；只想看一次就用下面的「立即刷新」。'),
+		onClick: actions.auto
 	})));
 
 	if (!lg) {
@@ -1798,7 +1818,9 @@ function LogsPane(lg, actions) {
 			? T('最新的在最上面。行首现在是完整原始时间戳（路由器自己的本地时间并带时区偏移，国内是 +0800，不是 UTC）。只给最近这一段（最多约 60 KB）；日志总量按「配置 → 基本设置 → 日志体积上限」封顶，超限会丢掉较早的内容并在这里留一行说明。要切回只显示时刻，点旁边那个「只看时刻」。')
 			: T('最新的在最上面。行首时间只显示时刻（今天的显示 HH:MM:SS，昨天与更早带上日期），鼠标停在上面能看到原始时间戳与距今多久 —— 手机上悬浮不出来，就用旁边那个「显示完整时刻」。只给最近这一段（最多约 60 KB）；日志总量按「配置 → 基本设置 → 日志体积上限」封顶，超限会丢掉较早的内容并在这里留一行说明。') }),
 		Button({ kind: 'lnk', label: full ? T('只看时刻') : T('显示完整时刻'), title: T('行首时间在「只有时刻」和「完整原始时间戳（带时区）」之间切换。按钮上的字说的是点下去之后会变成什么。'), onClick: actions.full }),
-		Button({ kind: 'lnk', label: T('复制全部'), title: T('按时间先后复制原始日志（与页面上的倒序显示相反），方便直接粘给别人看。'), onClick: actions.copy })
+		Button({ kind: 'lnk', label: T('复制全部'), title: T('按时间先后复制原始日志（与页面上的倒序显示相反），方便直接粘给别人看。'), onClick: actions.copy }),
+		/* r76：手动取一次的固定入口。自动刷新开着时点它只是"不等那 4 秒"。 */
+		Button({ kind: 'lnk', label: T('立即刷新'), title: T('马上取一次最新日志。'), onClick: actions.refresh })
 	]));
 	return el('div', {}, kids);
 }
@@ -2403,6 +2425,40 @@ function startPoll() {
 	pollSec = want;
 }
 
+/* 日志页的自动刷新（r76）：登记到框架的 poll 上，**不自己开定时器**
+ * （视图里不许再写 setInterval 是既有红线 —— 早年自造轮子跟框架 poll 打架，
+ * 出现过页面不刷新还多打一倍 ubus 的事故）。
+ * 只在「日志」页在前台、且没有在跑测速时才真正取：测速中 pollTick 每 3 秒
+ * 已经把日志一起取了，再开一条就是双倍请求、双倍重画，画面上却看不出区别。
+ * 4 秒：日志本来就是一轮一轮写出来的，比状态页慢一拍没问题；慢于 5 秒就让人
+ * 怀疑是不是卡住了。 */
+function logAutoTick() {
+	try {
+		if (!store.get().logAuto || store.get().tab !== 'logs')
+			return;
+		if (pollOn)
+			return;
+		logsRefresh();
+	} catch (e) {
+		/* 一次取不到就吞掉这一拍：不能因为一次异常把整条 poll 拖死 */
+	}
+}
+var logPollOn = false;
+function startLogPoll() {
+	if (logPollOn)
+		return;
+	poll.add(logAutoTick, 4);
+	/* 和 startPoll 同理：首次登记时表可能还没转，必须显式 start（幂等） */
+	poll.start();
+	logPollOn = true;
+}
+function stopLogPoll() {
+	if (!logPollOn)
+		return;
+	logPollOn = false;
+	poll.remove(logAutoTick);
+}
+
 function actRun(btn) {
 	setBusy(btn, true);
 	store.set({ busy: Object.assign({}, store.get().busy, { run: true }) });
@@ -2564,6 +2620,23 @@ function actLogs(btn) {
 	});
 }
 
+/* r76：自动刷新开关。开着的时候按钮是「停止刷新」，点一下停；关着的时候是
+ * 「自动刷新」，点一下恢复并立刻取一次（不然要等满一个周期才看到东西，
+ * 像点了没反应）。 */
+function actLogAuto(btn) {
+	var on = !store.get().logAuto;
+	store.set({ logAuto: on });
+	saveLogAuto(on);
+	if (on && store.get().tab === 'logs')
+		startLogPoll();
+	else
+		stopLogPoll();
+	if (on)
+		logsRefresh();
+	if (btn)
+		setBusy(btn, false);
+}
+
 function actLogFull() {
 	/* 只是换一种显示，不重新读日志：日志文本还在 store 里，翻一下标记就重画
 	 * （logsKeyOf 把这个标记并进了指纹，所以 drawLogs 不会因"内容没变"而跳过）。 */
@@ -2707,6 +2780,12 @@ function goto(id, persist) {
 		}
 	}
 	store.set({ tab: id });
+	/* 自动刷新只在「日志」页开着（r76）：切走就摘掉回调，别让一个看不见的
+	 * 定时器每 4 秒打一次 ubus；切回来且开关是开的再登记上。 */
+	if (id === 'logs' && store.get().logAuto)
+		startLogPoll();
+	else
+		stopLogPoll();
 	if (persist !== false)
 		rememberTab(id);
 	writeHashTab(id);
@@ -2885,17 +2964,17 @@ function buildPage(mapnode) {
 	 *      在中间看着的就不弹回顶部。 */
 	var lastLogsKey = null;
 	var logsDrawn = false;
-	function logsKeyOf(lg, full) {
+	function logsKeyOf(lg, full, auto) {
 		if (!lg)
 			return 'none';
 		if (lg.state !== 'ok')
-			return lg.state;
+			return lg.state + (auto ? ':A' : ':M');
 		/* 显示模式并进指纹：不这么做的话点「显示完整时刻」时日志文本一个字没变，
 		 * drawLogs 会认为"没变化"直接跳过 —— 按钮就变成点了没反应的那一类。 */
-		return 'ok:' + (full ? 'F' : 'T') + ':' + lg.text.length + ':' + lg.text.slice(-60);
+		return 'ok:' + (full ? 'F' : 'T') + (auto ? 'A' : 'M') + ':' + lg.text.length + ':' + lg.text.slice(-60);
 	}
 	function drawLogs(state) {
-		var key = logsKeyOf(state.logs, state.logFull);
+		var key = logsKeyOf(state.logs, state.logFull, state.logAuto);
 		if (logsDrawn && key === lastLogsKey)
 			return;
 		/* 面板不在眼前就别重画。两个理由：一是白重画（看不见，日志一屏上千个节点）；
@@ -2924,7 +3003,7 @@ function buildPage(mapnode) {
 		logsDrawn = true;
 		lastLogsKey = key;
 		clear(logsPane);
-		logsPane.appendChild(LogsPane(state.logs, { refresh: actLogs, copy: actCopyLogs, full: actLogFull }));
+		logsPane.appendChild(LogsPane(state.logs, { refresh: actLogs, copy: actCopyLogs, full: actLogFull, auto: actLogAuto }, state.logAuto));
 		var fresh = logsPane.querySelector ? logsPane.querySelector('.logbox') : null;
 		if (fresh) {
 			var top = null;
@@ -3263,6 +3342,8 @@ return view.extend({
 				 * 不必先到「日志」页点一下「读取日志」 */
 				logsRefresh();
 
+
+
 				return root;
 			});
 		});
@@ -3270,8 +3351,9 @@ return view.extend({
 
 	teardown: function () {
 		/* 离开页面必须停轮询：句柄是模块级的，不停会一直背着已卸载的 DOM，
-		 * 并且每 5 秒打一次 ubus。 */
+		 * 并且每 5 秒打一次 ubus。日志的自动刷新回调同理（r76）。 */
 		stopPoll();
+		stopLogPoll();
 		if (flashTimer) {
 			clearTimeout(flashTimer);
 			flashTimer = null;
