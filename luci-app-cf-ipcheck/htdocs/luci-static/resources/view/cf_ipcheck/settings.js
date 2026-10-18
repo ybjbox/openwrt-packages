@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r77';
+var VIEW_BUILD = 'r78';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -1978,7 +1978,8 @@ var GROUPS = [
 
 var GROUP_OPTIONS = {
 	basic: [ 'enabled', 'interval_hours', 'probe_domains', 'probe_port', 'log_max_kb' ],
-	pool:  [ 'use_official_ranges', 'reuse_last', 'neighbor_expand' ],
+	pool:  [ 'use_official_ranges', 'reuse_last', 'neighbor_expand',
+	         'pool_follow_domain', 'candidate_cidrs' ],
 	probe: [ 'candidate_budget', 'concurrency', 'probe_timeout', 'ttfb_limit', 'total_limit',
 	         'keep_count', 'verify_top', 'speed_probe', 'speed_count', 'speed_bytes', 'speed_timeout',
 	         'speed_domain', 'speed_path', 'colo_probe', 'colo_domain', 'canary_check', 'probe_user', 'annotate' ],
@@ -3148,6 +3149,25 @@ return view.extend({
 		o.description = help('neighbor_expand',
 			_('对初榜前 5 颗探同段邻居。默认开。'),
 			_('打开后，引擎会对初榜前 5 颗 IP 各探测同一 /24 段内 ±4 的邻居。社区清单测的是"别人的线路"，你这条线上最快的 IP 可能就在某颗好 IP 隔壁、却不在任何清单里 —— 这一步就是去隔壁看看。代价是每轮多约 40 次探测（几十秒）。关掉就完全按社区清单测。'));
+
+		o = src.option(form.Flag, 'pool_follow_domain', _('只测你的域名认可的那几段'),
+			_('Cloudflare 只让一部分 IP 服务你的域名，别的段会直接拒绝。'));
+		o.rmempty = false;
+		o.default = '1';
+		o.description = help('pool_follow_domain',
+			_('Cloudflare 只让一部分 IP 服务你的域名，别的段会直接拒绝。'),
+			_('打开后，插件先查一次「探测域名」解析到哪几段（例如 104.21.x.x、172.67.x.x），然后只在这些段里挑候选 IP。'
+			  + ' 为什么要这样：Cloudflare 给每个域名只开放一部分 IP。实测有些域名只在自己那几段上正常返回内容，'
+			  + '换成别的 Cloudflare IP 会直接回一个「禁止访问」的错误页——这种 IP 写进榜单，客户端拿它连你的域名是连不上的。'
+			  + ' 代价：社区清单里的地址大多不在这几段，所以候选会变少，插件会在这些段里随机补一些，保证每轮仍有足够候选。'
+			  + ' 关掉就恢复旧做法（所有 Cloudflare IP 都测），但榜单里的 IP 可能对你的域名无效。'));
+
+		o = src.option(form.Value, 'candidate_cidrs', _('手工指定候选网段（一般留空）'),
+			_('留空就自动跟着探测域名走；填了只用你写的网段。'));
+		o.description = help('candidate_cidrs',
+			_('留空就自动跟着探测域名走；填了只用你写的网段。'),
+			_('填法：英文逗号分隔，例如 104.21.0.0/16,172.67.0.0/16。填了以后就不再自动推导，只在这些网段里挑候选 IP。'
+			  + ' 什么时候用：你明确知道该测哪几段、或想刻意避开某一段时。不确定就留空。'));
 
 		/* community_sources 不在这里声明 —— 它由 sourcesMap() 单开一张 Map，
 		 * 渲染进「源与检测」页的宿主（原因与真机取证见 6b 的注释）。

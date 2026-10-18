@@ -864,6 +864,19 @@ ok('r77 字节数说明里明说这一项可配置、并给了更大更稳的取
 	/这一项是可配置的/.test(src) && /50MB 建议 60 秒/.test(src), '缺可配置提示');
 ok('r77 字节数说明里写清 ≥100MB 会被 speed.cloudflare.com 拒（403）',
 	/≥100MB/.test(src) && /403/.test(src), '缺 100MB 上限提醒');
+/* r78：池收敛两个字段，文案必须说人话 —— 用户在页面上不该看到 1034/同池/边缘校验
+ * 这种只有运维才懂的词。 */
+ok('r78 配置页有「只测你的域名认可的那几段」开关', /'pool_follow_domain'/.test(src));
+ok('r78 配置页有「手工指定候选网段」输入框', /'candidate_cidrs'/.test(src));
+{
+	const short = (src.match(/只让一部分 IP 服务你的域名，别的段会直接拒绝。/g) || []).length;
+	ok('r78 开关的短说明说人话（不出现 1034/同池/边缘校验）',
+		short >= 1 && !/只让一部分[^']*1034/.test(src) && !/同池/.test(src),
+		'short=' + short);
+	ok('r78 长说明给了可照抄的例子（104.21 / 172.67）',
+		/104\.21\.x\.x/.test(src) && /172\.67\.x\.x/.test(src));
+	ok('r78 长说明点明代价（候选会变少、会自动补）', /候选会变少/.test(src) && /随机补/.test(src));
+}
 ok('r64 标签栏的指纹里也不再掺那个常量', !/usable \+ '\|' \+ GROUPS\.length/.test(src));
 
 tabs[1].dispatch('click');

@@ -24,6 +24,12 @@ config global 'global'
 	# "别人的线路"，你这条线上最快的 IP 可能就在某颗好 IP 隔壁、却不在任何清单里。
 	# 代价是每轮多约 40 次探测（几十秒）。填 0 关闭，完全按社区清单测。
 	option neighbor_expand '1'
+	# 只在「探测域名」认可的那几段里找 IP（r78）：Cloudflare 给每个域名只开放
+	# 一部分 IP，别的段会回「禁止访问」错误页。关掉就是所有 CF IP 都测。
+	option pool_follow_domain '1'
+	# 手工指定候选网段（英文逗号分隔，如 104.21.0.0/16,172.67.0.0/16）。
+	# 留空 = 自动跟着探测域名推导。
+	option candidate_cidrs ''
 	# 社区源只是"别人替你挑出来的种子"，好坏仍以本机实测为准。
 	# 每条下面的注释格式：段内/提取数 · 原始出处（2026-09-27 用
 	# api.cloudflare.com/client/v4/ips 逐条算过占比）。bestcf.pages.dev 是别人的
