@@ -1270,17 +1270,48 @@ net_rate() {
 	}'
 }
 
+# 吞吐响应是否当真：stdin = "speed size total ttfb code"；$1 = 请求字节数。
+# 为什么光看 curl 的退出码不够（r75 真机事故）：路由器上 10 个 IP 的吞吐全报
+# 0.01MB/s，同一批 IP 从另一个网络拉同一 URL 却拿到完整 10485760 字节、
+# 1.5–4.7MB/s。差的不是带宽，是路由器收到了一份十几 KB 的错误页/挑战页——
+# curl 对 HTTP 200/403 一样退 0，于是「跑通了但没拿到文件」被当成真吞吐写进榜单，
+# 整列 0.01 就这么来的。所以这里补两道口径：HTTP 必须是 200，且响应体至少
+# 有请求量的 1%。
+# 为什么是 1% 而不是「必须收满」：慢线路会在 --max-time 被截断，那是真测量、
+# 必须保留（10.49MB 拉 25 秒也还有 2.4MB，占 23%）；而错误页/挑战页只有几十 KB
+# （18432 字节 = 0.18%），1% 这条线正好把两者分开。
+speed_valid() { # $1=请求字节数 -> 1（算真吞吐）/ 0（不算）
+	awk -v want="${1:-0}" '{
+		code = $5 + 0; size = $2 + 0
+		printf "%d", (code == 200 && size > 0 && want > 0 && size * 100 >= want) ? 1 : 0
+	}'
+}
+
 speed_of() { # $1=IP -> "12.34"（MB/s）或 '-'
 	valid_ip4 "$1" || { printf '%s' '-'; return 0; }
-	# r71：一次取回四个量。净速率 = size/(total−ttfb)：curl 的 speed_download 是
-	# 全量平均，把 TCP 慢启动那段爬坡也算进去——所有 IP 一致偏低，还把稳态差距抹平
-	# （生态同款做法：预热期数据不计入有效测量）。剥掉首字节前的等待至少去掉头部
-	# 效应；退化情形（total<=ttfb，几乎同时完成）退回 speed_download 原值。
-	out=$(run_probe "${CURL_BIN:-curl} -4 -o $NULL_DEV -sS --connect-timeout $C_TIMEOUT --max-time $C_SPEEDTO --resolve $C_SPEEDDOM:$C_PORT:$1 https://$C_SPEEDDOM/__down?bytes=$C_SPEEDKB -w '%{speed_download} %{size_download} %{time_total} %{time_starttransfer}'" 2>/dev/null)
+	# r71 的四个量（r75 又补了第五个 http_code）——净速率 = size/(total−ttfb)：curl 的
+	# speed_download 是全量平均，把 TCP 慢启动那段爬坡也算进去——所有 IP 一致偏低，
+	# 还把稳态差距抹平（生态同款做法：预热期数据不计入有效测量）。剥掉首字节前的
+	# 等待至少去掉头部效应；退化情形（total<=ttfb，几乎同时完成）退回 speed_download 原值。
+	# r75：末位那个状态码是判「回的是不是文件」的依据。只看 rc 会让「服务端回了个
+	# 十几 KB 的 403 挑战页」混成真吞吐（真机那整列 0.01MB/s 就是它）。
+	out=$(run_probe "${CURL_BIN:-curl} -4 -o $NULL_DEV -sS --connect-timeout $C_TIMEOUT --max-time $C_SPEEDTO --resolve $C_SPEEDDOM:$C_PORT:$1 https://$C_SPEEDDOM/__down?bytes=$C_SPEEDKB -w '%{speed_download} %{size_download} %{time_total} %{time_starttransfer} %{http_code}'" 2>/dev/null)
 	rc=$?
 	# 半路超时/连接失败时 curl 照样吐一个 speed_download（被截断的假吞吐），
 	# 所以只认退出码 0；否则宁可是 '-'，也不给一个看着像数的假值。
 	if [ "$rc" != 0 ]; then
+		printf '%s' '-'
+		return 0
+	fi
+	# r75：rc=0 只说明「HTTP 事务跑完了」，不说明「回的是那个文件」。非 200 或者
+	# 响应体小得不像文件时记一笔取证（只有 ip/code/size 三个数字，不落任何配置内容），
+	# 然后按「未测出」处理 —— 假数比 '-' 更糟：它会把错误页当成最慢的那颗排序，
+	# 还会让页面/CSV 显示一个看起来像实测值的数。
+	if [ "$(printf '%s' "$out" | speed_valid "$C_SPEEDKB")" != 1 ]; then
+		printf '%s\t%s\t%s\n' "$1" \
+			"$(printf '%s' "$out" | awk '{ print ($5 + 0) }')" \
+			"$(printf '%s' "$out" | awk '{ print ($2 + 0) }')" \
+			>>"$RUN_DIR/speed_reject.tsv" 2>/dev/null
 		printf '%s' '-'
 		return 0
 	fi
@@ -1348,6 +1379,9 @@ write_outputs() {
 	if [ "$C_SPEED" = 1 ] && [ "$intercepted" = 0 ]; then
 		sp_tmp=$RUN_DIR/colored_sp.tsv
 		: >"$sp_tmp"
+		# 取证文件每轮重开：RUN_DIR 是复用的（只有 mkdir -p），不清零就会把上一轮
+		# 那批「没测出」的 IP 当成这一轮的，日志里的 N 也就越滚越大。
+		: >"$RUN_DIR/speed_reject.tsv"
 		k=0
 		progress_set speed 0 "$C_SPEEDN"
 		sum=''
@@ -1372,6 +1406,15 @@ write_outputs() {
 		# 同口径）—— 10485760 字节 = 10.49 MB，不是 10MB（那是 MiB 口径）。
 		# awk 只在真有实测时跑一次（每轮至多一次），不在探测路径上。
 		[ "$k" = 0 ] || log "吞吐实测 $k 个（每个 $C_SPEEDKB 字节 = $(printf '%s' "$C_SPEEDKB" | awk '{ printf "%.2f", $1 / 1000000 }') MB，单位十进制 MB/s）:$sum"
+		# r75：有 IP 回的不是那个文件（错误页/挑战页）时，speed_of 已经把它记成 '-'。
+		# 这行日志是给人看的解释 —— 否则页面上一片 '-' 会被当成「引擎坏了」，
+		# 而实情是服务端没给文件。样例只带 ip/code/size 三个数字，不碰配置内容。
+		rej_n=$(grep -c . "$RUN_DIR/speed_reject.tsv" 2>/dev/null || true)
+		rej_n=${rej_n:-0}
+		if [ "$rej_n" -gt 0 ]; then
+			rej_one=$(head -1 "$RUN_DIR/speed_reject.tsv" | awk -F'\t' '{ printf "%s code=%s 只有 %s 字节", $1, $2, $3 }')
+			log "吞吐有 $rej_n 个没测出真实吞吐（服务端回的不是文件：如 $rej_one），已记作未测出"
+		fi
 	fi
 
 	: >"$tmp"
@@ -2339,6 +2382,20 @@ selftest() {
 	got=$(sh "$0" _speedfmt 'abc' 2>/dev/null)
 	check 'curl 吐出非数字时也是 -' "$got" '-'
 
+	# r75：吞吐响应必须「回的是那个文件」才算数（真机事故：整列 0.01MB/s 其实是
+	# 十几 KB 的错误页/挑战页）。判据两条：HTTP 200 + 响应体 ≥ 请求量的 1%。
+	# 1% 这条线是给「慢线路被 --max-time 截断」留的活口 —— 那是真测量，要保留。
+	got=$(printf '1049000 10485760 1.0 0.1 200\n' | sh "$0" _speedvalid 10485760)
+	check '吞吐判据：200 且收满 ⇒ 算数（1）' "$got" '1'
+	got=$(printf '15000 20480 0.5 0.2 403\n' | sh "$0" _speedvalid 10485760)
+	check '吞吐判据：403 挑战页（20KB）⇒ 不算（0）' "$got" '0'
+	got=$(printf '1000 15000 0.5 0.2 200\n' | sh "$0" _speedvalid 10485760)
+	check '吞吐判据：200 但只有 15KB（0.14%）⇒ 不算（0）' "$got" '0'
+	got=$(printf '1000 5000000 3 0.5 200\n' | sh "$0" _speedvalid 10485760)
+	check '吞吐判据：慢线路被 max-time 截断只剩 5MB（48%）⇒ 仍算数（1）' "$got" '1'
+	got=$(printf '0 0 0.5 0.2 000\n' | sh "$0" _speedvalid 10485760)
+	check '吞吐判据：状态码 000（没建成事务）⇒ 不算（0）' "$got" '0'
+
 	# 运行锁的存活判定。回归点：只判断文件存在会把被 OOM 打断的轮次
 	# 永久当成“还在跑”，服务静默停摆。
 	maxp=$(cat /proc/sys/kernel/pid_max 2>/dev/null || echo 32768)
@@ -2783,6 +2840,9 @@ case "${1:-}" in
 	_verifystats) verify_stats ;;
 	_raydur) ray_dur "${2:-}" ;;
 	_netrate) net_rate ;;
+	# r75 新增：stdin = "speed size total ttfb code"；$2 = 请求字节数。
+	# 判「这份吞吐算不算真吞吐」是纯算术，不联网，所以 selftest 能直接钉住它。
+	_speedvalid) speed_valid "${2:-0}" ;;
 	_csvrows)
 		# $2 = vfields.tsv 路径，stdin = colored.tsv
 		csv_rows "${2:-/dev/null}" ;;
