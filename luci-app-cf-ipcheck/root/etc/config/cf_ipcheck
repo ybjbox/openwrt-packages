@@ -91,6 +91,10 @@ config global 'global'
 	option speed_bytes '10485760'
 	option speed_timeout '25'
 	option speed_domain 'speed.cloudflare.com'
+	# 吞吐请求路径（r77）：{bytes} 换成字节数、{size} 换成带单位的写法（10m/50m）。
+	# 有些端点把大小写在路径里（cmliu/CF-Workers-SpeedTestURL 只认 /10m 这种），
+	# 那种端点填 /{bytes} 或 /{size} 即可。模板里没有占位符会自动补 ?bytes=N。
+	option speed_path '/__down?bytes={bytes}'
 
 	# 出口接管自检：每轮先用 RFC 5737 保留地址探一次。保留地址本该连不上，
 	# 一旦它返回任何 HTTP 状态码，说明本机 443 被 OpenClash 之类透明代理接管，

@@ -345,6 +345,19 @@ load_config() {
 	C_SPEEDKB=$(cfg_range speed_bytes 10485760 131072 104857600)
 	C_SPEEDTO=$(cfg_range speed_timeout 25 5 120)
 	C_SPEEDDOM=$(one_host "$(cfg speed_domain 'speed.cloudflare.com')" speed.cloudflare.com)
+	# 吞吐请求的路径模板（r77）。默认 `/__down?bytes={bytes}`（speed.cloudflare.com
+	# 与本插件自建端点的写法）。两种占位符：{bytes} 原始字节数、{size} 带十进制
+	# 单位（10m/200m，与 cmliu/CF-Workers-SpeedTestURL 的 k=1000/m=1000000 同口径）。
+	# 为什么要有这个选项：有些端点把大小编码在路径里（/10m、/10485760），根本不看
+	# 查询参数 —— 路径写死的话，这类端点永远接不上。模板必须以 / 开头。
+	C_SPEEDPATH=$(cfg speed_path '/__down?bytes={bytes}')
+	case "$C_SPEEDPATH" in
+		/*) ;;
+		*)
+			log "吞吐路径必须以 / 开头（现在是「$C_SPEEDPATH」），本轮退回默认路径"
+			C_SPEEDPATH='/__down?bytes={bytes}'
+			;;
+	esac
 	# probe_user 填 none 是“故意用 root 直发”的哨兵值：uci 分不清“显式留空”
 	# 和“没有这一项”（空值 get 回来 rc=1），只能靠哨兵表达。
 	C_PUSER=$(cfg probe_user nobody)
@@ -1287,6 +1300,34 @@ speed_valid() { # $1=请求字节数 -> 1（算真吞吐）/ 0（不算）
 	}'
 }
 
+# 吞吐请求 URL（r77）：把路径模板里的 {bytes}/{size} 换成实际值。
+# 模板里一个占位符都没有时，退回默认的 ?bytes=N 拼接 —— 免得"填了路径却没生效"
+# 这种静默失败（用户以为换了端点，实际还在打老路径）。
+speed_url() { # $1=模板 $2=域名 $3=端口 $4=字节数
+	awk -v tmpl="$1" -v dom="$2" -v port="$3" -v bytes="$4" '
+	function rep(s, key, val,   out, i) {
+		out = ""
+		while ((i = index(s, key)) > 0) {
+			out = out substr(s, 1, i - 1) val
+			s = substr(s, i + length(key))
+		}
+		return out s
+	}
+	BEGIN {
+		b = bytes + 0
+		if (b <= 0) b = 10485760
+		# {size}：能整除才带单位，否则给原始字节数（cmliu 那类端点两种都认）
+		if (b % 1000000000 == 0) size = (b / 1000000000) "g"
+		else if (b % 1000000 == 0) size = (b / 1000000) "m"
+		else if (b % 1000 == 0) size = (b / 1000) "k"
+		else size = sprintf("%d", b)
+		p = rep(rep(tmpl, "{bytes}", sprintf("%d", b)), "{size}", size)
+		if (p == tmpl)
+			p = tmpl (index(tmpl, "?") > 0 ? "&" : "?") "bytes=" sprintf("%d", b)
+		printf "https://%s:%s%s", dom, port, p
+	}'
+}
+
 speed_of() { # $1=IP -> "12.34"（MB/s）或 '-'
 	valid_ip4 "$1" || { printf '%s' '-'; return 0; }
 	# r71 的四个量（r75 又补了第五个 http_code）——净速率 = size/(total−ttfb)：curl 的
@@ -1295,7 +1336,7 @@ speed_of() { # $1=IP -> "12.34"（MB/s）或 '-'
 	# 等待至少去掉头部效应；退化情形（total<=ttfb，几乎同时完成）退回 speed_download 原值。
 	# r75：末位那个状态码是判「回的是不是文件」的依据。只看 rc 会让「服务端回了个
 	# 十几 KB 的 403 挑战页」混成真吞吐（真机那整列 0.01MB/s 就是它）。
-	out=$(run_probe "${CURL_BIN:-curl} -4 -o $NULL_DEV -sS --connect-timeout $C_TIMEOUT --max-time $C_SPEEDTO --resolve $C_SPEEDDOM:$C_PORT:$1 https://$C_SPEEDDOM/__down?bytes=$C_SPEEDKB -w '%{speed_download} %{size_download} %{time_total} %{time_starttransfer} %{http_code}'" 2>/dev/null)
+	out=$(run_probe "${CURL_BIN:-curl} -4 -o $NULL_DEV -sS --connect-timeout $C_TIMEOUT --max-time $C_SPEEDTO --resolve $C_SPEEDDOM:$C_PORT:$1 $(speed_url "$C_SPEEDPATH" "$C_SPEEDDOM" "$C_PORT" "$C_SPEEDKB") -w '%{speed_download} %{size_download} %{time_total} %{time_starttransfer} %{http_code}'" 2>/dev/null)
 	rc=$?
 	# 半路超时/连接失败时 curl 照样吐一个 speed_download（被截断的假吞吐），
 	# 所以只认退出码 0；否则宁可是 '-'，也不给一个看着像数的假值。
@@ -2381,6 +2422,18 @@ selftest() {
 	check '没测到吞吐时是 - 而不是 0.00' "$got" '-'
 	got=$(sh "$0" _speedfmt 'abc' 2>/dev/null)
 	check 'curl 吐出非数字时也是 -' "$got" '-'
+	# r77：吞吐 URL 模板。默认值必须与老行为逐字一致；{bytes}/{size} 两种占位符
+	# 要各自成立；没有占位符时退回 ?bytes= 拼接（避免"填了路径却没生效"）。
+	got=$(sh "$0" _speedurl '/__down?bytes={bytes}' speed.cloudflare.com 443 10485760 2>/dev/null)
+	check '吞吐 URL：默认模板与原行为一致' "$got" 'https://speed.cloudflare.com:443/__down?bytes=10485760'
+	got=$(sh "$0" _speedurl '/{bytes}' st.example.com 443 10485760 2>/dev/null)
+	check '吞吐 URL：{bytes} 换成原始字节数（cmliu 只认路径里的数字）' "$got" 'https://st.example.com:443/10485760'
+	got=$(sh "$0" _speedurl '/{size}' st.example.com 443 50000000 2>/dev/null)
+	check '吞吐 URL：{size} 整除时带十进制单位（50m）' "$got" 'https://st.example.com:443/50m'
+	got=$(sh "$0" _speedurl '/{size}' st.example.com 443 10485760 2>/dev/null)
+	check '吞吐 URL：{size} 不整除时退回字节数' "$got" 'https://st.example.com:443/10485760'
+	got=$(sh "$0" _speedurl '/plain' st.example.com 443 10485760 2>/dev/null)
+	check '吞吐 URL：模板没有占位符时自动补 ?bytes=' "$got" 'https://st.example.com:443/plain?bytes=10485760'
 
 	# r75：吞吐响应必须「回的是那个文件」才算数（真机事故：整列 0.01MB/s 其实是
 	# 十几 KB 的错误页/挑战页）。判据两条：HTTP 200 + 响应体 ≥ 请求量的 1%。
@@ -2840,6 +2893,13 @@ case "${1:-}" in
 	_verifystats) verify_stats ;;
 	_raydur) ray_dur "${2:-}" ;;
 	_netrate) net_rate ;;
+	# 注意别写成 "${2:-/__down?bytes={bytes}}" —— 默认值里那个 } 会被 shell 当成
+	# 参数展开的右括号，展开完把剩下的 } 当字面量拼回结果，URL 末尾多一个 }。
+	_speedurl)
+		st_tmpl=$2
+		[ -n "$st_tmpl" ] || st_tmpl='/__down?bytes={bytes}'
+		speed_url "$st_tmpl" "${3:-speed.cloudflare.com}" "${4:-443}" "${5:-10485760}"
+		;;
 	# r75 新增：stdin = "speed size total ttfb code"；$2 = 请求字节数。
 	# 判「这份吞吐算不算真吞吐」是纯算术，不联网，所以 selftest 能直接钉住它。
 	_speedvalid) speed_valid "${2:-0}" ;;

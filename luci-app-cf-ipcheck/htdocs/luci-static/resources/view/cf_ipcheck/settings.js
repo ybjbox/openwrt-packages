@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r76';
+var VIEW_BUILD = 'r77';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -1978,10 +1978,10 @@ var GROUPS = [
 
 var GROUP_OPTIONS = {
 	basic: [ 'enabled', 'interval_hours', 'probe_domains', 'probe_port', 'log_max_kb' ],
-	pool:  [ 'use_official_ranges', 'reuse_last' ],
+	pool:  [ 'use_official_ranges', 'reuse_last', 'neighbor_expand' ],
 	probe: [ 'candidate_budget', 'concurrency', 'probe_timeout', 'ttfb_limit', 'total_limit',
-	         'keep_count', 'speed_probe', 'speed_count', 'speed_bytes', 'speed_timeout',
-	         'speed_domain', 'colo_probe', 'colo_domain', 'canary_check', 'probe_user', 'annotate' ],
+	         'keep_count', 'verify_top', 'speed_probe', 'speed_count', 'speed_bytes', 'speed_timeout',
+	         'speed_domain', 'speed_path', 'colo_probe', 'colo_domain', 'canary_check', 'probe_user', 'annotate' ],
 	gist:  [ 'upload_gist', 'gist_id', 'gist_file', 'gist_token', 'token_file' ]
 };
 
@@ -3223,7 +3223,7 @@ return view.extend({
 		o.default = '10485760';
 		o.description = help('speed_bytes',
 			_('默认 10485760 字节（10.49MB）。'),
-			_('每次吞吐测试下载多少字节。样本太小，测到的全是刚起步那段爬坡（TCP 慢启动），数字抖得没法比较；太大又白白烧流量。10485760 字节（10.49MB）是个经验值。最小 131072 字节（约 131.07KB），最大 104857600 字节（约 104.86MB）。'));
+			_('每次吞吐测试下载多少字节 —— 这一项是可配置的，按你的线路和对准确度的要求调。样本太小，测到的全是刚起步那段爬坡（TCP 慢启动），数字抖得没法比较；样本大一些更接近稳态带宽、轮与轮之间也更稳，代价是流量和耗时都按倍数涨，并且要同时把下面的「单次吞吐测试超时」调大（10.49MB 用 25 秒够，50MB 建议 60 秒）。实测提醒：speed.cloudflare.com 在请求 ≥100MB 时直接回 403（只有 1 字节），所以别贴着 104857600 的上限填；想更稳用 50000000（50MB）就够，再大收益递减。默认 10485760（10.49MB）是流量与稳定性的折中。最小 131072 字节（约 131.07KB）。'));
 
 		o = thr.option(form.Value, 'speed_timeout', _('单次吞吐测试超时（秒）'), _('比单 IP 超时大得多。'));
 		o.datatype = 'and(uinteger,min(5),max(120))';
@@ -3237,6 +3237,14 @@ return view.extend({
 		o.description = help('speed_domain',
 			_('同样用 --resolve 钉到候选 IP。'),
 			_('用来拉大文件的域名。默认 speed.cloudflare.com，它会返回一个够大的响应体。换成自己的大文件地址也可以，但要确认它同样经由 Cloudflare，否则测的是另一条路径。'));
+
+		o = thr.option(form.Value, 'speed_path', _('吞吐请求路径'), _('一般保持 /__down?bytes={bytes}。'));
+		o.default = '/__down?bytes={bytes}';
+		o.placeholder = '/__down?bytes={bytes}';
+		o.description = help('speed_path',
+			_('一般保持 /__down?bytes={bytes}。'),
+			_('拉大文件时请求的那个路径。两个占位符：{bytes} 换成原始字节数（如 /10485760），{size} 换成带十进制单位（如 /10m、/50m，单位口径 k=1000、m=1000000）。之所以做成模板：有些端点把大小写在路径里、根本不看查询参数（比如 cmliu/CF-Workers-SpeedTestURL，它只认 /10m 这种路径）—— 那种端点把这里填成 /{bytes} 或 /{size} 就能接上。模板里一个占位符都没有时，引擎会自动在后面补 ?bytes=N，不会静默失效。必须以 / 开头。'));
+
 
 		o = thr.option(form.Flag, 'colo_probe', _('识别落地机房'), _('取 cdn-cgi/trace 的 colo。'));
 		o.rmempty = false;

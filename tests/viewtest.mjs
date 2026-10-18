@@ -857,6 +857,13 @@ ok('r74 读屏补白不以标点开头（拼出来是「榜单 共 N 条结果�
 	!/^[，,、]/.test(sr.textContent) && /^共 \d+ 条结果$/.test(sr.textContent), sr.textContent);
 eq('那段话不改变徽标数量（还是一个小圆点 + 一段隐藏文字）', byClass(tabs[0], 'tab-n').length, 1);
 ok('r64 配置页不再发徽标数（分组数是常量，常量不是信息）', !/count: GROUPS\.length/.test(src));
+/* r77：吞吐路径模板 + 「文件大小可配置」的提示必须真的落在界面文案里 */
+ok('r77 配置页有「吞吐请求路径」字段与两个占位符说明',
+	/'speed_path'/.test(src) && /\{bytes\}/.test(src) && /\{size\}/.test(src), 'speed_path/占位符缺失');
+ok('r77 字节数说明里明说这一项可配置、并给了更大更稳的取舍',
+	/这一项是可配置的/.test(src) && /50MB 建议 60 秒/.test(src), '缺可配置提示');
+ok('r77 字节数说明里写清 ≥100MB 会被 speed.cloudflare.com 拒（403）',
+	/≥100MB/.test(src) && /403/.test(src), '缺 100MB 上限提醒');
 ok('r64 标签栏的指纹里也不再掺那个常量', !/usable \+ '\|' \+ GROUPS\.length/.test(src));
 
 tabs[1].dispatch('click');
@@ -2267,8 +2274,10 @@ eq('再点一下回到只显示时刻', firstLts(), '04:28:44');
 		String(strings.length));
 	const join = strings.join('\n');
 	const shown = (re) => { const m = join.match(re); return m ? m[0].slice(0, 46) : '(无)'; };
+	/* /__down 是插件自己的吞吐路径，双下划线是路径的一部分，不是 markdown ——
+	 * 先把它换成占位词再判，其余地方的 __ 仍然算记号。 */
 	ok('C1 用户可见文案里没有 markdown 记号（** __ `）—— 页面上没人渲染它',
-		!/\*\*|__|`/.test(join), shown(/\*\*[^*]{0,30}|__\S{0,20}|`\S{0,20}/));
+		!/\*\*|__|`/.test(join.replace(/\/__down/g, '/DOWN')), shown(/\*\*[^*]{0,30}|__\S{0,20}|`\S{0,20}/));
 	ok('C3 文案里不带内部改动号（r44 那种），也不留英文 body',
 		!/（r\d\d|\bbody\b/.test(join), shown(/（r\d\d[^）]{0,30}|\bbody\b[^ ]{0,20}/));
 	eq('C5「入围」这个词清零（它混指达标与进榜两层意思）',
