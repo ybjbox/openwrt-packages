@@ -2316,7 +2316,19 @@ selftest() {
 
 	# r78：池收敛的三个纯函数。真机事故：域名只认自己那两个段，池外 IP 全被拒绝，
 	# 榜单写进池外 IP 后客户端反而连不上。
-	got=$(printf 'Server://t//t127.0.0.1//nAddress://t127.0.0.1:53//n//nName://tst.example.com//nAddress 1: 104.21.65.176\nAddress 2: 172.67.147.224\n' | sh "$0" _poolparse 2>/dev/null | tr '\n' ' ')
+	# 用 echo 逐行造样本，并改用空格分隔：真机上 nslookup 有的是 tab 有的是空格，
+	# 解析器两种都吃；这么写还避开了 printf 的 \t/\n 在不同 shell 里语义不一致的坑
+	# （CI 的 busybox 容器里就栽过一次，返回空）。
+	got=$(
+		{
+			echo 'Server: 127.0.0.1'
+			echo 'Address: 127.0.0.1:53'
+			echo
+			echo 'Name: st.example.com'
+			echo 'Address 1: 104.21.65.176'
+			echo 'Address 2: 172.67.147.224'
+		} | sh "$0" _poolparse 2>/dev/null | tr '\n' ' '
+	)
 	check '池推导：只取 Name 之后的 A 记录，本地 DNS 地址不算' "$got" '104.21.0.0/16 172.67.0.0/16 '
 	got=$(printf '104.21.0.1\n104.22.0.1\n172.67.255.254\n172.68.0.1\n198.41.211.93\n' | sh "$0" _poolin '104.21.0.0/16 172.67.0.0/16' 2>/dev/null | tr '\n' ' ')
 	check '池过滤：段边界内外分得清（.0 与 .255 之外都算段内）' "$got" '104.21.0.1 172.67.255.254 '
