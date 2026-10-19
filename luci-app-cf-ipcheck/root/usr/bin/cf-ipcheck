@@ -1744,6 +1744,37 @@ gist_stable_raw() { # $1=响应 JSON $2=文件名 -> 稳定 raw 链接（取不�
 	}'
 }
 
+# 把 curl 的退出码翻成一句人话（纯函数，走 selftest）。
+# 为什么不用 curl 自己的 stderr：那句是英文，而且不同版本措辞不同；
+# 日志是给用户看的，所以只翻最常见的几个，其余带上原始码。
+gist_why_rc() {
+	case "$1" in
+		6)  printf '域名解析失败' ;;
+		7)  printf '连不上 api.github.com' ;;
+		28) printf '超时' ;;
+		35) printf 'TLS 握手失败' ;;
+		55) printf '请求没发出去' ;;
+		56) printf '响应没收全' ;;
+		60) printf '证书校验失败' ;;
+		*)  printf '网络错误（curl rc=%s）' "$1" ;;
+	esac
+}
+
+# 从 GitHub 的报错正文里取 message（纯函数，走 selftest）。
+# 拿不到就返回空串 —— 日志里宁可只说 HTTP 码，也不甩一坨 JSON。
+gist_api_msg() {
+	printf '%s' "${1:-}" | awk '
+	{
+		gsub(/"message"[ \t]*:[ \t]*"/, "\n")
+		n = split($0, L, "\n")
+		if (n >= 2) {
+			m = L[2]
+			sub(/".*$/, "", m)
+			if (m != "") printf "（%s）", substr(m, 1, 100)
+		}
+	}'
+}
+
 upload_gist() {
 	[ -s "$BEST" ] || { log '无结果可上传'; return 1; }
 	[ -n "$C_GIST" ] || { log '未配置 gist_id，跳过上传'; return 1; }
@@ -1782,12 +1813,37 @@ upload_gist() {
 		payload=$(printf '{"files":{"%s":{"content":%s},"%s":{"content":%s}}}' \
 			"$C_GISTFILE" "$content" "$C_CSVFILE" "$csv_content")
 	fi
-	if gist_resp=$(printf 'header = "Authorization: Bearer %s"\n' "$tok" | \
-		"${CURL_BIN:-curl}" -4 -fsS -X PATCH "https://api.github.com/gists/$C_GIST" \
-		--config - \
-		-H 'Accept: application/vnd.github+json' \
-		-H 'Content-Type: application/json' \
-		--data-binary "$payload" 2>/dev/null); then
+	# r80：失败要当场说清原因，并在本轮内重试（3 次，3 秒/6 秒退避）。
+	# 为什么不留给下一轮：一轮 6 小时，这段时间订阅端拿到的还是上一轮的旧榜单；
+	# 而 gist 失败通常只是一次网络抖动，重试两次多半就好了。
+	try_n=0
+	gist_ok=0
+	while [ "$try_n" -lt 3 ] && [ "$gist_ok" = 0 ]; do
+		try_n=$((try_n + 1))
+		gist_resp=$(printf 'header = "Authorization: Bearer %s"\n' "$tok" | \
+			"${CURL_BIN:-curl}" -4 -sS -X PATCH "https://api.github.com/gists/$C_GIST" \
+			--config - \
+			-H 'Accept: application/vnd.github+json' \
+			-H 'Content-Type: application/json' \
+			--data-binary "$payload" -w '\n%{http_code}' 2>"$RUN_DIR/gist.err")
+		rc=$?
+		gist_code=$(printf '%s' "$gist_resp" | tail -n 1)
+		gist_body=$(printf '%s' "$gist_resp" | sed '$d')
+		if [ "$rc" = 0 ] && { [ "$gist_code" = 200 ] || [ "$gist_code" = 201 ]; }; then
+			gist_ok=1
+			break
+		fi
+		if [ "$rc" != 0 ]; then
+			gist_why=$(gist_why_rc "$rc")
+			[ -s "$RUN_DIR/gist.err" ] && gist_why="$gist_why（$(head -c 120 "$RUN_DIR/gist.err" | tr '\n' ' ')）"
+		else
+			gist_why="HTTP $gist_code$(gist_api_msg "$gist_body")"
+		fi
+		log "Gist 上传失败（第 $try_n/3 次）：$gist_why"
+		[ "$try_n" -lt 3 ] && sleep $((try_n * 3))
+	done
+	rm -f "$RUN_DIR/gist.err"
+	if [ "$gist_ok" = 1 ]; then
 		log 'Gist 已更新'
 		# 链接本身当凭证看待（secret gist 只是不被索引，拿到 URL 的人都能读），
 		# 所以只写进 root 私有的日志文件里 —— 见 trim_log 那处权限。
@@ -1804,7 +1860,7 @@ upload_gist() {
 			fi
 		fi
 	else
-		log 'Gist 上传失败'
+		log 'Gist 上传失败：已在本轮内重试 3 次，先不等了（下一轮会再试）'
 		return 1
 	fi
 }
@@ -2388,6 +2444,14 @@ selftest() {
 	check 'DoH 解析：两条 A 记录都变成 /16' "$got" '104.21.0.0/16 172.67.0.0/16 '
 	got=$(printf '198.18.0.0/16\n10.0.0.0/8\n172.16.0.0/16\n192.168.0.0/16\n104.21.0.0/16\n' | sh "$0" _poolfilter 2>/dev/null | tr '\n' ' ')
 	check '池兜底：fake-IP 与内网段一律丢掉，只留公网段' "$got" '104.21.0.0/16 '
+	got=$(sh "$0" _gistmsg '{"message":"Bad credentials","documentation_url":"x"}' 2>/dev/null)
+	check 'Gist 报错取 message（人话，不甩 JSON）' "$got" '（Bad credentials）'
+	got=$(sh "$0" _gistmsg '' 2>/dev/null)
+	check 'Gist 报错正文为空时不硬凑' "$got" ''
+	got=$(sh "$0" _gistwhy 7 2>/dev/null)
+	check 'Gist 失败原因：curl rc=7 翻成「连不上」' "$got" '连不上 api.github.com'
+	got=$(sh "$0" _gistwhy 99 2>/dev/null)
+	check 'Gist 失败原因：没登记的码带上原始值' "$got" '网络错误（curl rc=99）'
 
 	# 官方网段接口字段：现网返回 ipv4_cidrs，早年是 ipv4_prefixes，两个都得认
 	got=$(printf '%s' '{"result":{"ipv4_cidrs":["173.245.48.0/24","104.28.1.0/24"]}}' | sh "$0" _cidrs 2>/dev/null | tr '
@@ -3121,6 +3185,8 @@ case "${1:-}" in
 	_verifystats) verify_stats ;;
 	_raydur) ray_dur "${2:-}" ;;
 	_netrate) net_rate ;;
+	_gistmsg) gist_api_msg "${2:-}" ;;
+	_gistwhy) gist_why_rc "${2:-0}" ;;
 	_poolparse) pool_parse_nslookup ;;
 	_pooldoh) pool_parse_doh ;;
 	_poolfilter) pool_filter_cidrs ;;

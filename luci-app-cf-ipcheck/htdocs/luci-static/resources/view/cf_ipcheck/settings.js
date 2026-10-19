@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r79';
+var VIEW_BUILD = 'r80';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -3012,6 +3012,12 @@ function buildPage(mapnode) {
 				top = 0;
 			else if (anchor)
 				top = logAnchorTop(fresh, anchor);
+			/* 首绘（此前根本没有容器）没有"保持阅读位置"这回事：直接回顶部。
+			 * 旧逻辑在这里退化成 keepTop(0) + 整段高度 = 滚到最底部，于是每次
+			 * 进日志页第一眼看到的是最早的那几行（r80 真机复现：scrollTop 等于
+			 * 最大可滚距离）。 */
+			if (top === null && !box)
+				top = 0;
 			if (top === null)
 				/* 锚那一行已经掉出保留窗口（或被封顶截掉）：退回到按高度差补偿 */
 				top = keepTop + Math.max(0, fresh.scrollHeight - oldH);
