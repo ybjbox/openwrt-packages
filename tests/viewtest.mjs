@@ -598,13 +598,13 @@ hasNot('列头不该出现「下载 MB/s」这种长词', heads, '云计算');
 /* 列对齐：数字列 r，IP / 域名 l */
 function headCls(lb) { return byClass(byClass(lb, 'head')[0], 'bc').map(d => d.attrs['class']); }
 let hc = headCls(lb);
-eq('名次列右对齐', hc[0], 'bc r');
-eq('IP 列左对齐', hc[1], 'bc l');
-eq('HTTP 列右对齐', hc[2], 'bc r');
-eq('TCP 列右对齐', hc[3], 'bc r');
-eq('总计列右对齐', hc[6], 'bc r');
-eq('机房列右对齐', hc[7], 'bc r');
-eq('吞吐列右对齐', hc[8], 'bc r');
+eq('名次列右对齐', hc[0].replace(/ c-key-\w+$/, ''), 'bc r');
+eq('IP 列左对齐', hc[1].replace(/ c-key-\w+$/, ''), 'bc l');
+eq('HTTP 列右对齐', hc[2].replace(/ c-key-\w+$/, ''), 'bc r');
+eq('TCP 列右对齐', hc[3].replace(/ c-key-\w+$/, ''), 'bc r');
+eq('总计列右对齐', hc[6].replace(/ c-key-\w+$/, ''), 'bc r');
+eq('机房列右对齐', hc[7].replace(/ c-key-\w+$/, ''), 'bc r');
+eq('吞吐列右对齐', hc[8].replace(/ c-key-\w+$/, ''), 'bc r');
 eq('表头行有 role=row', heads.attrs.role, 'row');
 eq('表头单元格有 columnheader', byClass(heads, 'bc')[0].attrs.role, 'columnheader');
 

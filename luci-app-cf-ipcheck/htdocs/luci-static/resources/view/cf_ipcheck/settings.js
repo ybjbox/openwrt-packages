@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r81';
+var VIEW_BUILD = 'r82';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -1068,7 +1068,8 @@ function domainKinds(items) {
 function boardHead(cols) {
 	return el('div', { class: 'brow head', role: 'row' },
 		cols.map(function (c) {
-			return el('div', { class: 'bc ' + c.cls, role: 'columnheader', text: c.h });
+			/* 带上列键：窄屏要按列隐藏时，靠下标数格子太脆（多域名会多一列）。 */
+			return el('div', { class: 'bc ' + c.cls + ' c-key-' + c.key, role: 'columnheader', text: c.h });
 		}));
 }
 
@@ -1088,19 +1089,20 @@ function boardRow(it, i, cols, maxSpeed) {
 		ipFlags.push(el('span', { class: 'ipflag warn', text: '未验到 CF-RAY' }));
 
 	var cells = cols.map(function (c) {
+		var keyCls = ' c-key-' + c.key;
 		/* 状态码：2xx 用 ok 色，其余（403/404 也算达标）用 warn 色 */
 		if (c.key === 'code') {
 			var code = it.code;
 			var cls = (code != null && code >= 200 && code < 300) ? 'code-ok' : 'code-odd';
-			return el('div', { class: 'bc ' + c.cls, role: 'cell' },
+			return el('div', { class: 'bc ' + c.cls + keyCls, role: 'cell' },
 				el('span', { class: 'n ' + cls, text: c.get(it, i) }));
 		}
 		/* IP：副行挂多样本验证的旁注（丢包/抖动） */
 		if (c.key === 'ip') {
 			var ipNode = el('span', { class: 'n' + (c.mono ? ' ip' : ''), text: c.get(it, i) });
 			if (ipFlags.length)
-				return el('div', { class: 'bc ' + c.cls, role: 'cell' }, [ipNode, el('div', { class: 'ipflags' }, ipFlags)]);
-			return el('div', { class: 'bc ' + c.cls, role: 'cell' }, ipNode);
+				return el('div', { class: 'bc ' + c.cls + keyCls, role: 'cell' }, [ipNode, el('div', { class: 'ipflags' }, ipFlags)]);
+			return el('div', { class: 'bc ' + c.cls + keyCls, role: 'cell' }, ipNode);
 		}
 		/* TTFB：验过且响应头带 server-timing 时，副行给剥掉边缘处理耗时后的净延迟。
 		 * null（没验过或没有该头）不显示——页面要能区分「没验」和「没有这一项」。 */
@@ -1108,9 +1110,9 @@ function boardRow(it, i, cols, maxSpeed) {
 			var ttfbNode = el('span', { class: 'n', text: c.get(it, i) });
 			var nt = it.net_ttfb_ms;
 			if (nt != null && isFinite(Number(nt)))
-				return el('div', { class: 'bc ' + c.cls, role: 'cell' },
+				return el('div', { class: 'bc ' + c.cls + keyCls, role: 'cell' },
 					[ttfbNode, el('span', { class: 'ttfb-net', text: '净 ' + ms(nt) })]);
-			return el('div', { class: 'bc ' + c.cls, role: 'cell' }, ttfbNode);
+			return el('div', { class: 'bc ' + c.cls + keyCls, role: 'cell' }, ttfbNode);
 		}
 		/* 吞吐：数字 + 迷你条（条宽 = 相对本轮最大值，一眼看出快慢悬殊） */
 		if (c.key === 'spd') {
@@ -1118,23 +1120,23 @@ function boardRow(it, i, cols, maxSpeed) {
 			var txt = mbps(v);
 			if (v > 0 && maxSpeed > 0) {
 				var pct = Math.max(4, Math.round(100 * Number(v) / maxSpeed));
-				return el('div', { class: 'bc ' + c.cls, role: 'cell' },
+				return el('div', { class: 'bc ' + c.cls + keyCls, role: 'cell' },
 					el('span', { class: 'spd' }, [
 						el('span', { class: 'spd-bar' },
 							el('i', { class: 'spd-fill', style: { width: pct + '%' } })),
 						el('span', { class: 'n', text: txt })
 					]));
 			}
-			return el('div', { class: 'bc ' + c.cls, role: 'cell' },
+			return el('div', { class: 'bc ' + c.cls + keyCls, role: 'cell' },
 				el('span', { class: 'n', text: txt }));
 		}
 		/* 名次用弱色小字，不当读数 */
 		if (c.key === 'rk')
-			return el('div', { class: 'bc ' + c.cls, role: 'cell' },
+			return el('div', { class: 'bc ' + c.cls + keyCls, role: 'cell' },
 				el('span', { class: 'rk n', text: c.get(it, i) }));
 
 		var node = el('span', { class: 'n' + (c.mono ? ' ip' : ''), text: c.get(it, i) });
-		return el('div', { class: 'bc ' + c.cls, role: 'cell' }, node);
+		return el('div', { class: 'bc ' + c.cls + keyCls, role: 'cell' }, node);
 	});
 	return el('div', {
 		class: 'brow data' + (i === 0 ? ' top' : ''),

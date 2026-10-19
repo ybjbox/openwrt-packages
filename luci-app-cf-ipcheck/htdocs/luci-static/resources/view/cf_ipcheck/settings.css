@@ -156,6 +156,7 @@
   border:1px solid var(--warn-bd);border-radius:var(--r1);padding:.15em .45em;white-space:nowrap;
   font-weight:600}
 .cfp button{font-family:inherit;font-size:var(--t-sm);font-weight:500;line-height:1.4;
+  white-space:nowrap;
   display:inline-flex;align-items:center;gap:.4em;padding:.42em .8em;border-radius:var(--r2);
   border:1px solid var(--rule);background:var(--panel-2);color:var(--ink);cursor:pointer;
   transition:background var(--d-fast) var(--e-out),border-color var(--d-fast) var(--e-out),
@@ -363,6 +364,21 @@
 .cfp .grp-b{display:none;border-top:1px solid var(--rule-soft)}
 .cfp .grp.open .grp-b{display:block}
 .cfp .sep{color:var(--rule);user-select:none}
+/* r82：源清单的 URL 要能看全。主题把 .cbi-value-field 定宽，13 条源挤在 288px 里，
+ * 每条都被截成「https://bestcf.pages.dev/entryip/…」——等于让人对着省略号核对地址。
+ * 这里把字段放开到整行，URL 单行省略（title 里仍是全文）。
+ * 顺带把每行那个主题自带的删除块压成静音色：它是破坏性动作，不该 13 个红块抢视线；
+ * 悬停到那一行才转红，确认成本不升反降。 */
+.cfp .cbi-value-field{flex:1 1 auto;min-width:0}
+.cfp .cbi-dynlist{width:100%}
+.cfp .cbi-dynlist .item{flex:1 1 auto;min-width:0}
+.cfp .cbi-dynlist .item > span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cfp .cbi-dynlist .item::after,
+.cfp .cbi-dynlist .item .remove{background:transparent!important;color:var(--ink-3)!important;
+  box-shadow:none!important}
+.cfp .cbi-dynlist .item:hover::after,
+.cfp .cbi-dynlist .item:focus-within::after,
+.cfp .cbi-dynlist .item:hover .remove{color:var(--bad-fg)!important;background:var(--bad-bg)!important}
 /* 上游 cascade.css 给 .cbi-value-description 写了 opacity:.5 —— 那不是"浅一点的颜色"而是
  * 整组半透明：我们 24% 的墨被压成实测 **1.89:1**，里面的 ⓘ 只有 **1.56:1**（图形门槛 3.0），
  * 28 个字段全中。这里按自己的令牌重新给色，并显式把 opacity 抬回 1。
@@ -479,3 +495,14 @@
    这里只补两点：与下面结果区之间的间距，以及展开时给输入区一点内衬。 */
 .cfp .src-edit-host{margin-bottom:var(--s3)}
 .cfp .src-edit .grp-b{padding:var(--s2) var(--s4)}
+
+/* r82：420px 上 9 列挤成一团，主列 TTFB 直接跑到屏幕外。窄屏只留「名次 / IP /
+ * HTTP / TTFB / MB/s」五列——这五列才是「要不要用它」的判据；TCP/TLS/总计/机房/胜出域名
+ * 属于排障细节，桌面端看即可（表下的脚注仍解释各列含义）。 */
+@media (max-width:620px){
+  .cfp .brow{grid-template-columns:2.2em minmax(0,1fr) 3.4em 4.6em 5em}
+  .cfp .brow .c-key-tcp,.cfp .brow .c-key-tls,.cfp .brow .c-key-total,
+  .cfp .brow .c-key-colo,.cfp .brow .c-key-domain{display:none}
+  .cfp .board.multi .brow{grid-template-columns:2.2em minmax(0,1fr) 3.4em 4.6em 5em}
+  .cfp .board-scroll{max-height:none}
+}
