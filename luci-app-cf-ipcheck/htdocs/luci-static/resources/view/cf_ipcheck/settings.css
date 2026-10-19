@@ -554,3 +554,23 @@
 @media (prefers-reduced-motion: reduce){
   .cfp .lamp.t-run .lamp-dot{animation:none}
 }
+
+/* ---------- r87：按 UX 指南收一遍信息层级 ----------
+ * 引擎（ui-ux-pro-max）对这个页面的诊断第一条是「信息过载」，P0 指南里另有
+ * 「移动端正文 ≥16px」「触控目标 ≥44px」。三条一起处理：
+ * 1) 主列（IP/HTTP/TTFB/MB/s/质量）保持正文色，次要列（TCP/TLS/总计/机房）退到 --ink-2
+ *    —— 十列等重等于没有重点；数据一个没少，只是不再和主列抢。
+ * 2) TTFB 是排序依据，加一档字重（600），让"按什么排的"自己说话。
+ * 3) 移动端表格字号 12.5 → 13.5、行高 38 → 44px。没有直接上 16px 是刻意的：
+ *    五列数字表在 420px 下按 16px 排会重新溢出，那是把可读性换成了不可用。 */
+.cfp .brow .c-key-tcp .n,.cfp .brow .c-key-tls .n,
+.cfp .brow .c-key-total .n,.cfp .brow .c-key-colo .n{color:var(--ink-2)}
+.cfp .brow.head .c-key-tcp,.cfp .brow.head .c-key-tls,
+.cfp .brow.head .c-key-total,.cfp .brow.head .c-key-colo{color:var(--ink-3)}
+.cfp .brow .c-key-ttfb .n{font-weight:600}
+@media (max-width:620px){
+  .cfp .brow .n{font-size:13.5px}
+  .cfp .brow{min-height:44px}
+  .cfp .cell-k{font-size:13px}
+  .cfp .cell-sub{font-size:12px}
+}
