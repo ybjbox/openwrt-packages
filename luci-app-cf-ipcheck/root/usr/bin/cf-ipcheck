@@ -1747,6 +1747,15 @@ gist_stable_raw() { # $1=响应 JSON $2=文件名 -> 稳定 raw 链接（取不�
 # 把 curl 的退出码翻成一句人话（纯函数，走 selftest）。
 # 为什么不用 curl 自己的 stderr：那句是英文，而且不同版本措辞不同；
 # 日志是给用户看的，所以只翻最常见的几个，其余带上原始码。
+# 下一次重试该等多少秒（纯函数，走 selftest）：$1=现在 $2=截止时刻。
+# 上限 300 秒（每 5 分钟一次），快到期时只睡剩下的，不会越过窗口。
+gist_gap() {
+	left=$(( ${2:-0} - ${1:-0} ))
+	[ "$left" -gt 300 ] && left=300
+	[ "$left" -lt 0 ] && left=0
+	printf '%s' "$left"
+}
+
 gist_why_rc() {
 	case "$1" in
 		6)  printf '域名解析失败' ;;
@@ -1813,12 +1822,18 @@ upload_gist() {
 		payload=$(printf '{"files":{"%s":{"content":%s},"%s":{"content":%s}}}' \
 			"$C_GISTFILE" "$content" "$C_CSVFILE" "$csv_content")
 	fi
-	# r80：失败要当场说清原因，并在本轮内重试（3 次，3 秒/6 秒退避）。
-	# 为什么不留给下一轮：一轮 6 小时，这段时间订阅端拿到的还是上一轮的旧榜单；
-	# 而 gist 失败通常只是一次网络抖动，重试两次多半就好了。
+	# r80/r81：失败要当场说清原因，并在本轮收尾后继续重试 —— 窗口 15 分钟、
+	# 每 5 分钟一次（试 0/5/10/15 分钟）。为什么不留给下一轮：一轮 6 小时，
+	# 这段时间订阅端拿到的还是上一轮的旧榜单。为什么敢等：运行锁在
+	# write_outputs 之后就已经放了，这 15 分钟不挡页面、也不挡下一轮。
+	# 榜单快照：新一轮跑完会重写 best-ip.txt，那时本轮的重试就该作废，
+	# 否则可能把旧榜单盖回 Gist 上。
+	gist_md5=$(md5sum "$BEST" 2>/dev/null | cut -d' ' -f1)
+	gist_deadline=$(( $(date +%s) + ${CFIP_GIST_WINDOW:-900} ))
+	gist_gap_max=${CFIP_GIST_GAP:-300}
 	try_n=0
 	gist_ok=0
-	while [ "$try_n" -lt 3 ] && [ "$gist_ok" = 0 ]; do
+	while :; do
 		try_n=$((try_n + 1))
 		gist_resp=$(printf 'header = "Authorization: Bearer %s"\n' "$tok" | \
 			"${CURL_BIN:-curl}" -4 -sS -X PATCH "https://api.github.com/gists/$C_GIST" \
@@ -1839,8 +1854,21 @@ upload_gist() {
 		else
 			gist_why="HTTP $gist_code$(gist_api_msg "$gist_body")"
 		fi
-		log "Gist 上传失败（第 $try_n/3 次）：$gist_why"
-		[ "$try_n" -lt 3 ] && sleep $((try_n * 3))
+		now=$(date +%s)
+		if [ "$now" -ge "$gist_deadline" ]; then
+			log "Gist 上传失败（第 $try_n 次）：$gist_why"
+			break
+		fi
+		gap=$(gist_gap "$now" "$gist_deadline")
+		[ "$gap" -gt "$gist_gap_max" ] && gap=$gist_gap_max
+		log "Gist 上传失败（第 $try_n 次）：$gist_why；$((gap / 60)) 分 $((gap % 60)) 秒后重试"
+		sleep "$gap"
+		# 睡醒先看一眼：这 5 分钟里若已经跑了新一轮，榜单就不是我们的了，
+		# 再传上去等于把旧结果盖回订阅端。
+		if [ "$(md5sum "$BEST" 2>/dev/null | cut -d' ' -f1)" != "$gist_md5" ]; then
+			log 'Gist 重试作废：榜单已被新一轮更新'
+			break
+		fi
 	done
 	rm -f "$RUN_DIR/gist.err"
 	if [ "$gist_ok" = 1 ]; then
@@ -1860,7 +1888,7 @@ upload_gist() {
 			fi
 		fi
 	else
-		log 'Gist 上传失败：已在本轮内重试 3 次，先不等了（下一轮会再试）'
+		log "Gist 上传失败：已重试 $try_n 次（窗口 15 分钟），本轮放弃；下一轮会再试"
 		return 1
 	fi
 }
@@ -2452,6 +2480,14 @@ selftest() {
 	check 'Gist 失败原因：curl rc=7 翻成「连不上」' "$got" '连不上 api.github.com'
 	got=$(sh "$0" _gistwhy 99 2>/dev/null)
 	check 'Gist 失败原因：没登记的码带上原始值' "$got" '网络错误（curl rc=99）'
+	got=$(sh "$0" _gistgap 100 1000 2>/dev/null)
+	check 'Gist 重试间隔：离截止还远时按 5 分钟一次' "$got" '300'
+	got=$(sh "$0" _gistgap 850 1000 2>/dev/null)
+	check 'Gist 重试间隔：快到期只睡剩下的（150）' "$got" '150'
+	got=$(sh "$0" _gistgap 1000 1000 2>/dev/null)
+	check 'Gist 重试间隔：到点不再等（0）' "$got" '0'
+	got=$(sh "$0" _gistgap 1200 1000 2>/dev/null)
+	check 'Gist 重试间隔：已过期也不返回负数' "$got" '0'
 
 	# 官方网段接口字段：现网返回 ipv4_cidrs，早年是 ipv4_prefixes，两个都得认
 	got=$(printf '%s' '{"result":{"ipv4_cidrs":["173.245.48.0/24","104.28.1.0/24"]}}' | sh "$0" _cidrs 2>/dev/null | tr '
@@ -3185,6 +3221,7 @@ case "${1:-}" in
 	_verifystats) verify_stats ;;
 	_raydur) ray_dur "${2:-}" ;;
 	_netrate) net_rate ;;
+	_gistgap) gist_gap "${2:-0}" "${3:-0}" ;;
 	_gistmsg) gist_api_msg "${2:-}" ;;
 	_gistwhy) gist_why_rc "${2:-0}" ;;
 	_poolparse) pool_parse_nslookup ;;
