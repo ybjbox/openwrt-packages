@@ -254,7 +254,6 @@
 .cfp .bc.r{text-align:right}
 .cfp .brow.data{transition:background var(--d-fast) var(--e-out)}
 .cfp .brow.data:hover{background:var(--panel-2)}
-.cfp .brow.top > .bc:first-child{box-shadow:inset 3px 0 0 var(--accent)}
 .cfp .brow.top .bc{font-weight:600}
 .cfp .rk{color:var(--ink-3);font-size:var(--t-xs);font-weight:600}
 .cfp .brow.top .rk{color:var(--accent-ink)}
@@ -535,4 +534,23 @@
 @keyframes cfp-rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 @media (prefers-reduced-motion: reduce){
   .cfp.boot .strip,.cfp.boot .board,.cfp.boot .logbox,.cfp.boot .tabs{animation:none}
+}
+
+/* ---------- r86：记忆点与氛围 ---------- */
+/* 最优标记：把榜首的名次「1」做成实心强调色块。为什么不是加个徽标 —— 徽标会把
+ * IP 挤歪，数据表最不能破的就是列对齐；名次格本来就在最左边，染色不动布局。
+ * 这是整页唯一"能被一句话描述"的元素：那颗蓝色的 1。 */
+.cfp .brow.top > .bc:first-child{background:var(--accent-btn);border-radius:2px 0 0 2px}
+.cfp .brow.top > .bc:first-child .rk{color:var(--accent-fg);font-weight:700}
+/* 榜首整行淡淡染一层强调色：只染名次格太孤立，全行染又不抢读数（6%） */
+.cfp .brow.top{background:color-mix(in oklab, var(--accent) 6%, var(--panel))}
+.cfp .brow.top:hover{background:color-mix(in oklab, var(--accent) 9%, var(--panel))}
+/* 行悬停：左侧升起一道 2px 导轨，沿着行"通电"一次 */
+.cfp .brow.data{transition:background var(--d-fast) var(--e-out), box-shadow var(--d-fast) var(--e-out)}
+.cfp .brow.data:hover{box-shadow:inset 2px 0 0 var(--accent-ink)}
+/* 运行中：状态灯缓慢呼吸（2.2 秒一次）——"机器在动"的最小信号 */
+.cfp .lamp.t-run .lamp-dot{animation:cfp-breathe 2.2s ease-in-out infinite}
+@keyframes cfp-breathe{0%,100%{opacity:1}50%{opacity:.5}}
+@media (prefers-reduced-motion: reduce){
+  .cfp .lamp.t-run .lamp-dot{animation:none}
 }

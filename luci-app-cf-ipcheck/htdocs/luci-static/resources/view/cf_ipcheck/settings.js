@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r85';
+var VIEW_BUILD = 'r86';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -1103,8 +1103,7 @@ function boardRow(it, i, cols, maxSpeed) {
 			var cls = (code != null && code >= 200 && code < 300) ? 'code-ok' : 'code-odd';
 			return el('div', { class: 'bc ' + c.cls + keyCls, role: 'cell' },
 				el('span', { class: 'n ' + cls, text: c.get(it, i) }));
-		}
-		/* 质量列（r83）：丢包/抖动/CF-RAY 的证据放在这里，正常行给一个静音的 — */
+		}		/* 质量列（r83）：丢包/抖动/CF-RAY 的证据放在这里，正常行给一个静音的 — */
 		if (c.key === 'q') {
 			if (!ipFlags.length)
 				return el('div', { class: 'bc ' + c.cls + keyCls, role: 'cell' },

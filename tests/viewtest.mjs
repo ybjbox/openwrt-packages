@@ -611,6 +611,7 @@ eq('表头单元格有 columnheader', byClass(heads, 'bc')[0].attrs.role, 'colum
 /* 数据行：名次弱化、IP 等宽、状态码上色、吞吐带迷你条 */
 let rows = byClass(lb, 'data');
 eq('第一名带 top 强调', rows[0].attrs['class'], 'brow data top');
+
 eq('第二名不带 top', rows[1].attrs['class'], 'brow data');
 ok('名次用弱化小字', byClass(rows[0], 'rk').length === 1);
 ok('IP 单元格等宽', byClass(rows[0], 'ip').length === 1);
