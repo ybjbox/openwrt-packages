@@ -369,10 +369,16 @@
  * 这里把字段放开到整行，URL 单行省略（title 里仍是全文）。
  * 顺带把每行那个主题自带的删除块压成静音色：它是破坏性动作，不该 13 个红块抢视线；
  * 悬停到那一行才转红，确认成本不升反降。 */
-.cfp .cbi-value-field{flex:1 1 auto;min-width:0}
-.cfp .cbi-dynlist{width:100%}
-.cfp .cbi-dynlist .item{flex:1 1 auto;min-width:0}
-.cfp .cbi-dynlist .item > span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 实测：字段是 table-cell，宽度由内容撑（357px），所以 width:100% 对它无效。
+ * 这条链只有把「行」改成 flex 才解得开；范围限定在源清单页，别去动配置页那种
+ * 窄输入框（数字框拉成 1200px 只会更难看）。真机验证：field 357→1199、URL 1155 全显示。 */
+#cfp-pane-sources .cbi-value{display:flex;align-items:flex-start;gap:12px}
+#cfp-pane-sources .cbi-value-title{flex:0 0 auto;min-width:6.5em}
+#cfp-pane-sources .cbi-value-field{flex:1 1 auto;display:block;min-width:0}
+#cfp-pane-sources .cbi-dynlist{width:100%;max-width:none}
+#cfp-pane-sources .cbi-dynlist .item{width:100%;max-width:none}
+#cfp-pane-sources .cbi-dynlist .item > span{flex:1 1 auto;min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cfp .cbi-dynlist .item::after,
 .cfp .cbi-dynlist .item .remove{background:transparent!important;color:var(--ink-3)!important;
   box-shadow:none!important}
