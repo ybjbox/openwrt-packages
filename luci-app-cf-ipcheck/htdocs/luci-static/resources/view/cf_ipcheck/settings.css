@@ -237,7 +237,7 @@
  * 1fr 轨道把富余全部吸走：数字紧跟 IP，空白挪到最右边（那里本来就没有要读的东西）。
  * 不用"给 IP 设 max-width"的写法，是因为那样 @768 会开始出横向滚动（实测 734/726）。 */
 .cfp .brow{display:grid;align-items:center;
-  grid-template-columns:2.4em minmax(9em,max-content) 3.6em 4.6em 4.6em 4.8em 5em 3.8em 5.6em minmax(0,1fr);
+  grid-template-columns:2.4em minmax(9em,max-content) 3.6em 4.6em 4.6em 4.8em 5em 3.8em 5.6em minmax(7em,1fr);
   border-bottom:1px solid var(--rule-soft);min-width:max-content}
 .cfp .brow:last-child{border-bottom:0}
 /* 源清单只有 5 列，绝不能沿用上面榜单那 9 条轨道 —— 真机实测：URL 列被分到 34px
@@ -272,7 +272,7 @@
 .cfp .spd-bar{width:32px;height:3px;border-radius:2px;background:var(--idle-bd);overflow:hidden;flex:0 0 auto}
 .cfp .spd-fill{display:block;height:100%;background:var(--ok-fg);border-radius:2px}
 /* 多域名那一版多一列「胜出域名」（文字列，给它 1fr），末尾同样留一条吸富余的空轨道 */
-.cfp .board.multi .brow{grid-template-columns:2.4em minmax(9em,max-content) 3.6em 4.6em 4.6em 4.8em 5em 3.8em 5.6em minmax(7em,1fr) minmax(0,1fr)}
+.cfp .board.multi .brow{grid-template-columns:2.4em minmax(9em,max-content) 3.6em 4.6em 4.6em 4.8em 5em 3.8em 5.6em minmax(7em,1fr) minmax(6em,1fr)}
 .cfp .empty{display:flex;align-items:flex-start;gap:var(--s3);padding:var(--s5) var(--s4);
   border:1px dashed var(--rule);border-radius:var(--r2);background:var(--panel);margin:0 0 var(--s4)}
 .cfp .empty-ic{flex:0 0 auto;width:20px;height:20px;border-radius:50%;
@@ -501,8 +501,32 @@
  * 属于排障细节，桌面端看即可（表下的脚注仍解释各列含义）。 */
 @media (max-width:620px){
   .cfp .brow{grid-template-columns:2.2em minmax(0,1fr) 3.4em 4.6em 5em}
+  .cfp .brow .c-key-q{display:none}
   .cfp .brow .c-key-tcp,.cfp .brow .c-key-tls,.cfp .brow .c-key-total,
   .cfp .brow .c-key-colo,.cfp .brow .c-key-domain{display:none}
   .cfp .board.multi .brow{grid-template-columns:2.2em minmax(0,1fr) 3.4em 4.6em 5em}
   .cfp .board-scroll{max-height:none}
+}
+
+/* r83：读数带的焦点格 —— 一排六个读数里只让「达标」有重量 */
+.cfp .strip .cell.primary .cell-v .n{font-size:28px;letter-spacing:-.02em;color:var(--accent-ink)}
+.cfp .strip .cell.primary .cell-k{color:var(--ink-2)}
+/* r83：质量列 */
+.cfp .q-none{color:var(--ink-3);opacity:.55}
+.cfp .ipflag.bad{color:var(--bad-fg)}
+
+/* ---------- r84：配置页的纵向节奏 ---------- */
+/* 表单每行原来是 LuCI 的默认留白（实测一行约 45px），一条说明就把一组参数拉得很长。
+ * 收到 34~38px，并让说明文字用 1.7 行高（中文 12.5px 在 1.55 下太挤）。 */
+.cfp .cbi-value{padding:.22em 0}
+.cfp .cbi-value-description{line-height:1.7}
+.cfp .cbi-value-title{line-height:1.45}
+
+/* ---------- r84：一次入场编排（只在首次装配时有效） ---------- */
+.cfp.boot .strip{animation:cfp-rise var(--d-base) var(--e-out) both}
+.cfp.boot .board,.cfp.boot .logbox{animation:cfp-rise var(--d-base) var(--e-out) 90ms both}
+.cfp.boot .tabs{animation:cfp-rise var(--d-base) var(--e-out) 180ms both}
+@keyframes cfp-rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion: reduce){
+  .cfp.boot .strip,.cfp.boot .board,.cfp.boot .logbox,.cfp.boot .tabs{animation:none}
 }

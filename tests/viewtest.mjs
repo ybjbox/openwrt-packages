@@ -590,7 +590,7 @@ const done = t.parseStatus(JSON.stringify({
 
 let lb = t.Leaderboard(done.items);
 let heads = byClass(lb, 'head')[0];
-eq('单域名时列数 = 9', byClass(heads, 'bc').length, 9);
+eq('单域名时列数 = 10（r83 多了质量列）', byClass(heads, 'bc').length, 10);
 eq('数据行数 = 2', byClass(lb, 'data').length, 2);
 has('列头用 MB/s', heads, 'MB/s');
 hasNot('列头不该出现「下载 MB/s」这种长词', heads, '云计算');
@@ -624,7 +624,7 @@ eq('只有一种域名时不算多域名', t.domainKinds(done.items), 1);
 const twoDom = done.items.map((it, i) => Object.assign({}, it, { domain: i ? 'b.example.com' : 'a.example.com' }));
 eq('两种域名时计数为 2', t.domainKinds(twoDom), 2);
 lb = t.Leaderboard(twoDom);
-eq('多域名时列数 = 10', byClass(byClass(lb, 'head')[0], 'bc').length, 10);
+eq('多域名时列数 = 11（质量列 + 胜出域名）', byClass(byClass(lb, 'head')[0], 'bc').length, 11);
 ok('多域名时容器带 multi 标记', /multi/.test(lb.attrs['class']));
 has('多域名时出现「胜出域名」列', lb, '胜出域名');
 eq('空榜单不渲染', t.Leaderboard([]), null);
@@ -639,7 +639,7 @@ const vItem = {
 	loss: 0.33, jitter_ms: 87.5, net_ttfb_ms: 233.5, ray_ok: 1
 };
 const vLb = t.Leaderboard([ vItem ]);
-eq('r71 旁注不新增列（仍是 9 列）', byClass(byClass(vLb, 'head')[0], 'bc').length, 9);
+eq('r71/r83 旁注进质量列，列数固定为 10', byClass(byClass(vLb, 'head')[0], 'bc').length, 10);
 has('r71 丢包>0 时 IP 副行出「丢包 33%」', vLb, '丢包 33%');
 has('r71 抖动>100ms 时 IP 副行出「抖动 120.5」', t.Leaderboard([ Object.assign({}, vItem, { jitter_ms: 120.5 }) ]), '抖动 120.5');
 has('r71 净延迟挂 TTFB 副行', vLb, '净 233.5');
@@ -2018,9 +2018,9 @@ ok('CSS 里两条网格模板都在', !!lbRule && !!srcRule);
  * fr，@1600 被拉到 868px，一行里 IP 与第一个数字之间隔着约 870px。所以这里的不变量是
  * "轨道数 = 列数 + 末尾那条空轨道"，并且空轨道必须在最后、必须是 minmax(0,1fr)。 */
 const lbTracks = lbRule[1].trim().split(/\s+/).filter(Boolean);
-eq('榜单：轨道数 = 列数 + 1 条末尾空轨道', t.COLS.length + 1, lbTracks.length);
-ok('榜单：末尾那条是不占内容的空轨道 minmax(0,1fr)',
-	/minmax\(0,1fr\)/.test(lbTracks[lbTracks.length - 1]));
+/* r83：末尾那条空轨道换成了真列「质量」，所以不变量从「列数+1」变成「轨道数 = 列数」。 */
+eq('榜单：轨道数 = 列数（末尾不再有空轨道）', t.COLS.length, lbTracks.length);
+ok('榜单：末尾轨道是「质量」列（minmax(7em,1fr)）', /minmax\(7em,1fr\)$/.test(lbTracks[lbTracks.length - 1]), lbTracks[lbTracks.length - 1]);
 ok('榜单：IP 列按内容收（不再是吃掉全部富余的 1.5fr）',
 	/minmax\(9em,max-content\)/.test(lbRule[1]));
 eq('源清单：列定义数 = 自己的轨道数（不再共用榜单的）', t.SRC_COLS.length, trackCount(srcRule[1]));

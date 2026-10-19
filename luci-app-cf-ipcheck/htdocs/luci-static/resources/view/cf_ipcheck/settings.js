@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r82';
+var VIEW_BUILD = 'r84';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -857,7 +857,7 @@ function Readout(p) {
 	];
 	if (p.sub)
 		cell.push(el('div', { class: 'cell-sub', text: p.sub, title: p.sub }));
-	return el('div', { class: 'cell' }, cell);
+	return el('div', { class: 'cell' + (p.primary ? ' primary' : '') }, cell);
 }
 
 /* 读数带：一排读数单元，靠 1px 网格线分列 */
@@ -1046,7 +1046,10 @@ var COLS = [
 	{ key: 'ttfb',  h: 'TTFB',        cls: 'r', get: function (it) { return ms(it.ttfb_ms); } },
 	{ key: 'total', h: '总计',        cls: 'r', get: function (it) { return ms(it.total_ms); } },
 	{ key: 'colo',  h: '机房',        cls: 'r', get: function (it) { return it.colo || DASH; } },
-	{ key: 'spd',   h: 'MB/s',        cls: 'r', get: function (it) { return mbps(it.speed_mbytes); } }
+	{ key: 'spd',   h: 'MB/s',        cls: 'r', get: function (it) { return mbps(it.speed_mbytes); } },
+	/* 质量（r83）：原来这条轨道是纯占位的 1fr（@1600 实测空着 742px），而丢包/抖动
+	 * 挤在 IP 下面 11px 灰字里几乎看不见。把空轨道换成真列，信息就有了地方。 */
+	{ key: 'q',     h: '质量',        cls: 'l' }
 ];
 var COL_DOMAIN = { key: 'domain', h: '胜出域名', cls: 'l', get: function (it) { return it.domain || DASH; } };
 
@@ -1083,8 +1086,12 @@ function boardRow(it, i, cols, maxSpeed) {
 	var ipFlags = [];
 	if (it.loss != null && isFinite(Number(it.loss)) && Number(it.loss) > 0)
 		ipFlags.push(el('span', { class: 'ipflag warn', text: '丢包 ' + Math.round(Number(it.loss) * 100) + '%' }));
-	if (it.jitter_ms != null && isFinite(Number(it.jitter_ms)) && Number(it.jitter_ms) > 100)
-		ipFlags.push(el('span', { class: 'ipflag', text: '抖动 ' + ms(it.jitter_ms) }));
+	/* 抖动分档（r83）：100 以上是「值得看一眼」，300 以上已经是「这颗不稳」——
+	 * 原来一律灰字，209ms 和 20ms 长得一样。 */
+	if (it.jitter_ms != null && isFinite(Number(it.jitter_ms)) && Number(it.jitter_ms) > 100) {
+		var jt = Number(it.jitter_ms);
+		ipFlags.push(el('span', { class: 'ipflag' + (jt > 300 ? ' bad' : ' warn'), text: '抖动 ' + ms(it.jitter_ms) }));
+	}
 	if (it.ray_ok === 0)
 		ipFlags.push(el('span', { class: 'ipflag warn', text: '未验到 CF-RAY' }));
 
@@ -1097,12 +1104,13 @@ function boardRow(it, i, cols, maxSpeed) {
 			return el('div', { class: 'bc ' + c.cls + keyCls, role: 'cell' },
 				el('span', { class: 'n ' + cls, text: c.get(it, i) }));
 		}
-		/* IP：副行挂多样本验证的旁注（丢包/抖动） */
-		if (c.key === 'ip') {
-			var ipNode = el('span', { class: 'n' + (c.mono ? ' ip' : ''), text: c.get(it, i) });
-			if (ipFlags.length)
-				return el('div', { class: 'bc ' + c.cls + keyCls, role: 'cell' }, [ipNode, el('div', { class: 'ipflags' }, ipFlags)]);
-			return el('div', { class: 'bc ' + c.cls + keyCls, role: 'cell' }, ipNode);
+		/* 质量列（r83）：丢包/抖动/CF-RAY 的证据放在这里，正常行给一个静音的 — */
+		if (c.key === 'q') {
+			if (!ipFlags.length)
+				return el('div', { class: 'bc ' + c.cls + keyCls, role: 'cell' },
+					el('span', { class: 'n q-none', text: DASH }));
+			return el('div', { class: 'bc ' + c.cls + keyCls, role: 'cell' },
+				el('div', { class: 'ipflags' }, ipFlags));
 		}
 		/* TTFB：验过且响应头带 server-timing 时，副行给剥掉边缘处理耗时后的净延迟。
 		 * null（没验过或没有该头）不显示——页面要能区分「没验」和「没有这一项」。 */
@@ -1181,8 +1189,10 @@ function SummaryStrip(st) {
 		label: T('候选池'), value: num(st.pool),
 		sub: T('本轮去重后参与探测的 IP 数')
 	}));
+	/* 焦点格（r83）：一排六个读数如果等权，眼睛没有落点。达标是这一轮的结论，
+	 * 给它更大的字号和唯一的强调色；其余留在次级色里当背景信息。 */
 	cells.push(Readout({
-		label: T('达标'), value: num(st.qualified),
+		label: T('达标'), value: num(st.qualified), primary: true,
 		sub: T('TTFB 与总耗时两道门槛都过')
 	}));
 	cells.push(Readout({
@@ -2761,6 +2771,15 @@ var TAB_DEFS = [
 	{ id: 'config',  label: '配置' }
 ];
 
+function toggleSaveFooter(on) {
+	/* 测试桩里没有 document.querySelector —— 这层判断顺带保证"组件不假设外部存在" */
+	try {
+		var acts = document.querySelector ? document.querySelector('.cbi-page-actions') : null;
+		if (acts)
+			acts.style.display = on ? '' : 'none';
+	} catch (e) {}
+}
+
 function goto(id, persist) {
 	/* 目标面板必须存在，否则保持当前不动（防止拼装时序里点到还没建好的面板） */
 	var valid = false;
@@ -2783,6 +2802,10 @@ function goto(id, persist) {
 		}
 	}
 	store.set({ tab: id });
+	/* r84：LuCI 的「保存并应用 / 保存 / 重置」是整页的页脚，但它只对表单有意义（配置、
+	 * 源清单两页）。挂在榜单和日志页下方，既没有可保存的东西，又把「当前该做什么」
+	 * 搅浑。这里按 tab 显隐——只在非表单页藏起来，表单页原样保留。 */
+	toggleSaveFooter(id === 'config' || id === 'sources');
 	/* 自动刷新只在「日志」页开着（r76）：切走就摘掉回调，别让一个看不见的
 	 * 定时器每 4 秒打一次 ubus；切回来且开关是开的再登记上。 */
 	if (id === 'logs' && store.get().logAuto)
@@ -3380,6 +3403,12 @@ return view.extend({
 
 
 
+				/* r84：一次入场编排——首帧给读数带、榜单、页脚按钮各错开 90ms。
+				 * 只在首次装配时加 boot 类，900ms 后摘掉，后续刷新/切页不再动。 */
+				if (root && root.classList) {
+					root.classList.add('boot');
+					setTimeout(function () { root.classList.remove('boot'); }, 900);
+				}
 				return root;
 			});
 		});
