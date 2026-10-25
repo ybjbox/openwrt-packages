@@ -116,6 +116,13 @@ JQ_BIN=$(find_bin jq /usr/bin/jq /bin/jq /usr/sbin/jq /sbin/jq || true)
 HAS_UCI=0
 [ -n "$UCI_BIN" ] && HAS_UCI=1
 STARTED=''
+# 代理旁路自检的结论（r88）：unknown / not_needed / exempt / absent。
+# 放顶层是因为 write_outputs 要把它写进 result.json，而 selftest 会绕过 do_run
+# 直接驱动 write_outputs —— 那时也得有个合法值（set -u）。
+BYPASS=unknown
+# 吞吐在本轮扮演的角色：gate（参与判定）/ display（只展示）/ degraded（想判但没测出）。
+# 同样是给 result.json 用的，页面据此解释「为什么名次没变」。
+SPEED_MODE=display
 
 mkdir -p "$RUN_DIR" "$ETC_DIR" 2>/dev/null || true
 # $RUN_DIR 必须让探测身份穿得过去：procd 起的进程 umask 常是 077，mkdir 出来就是
@@ -335,30 +342,6 @@ load_config() {
 	# 官方网段默认关：15 个前缀展开成 /24 采样是近六千个地址，
 	# 而社区优选源已经是别人实测过的好 IP，命中率高的多。想做大范围扫面再打开。
 	C_OFFICIAL=$(cfg use_official_ranges 0)
-	# 候选池跟随探测域名（r78）：真机上 CF 对用户 zone 做了「同池」限制 —— 域名只
-	# 接受分配给它的那几个 /16（实测 xy-nas.eu.org 只认 104.21/16 与 172.67/16，
-	# 钉到 172.64.52.x 一律 1034「边缘 IP 受限」）。不收敛池子的话，整张榜单对
-	# 用户自己的域名全是 1034，客户端拿着列表反而连不上。
-	C_FOLLOW=$(cfg_range pool_follow_domain 1 0 1)
-	# 手工兜底：显式给网段（逗号分隔）就使用这些，不再从域名推导。
-	C_CIDRS=$(cfg candidate_cidrs '')
-	if [ -n "$C_CIDRS" ]; then
-		ok_cidrs=''
-		for c in $(printf '%s' "$C_CIDRS" | tr ',' ' '); do
-			case "$c" in
-				0.0.0.0/0|*[!0-9./]*) continue ;;
-			esac
-			n=${c##*/}
-			[ "$c" = "$n" ] && continue
-			case "$n" in ''|*[!0-9]*) continue ;; esac
-			[ "$n" -le 32 ] 2>/dev/null || continue
-			body=${c%/*}
-			[ "$(printf '%s' "$body" | awk -F. 'NF==4 && $1<=255 && $2<=255 && $3<=255 && $4<=255 {print "y"}')" = y ] || continue
-			ok_cidrs="$ok_cidrs $c"
-		done
-		C_CIDRS=$(printf '%s' "$ok_cidrs" | tr -s ' ' | sed 's/^ //')
-		[ -n "$C_CIDRS" ] || log 'candidate_cidrs 里没有合法网段，改回按探测域名推导'
-	fi
 	C_REUSE=$(cfg reuse_last 1)
 	C_COLOR=$(cfg colo_probe 1)
 	C_COLODOMAIN=$(one_host "$(cfg colo_domain 'www.cloudflare.com')" www.cloudflare.com)
@@ -368,6 +351,58 @@ load_config() {
 	# 上限 104857600 字节（约 104.86MB）：这一项直接乘在每轮流量上（speed_count × speed_bytes）。
 	C_SPEEDKB=$(cfg_range speed_bytes 10485760 131072 104857600)
 	C_SPEEDTO=$(cfg_range speed_timeout 25 5 120)
+	# ---- 吞吐判定（r88）--------------------------------------------------
+	# 这一段的名字看着多，但每一个都直接乘在流量或名次上：少一道夹取就是要么
+	# 每轮几十 GB、要么第 11 名永远进不来。
+	C_SPEEDGATE=$(cfg_range speed_gate 1 0 1)
+	C_SPEED_REL=$(cfg_range speed_rel_min 25 0 100)
+	C_SPEED_W=$(cfg_range speed_weight 40 0 100)
+	C_SCREENBYTES=$(cfg_range speed_screen_bytes 4194304 131072 104857600)
+	C_SCREENTO=$(cfg_range speed_screen_timeout 8 3 120)
+	C_CONFIRMN=$(cfg_range speed_confirm_top 3 0 20)
+	# 绝对下限是唯一带小数的配置项：cfg_range 只认纯整数，所以走 cfg + awk 校验。
+	# 非法值退回 0.50 —— 在 set -u 的脚本里把坏串喂给 $(( )) 会直接把进程打死。
+	abs_raw=$(cfg speed_abs_min '0.50')
+	C_ABSMIN=$(printf '%s\n' "$abs_raw" | awk '
+		{ if ($1 !~ /^[0-9]+(\.[0-9]+)?$/) { print "BAD"; exit }
+		  v = $1 + 0
+		  if (v < 0) v = 0
+		  if (v > 100) v = 100
+		  printf "%.2f", v }')
+	case "${C_ABSMIN:-BAD}" in
+		BAD)
+			log "配置项 speed_abs_min 取到的值不是小数（<$(printf '%s' "$abs_raw" | cut -c1-24)>），按默认值 0.50 处理"
+			C_ABSMIN=0.50
+			;;
+	esac
+	C_ABSBYTES=$(printf '%s\n' "$C_ABSMIN" | awk '{ printf "%d", ($1 + 0) * 1000000 }')
+	# 粗筛个数：新选项没配就用旧的 speed_count 兜底（sysupgrade 带回来的老配置里
+	# 只有 speed_count）。旧的 0 = 以前那套「整段不测」，这里原样保留成 0。
+	screen_raw=$(cfg speed_screen_count '')
+	if [ -n "$screen_raw" ]; then
+		C_SCREENN=$(cfg_range speed_screen_count 20 1 100)
+	else
+		C_SCREENN=$(cfg_range speed_count 20 0 100)
+	fi
+	# 精测参数：新选项没配就沿用旧的 speed_bytes / speed_timeout，
+	# 老部署上已经调过的字节数与超时不会被这次升级悄悄改掉。
+	confb_raw=$(cfg speed_confirm_bytes '')
+	if [ -n "$confb_raw" ]; then
+		C_CONFBYTES=$(cfg_range speed_confirm_bytes 10485760 131072 104857600)
+	else
+		C_CONFBYTES=$C_SPEEDKB
+	fi
+	conft_raw=$(cfg speed_confirm_timeout '')
+	if [ -n "$conft_raw" ]; then
+		C_CONFTO=$(cfg_range speed_confirm_timeout 25 5 120)
+	else
+		C_CONFTO=$C_SPEEDTO
+	fi
+	# 粗筛个数不比 keep_count 大时，"榜单外还有机会"这条就名存实亡了 —— 说一声，
+	# 免得有人以为开了判定却发现名次一点没变。
+	if [ "$C_SPEED" = 1 ] && [ "$C_SCREENN" -gt 0 ] 2>/dev/null && [ "$C_SCREENN" -le "$C_KEEP" ] 2>/dev/null; then
+		log "粗筛个数 $C_SCREENN 不大于 keep_count $C_KEEP：第 $C_KEEP 名之后的没有机会进榜，想留机会就把 speed_screen_count 调大"
+	fi
 	C_SPEEDDOM=$(one_host "$(cfg speed_domain 'speed.cloudflare.com')" speed.cloudflare.com)
 	# 吞吐请求的路径模板（r77）。默认 `/__down?bytes={bytes}`（speed.cloudflare.com
 	# 与本插件自建端点的写法）。两种占位符：{bytes} 原始字节数、{size} 带十进制
@@ -683,165 +718,8 @@ sample_lines() {
 # 早先是 `sort -u | head -n $C_BUDGET`：官方网段展开后有近六千个 /24 采样，
 # 按字符串序取前 256 个，等于永远只在 103/104 开头那一段里挑，
 # 社区源与 141/162/172/188/198 段一条都进不来。
-# 从 DoH 的 JSON 里取 A 记录的 /16（纯函数）。
-# 为什么不用本机 nslookup：代理插件会把 DNS 劫持成 fake-IP，root 与 nobody 一样
-# 都拿到 198.18.x（实测踩过：池子收敛到 198.18.0.0/16，整轮候选全在假段）。
-pool_parse_doh() {
-	awk '{
-		gsub(/"data":"/, "\n")
-		n = split($0, L, "\n")
-		for (i = 1; i <= n; i++) {
-			ip = L[i]
-			sub(/".*$/, "", ip)
-			if (split(ip, o, ".") == 4 && o[1] + 0 <= 255 && o[2] + 0 <= 255)
-				print o[1] "." o[2] ".0.0/16"
-		}
-	}' | sort -u
-}
-
-# 丢掉明显不是 Cloudflare 边缘的段：回环/内网/链路本地/fake-IP（198.18/15）/组播。
-# 这不是洁癖：真机上代理插件回的就是 198.18.x，收敛到那儿整轮都会白跑。
-pool_filter_cidrs() {
-	awk -F'/' '
-	{
-		split($1, o, ".")
-		a = o[1] + 0; b = o[2] + 0
-		if (a == 0 || a == 10 || a == 127) next
-		if (a == 172 && b >= 16 && b <= 31) next
-		if (a == 192 && b == 168) next
-		if (a == 198 && (b == 18 || b == 19)) next
-		if (a >= 224) next
-		print
-	}'
-}
-
-# 用 DoH 查真实 A 记录（$1=域名 -> 每行一个 /16）。走 curl 是因为本机 DNS 不可信；
-# 阿里 DoH 在国内可达性最好，失败再退腾讯 DoH。
-pool_doh() {
-	c=${CURL_BIN:-curl}
-	for url in "https://dns.alidns.com/resolve?name=$1&type=A" "https://doh.pub/dns-query?name=$1&type=A"; do
-		body=$(run_probe "$c -4 -sS --connect-timeout 4 --max-time 6 '$url'" 2>/dev/null)
-		[ -n "$body" ] || continue
-		out=$(printf '%s' "$body" | pool_parse_doh)
-		[ -n "$out" ] && { printf '%s\n' "$out"; return 0; }
-	done
-	return 0
-}
-
-# 从 nslookup 输出里取 A 记录的 /16（r78，纯函数，供 selftest 驱动）。
-# 只认 "Name:" 之后的 "Address" 行：busybox 在开头也会打 "Server:/Address:"，
-# 那是本地 DNS 的地址，不能当候选段。
-pool_parse_nslookup() {
-	awk '
-	/^Name:/ { on = 1; next }
-	on && /^Address/ {
-		sub(/^Address[ 0-9]*:[ \t]*/, "")
-		if (split($0, o, ".") == 4 && o[1] + 0 <= 255 && o[2] + 0 <= 255)
-			printf "%s.%s.0.0/16\n", o[1], o[2]
-	}'
-}
-
-# 当前该用哪些网段：显式配置优先；否则按 pool_follow_domain 从探测域名推导。
-pool_derive() {
-	if [ -n "$C_CIDRS" ]; then
-		printf '%s\n' "$C_CIDRS" | tr ' ' '\n' | grep .
-		return 0
-	fi
-	[ "$C_FOLLOW" = 1 ] || return 0
-	# 必须用探测身份解析：root 的 DNS 可能被代理插件劫持成 fake-IP（198.18.x），
-	# 拿它推导只会得到 198.18.0.0/16 这种假段。
-	out=''
-	for d in $(printf '%s' "$C_DOMAINS" | tr ',' ' '); do
-		out="$out
-$(pool_doh "$d")"
-	done
-	printf '%s\n' "$out" | pool_filter_cidrs | sort -u
-}
-
-# stdin = IP 列表；$1 = 空格分隔的 CIDR 列表 -> 只留落在这些段里的（纯函数）。
-pool_in_cidrs() {
-	awk -v list="$1" '
-	function toint(ip,   o) {
-		split(ip, o, ".")
-		return ((o[1] * 256 + o[2]) * 256 + o[3]) * 256 + o[4]
-	}
-	BEGIN {
-		n = split(list, A, " ")
-		cnt = 0
-		for (i = 1; i <= n; i++) {
-			if (split(A[i], p, "/") != 2) continue
-			bits = p[2] + 0
-			if (bits < 0 || bits > 32) continue
-			m = 2 ^ (32 - bits)
-			cnt++
-			base[cnt] = int(toint(p[1]) / m) * m
-			span[cnt] = m
-		}
-	}
-	{
-		v = toint($0)
-		for (i = 1; i <= cnt; i++)
-			if (v >= base[i] && v < base[i] + span[i]) { print; next }
-	}'
-}
-
-# $1 = 要多少个；$2 = 空格分隔的 CIDR 列表 -> 从这些段里随机取 IP（纯函数）。
-# 跳过末段 0 与 255（网络/广播地址，探它们只会超时）。
-pool_sample() {
-	awk -v want="${1:-0}" -v list="$2" '
-	function toint(ip,   o) {
-		split(ip, o, ".")
-		return ((o[1] * 256 + o[2]) * 256 + o[3]) * 256 + o[4]
-	}
-	function ipstr(v,   a, b, c, d) {
-		d = v % 256; v = int(v / 256)
-		c = v % 256; v = int(v / 256)
-		b = v % 256; a = int(v / 256)
-		return a "." b "." c "." d
-	}
-	BEGIN {
-		w = want + 0
-		if (w <= 0) exit
-		srand()
-		n = split(list, A, " ")
-		cnt = 0; total = 0
-		for (i = 1; i <= n; i++) {
-			if (split(A[i], p, "/") != 2) continue
-			m = 2 ^ (32 - (p[2] + 0))
-			if (m < 256) continue
-			cnt++
-			base[cnt] = int(toint(p[1]) / m) * m
-			span[cnt] = m
-			total += m
-		}
-		if (!cnt) exit
-		got = 0; tries = 0
-		while (got < w && tries < w * 40) {
-			tries++
-			r = int(rand() * total) + 1
-			acc = 0
-			for (i = 1; i <= cnt; i++) {
-				if (r <= acc + span[i]) { v = base[i] + (r - acc - 1); break }
-				acc += span[i]
-			}
-			if (v % 256 == 0 || v % 256 == 255) continue
-			s = ipstr(v)
-			if (s in dup) continue
-			dup[s] = 1
-			print s
-			got++
-		}
-	}'
-}
-
 build_pool() {
-	# 池收敛（r78）：先算该用哪些段；有段就把它当硬约束贯穿到每一路候选。
-	# 真机证据：CF 只在这些段上服务该域名，池外一律 1034「边缘 IP 受限」。
-	pool_cidrs=$(pool_derive | tr '\n' ' ' | sed 's/[[:space:]]*$//')
-	[ -n "$pool_cidrs" ] && log "候选池收敛到 $pool_cidrs（池外 IP 对该域名一律 1034）"
-
 	reuse=$(pool_reuse)
-	[ -n "$pool_cidrs" ] && reuse=$(printf '%s\n' "$reuse" | pool_in_cidrs "$pool_cidrs")
 	nreuse=0
 	[ -n "$reuse" ] && nreuse=$(printf '%s\n' "$reuse" | grep -c .)
 	keep=$((C_BUDGET - nreuse))
@@ -854,9 +732,6 @@ build_pool() {
 	[ "$nsrc" -gt 0 ] && per=$((keep / 2 / nsrc + 1))
 
 	comm=$(pool_community "$per" | grep -vE '^(127\.|0\.0\.0\.0$)')
-	# 社区清单里的地址大多落在别人的池子里（172.64/104.16/198.41），对跟随的
-	# 域名是纯噪声 —— 先滤掉池外的，剩下的才是真候选。
-	[ -n "$pool_cidrs" ] && comm=$(printf '%s\n' "$comm" | pool_in_cidrs "$pool_cidrs")
 	comm=$(printf '%s\n' "$comm" | sort -u | sample_lines $((keep / 2)))
 	ncomm=0
 	[ -n "$comm" ] && ncomm=$(printf '%s\n' "$comm" | grep -c .)
@@ -864,26 +739,13 @@ build_pool() {
 	off=''
 	if [ "$C_OFFICIAL" = 1 ]; then
 		off=$(pool_official | grep -vE '^(127\.|0\.0\.0\.0$)' | sort -u)
-		[ -n "$pool_cidrs" ] && off=$(printf '%s\n' "$off" | pool_in_cidrs "$pool_cidrs")
 		off=$(printf '%s\n' "$off" | sample_lines $((keep - ncomm)))
-	fi
-	noff=0
-	[ -n "$off" ] && noff=$(printf '%s\n' "$off" | grep -c .)
-
-	# 池内名额没被社区清单填满时，直接在这些段里随机补足 —— 否则池收敛会把
-	# 候选数砍到个位数（社区清单里本来就极少 104.21/172.67 的地址）。
-	fill=''
-	if [ -n "$pool_cidrs" ]; then
-		need=$((C_BUDGET - nreuse - ncomm - noff))
-		[ "$need" -gt 0 ] && fill=$(pool_sample "$need" "$pool_cidrs")
-		[ -n "$fill" ] && log "池内补足 $(printf '%s\n' "$fill" | grep -c .) 个候选（社区清单里池内地址太少）"
 	fi
 
 	{
 		printf '%s\n' "$reuse"
 		printf '%s\n' "$comm"
 		printf '%s\n' "$off"
-		printf '%s\n' "$fill"
 	} | grep . | sort -u
 }
 
@@ -1307,6 +1169,61 @@ canary_check() {
 	printf '0\n'
 }
 
+# ---------------- 代理旁路自检（r88，只读）----------------------------------
+# 本插件能测出「候选 IP 自己」的速度，靠的是一条静态前提：探测身份（默认 nobody，
+# gid 65534）的包不进代理。OpenClash 在 openclash_output / openclash_mangle_output
+# 两条链的位置 0 就写了 `skgid == 65534 ... return`，DNS 劫持规则也写成
+# `skgid != 65534` —— 这就是 su nobody 能直连的原因。
+# 前提会被固件升级、换插件、用户手改规则打破，而打破之后症状极其隐蔽：一切照常
+# 能测通，只是每颗 IP 的数字都被代理那条路抹平了。canary 抓的是**动态**证据
+# （保留地址居然回了状态码），这里补一条**静态**前提的检查。
+#
+# 只读：不改任何代理配置、不停任何服务、不 commit 任何东西。
+# 尤其不做「临时停掉代理」—— 调研里两家现成实现都踩过：被 kill 时留下
+# enabled=0，等于永久停掉用户的代理（这是真实事故，不是理论风险）。
+# 输出：unknown / not_needed / exempt / absent
+bypass_check() {
+	nft_bin=$(find_bin nft /usr/sbin/nft /sbin/nft /usr/bin/nft 2>/dev/null || true)
+	[ -n "$nft_bin" ] || { printf 'unknown\n'; return 0; }
+	# 本机流量本来就不进代理（router_self_proxy=0）→ 没有「绕过」这回事。
+	# 读不到 openclash 的配置时不据此下结论，继续往下看链。
+	oc_self=''
+	oc_any=''
+	if [ "$HAS_UCI" = 1 ]; then
+		oc_self=$("$UCI_BIN" -q get openclash.config.router_self_proxy 2>/dev/null || true)
+		oc_any=$("$UCI_BIN" -q get openclash.config.enable 2>/dev/null || true)
+	fi
+	[ "${oc_self:-}" = 0 ] && { printf 'not_needed\n'; return 0; }
+	# 两条链里任一条给了 65534 豁免，就说明探测身份确实直连。
+	# nft 的打印形态在不同版本里是 `meta skgid 65534` 或 `meta skgid == 65534`，
+	# 两种都认；skuid 是同一件事的用户维度写法。
+	for ch in openclash_output openclash_mangle_output; do
+		if "$nft_bin" list chain inet fw4 "$ch" 2>/dev/null | \
+			grep -Eq 'sk[ug]id[[:space:]]*(==[[:space:]]*)?65534'; then
+			printf 'exempt\n'
+			return 0
+		fi
+	done
+	# PassWall 的链名与豁免方式没核实过，不假设它豁免 —— 记 unknown，让上层按
+	# 「不知道」处理（只告警，不改判定）。
+	if "$nft_bin" list chains 2>/dev/null | grep -qi passwall; then
+		printf 'unknown\n'
+		return 0
+	fi
+	# 到这儿要分清「机器上压根没跑代理」和「代理在跑、但没给探测身份留直连」：
+	# 前者不该报警（fw4 本身就有 nft，几乎所有 OpenWrt 都过不了上面几条）。
+	has_proxy=0
+	for ch in openclash_output openclash_mangle_output; do
+		"$nft_bin" list chain inet fw4 "$ch" >/dev/null 2>&1 && has_proxy=1
+	done
+	[ -n "${oc_any:-}" ] && has_proxy=1
+	if [ "$has_proxy" = 0 ]; then
+		printf 'not_needed\n'
+		return 0
+	fi
+	printf 'absent\n'
+}
+
 # ---------------- 探测身份 -----------------------------------------------
 # root 直接发起的 tcp 会被 OpenClash 的 mangle 链打 mark 接管，`--resolve`
 # 钉的 IP 就此失效（实测：钉到保留地址 203.0.113.77 也照样返回 200，
@@ -1529,43 +1446,177 @@ speed_url() { # $1=模板 $2=域名 $3=端口 $4=字节数
 	}'
 }
 
-speed_of() { # $1=IP -> "12.34"（MB/s）或 '-'
-	valid_ip4 "$1" || { printf '%s' '-'; return 0; }
-	# r71 的四个量（r75 又补了第五个 http_code）——净速率 = size/(total−ttfb)：curl 的
-	# speed_download 是全量平均，把 TCP 慢启动那段爬坡也算进去——所有 IP 一致偏低，
-	# 还把稳态差距抹平（生态同款做法：预热期数据不计入有效测量）。剥掉首字节前的
-	# 等待至少去掉头部效应；退化情形（total<=ttfb，几乎同时完成）退回 speed_download 原值。
-	# r75：末位那个状态码是判「回的是不是文件」的依据。只看 rc 会让「服务端回了个
-	# 十几 KB 的 403 挑战页」混成真吞吐（真机那整列 0.01MB/s 就是它）。
-	out=$(run_probe "${CURL_BIN:-curl} -4 -o $NULL_DEV -sS --connect-timeout $C_TIMEOUT --max-time $C_SPEEDTO --resolve $C_SPEEDDOM:$C_PORT:$1 $(speed_url "$C_SPEEDPATH" "$C_SPEEDDOM" "$C_PORT" "$C_SPEEDKB") -w '%{speed_download} %{size_download} %{time_total} %{time_starttransfer} %{http_code}'" 2>/dev/null)
-	rc=$?
-	# 半路超时/连接失败时 curl 照样吐一个 speed_download（被截断的假吞吐），
-	# 所以只认退出码 0；否则宁可是 '-'，也不给一个看着像数的假值。
-	if [ "$rc" != 0 ]; then
-		printf '%s' '-'
-		return 0
-	fi
-	# r75：rc=0 只说明「HTTP 事务跑完了」，不说明「回的是那个文件」。非 200 或者
-	# 响应体小得不像文件时记一笔取证（只有 ip/code/size 三个数字，不落任何配置内容），
-	# 然后按「未测出」处理 —— 假数比 '-' 更糟：它会把错误页当成最慢的那颗排序，
-	# 还会让页面/CSV 显示一个看起来像实测值的数。
-	if [ "$(printf '%s' "$out" | speed_valid "$C_SPEEDKB")" != 1 ]; then
-		printf '%s\t%s\t%s\n' "$1" \
-			"$(printf '%s' "$out" | awk '{ print ($5 + 0) }')" \
-			"$(printf '%s' "$out" | awk '{ print ($2 + 0) }')" \
-			>>"$RUN_DIR/speed_reject.tsv" 2>/dev/null
-		printf '%s' '-'
-		return 0
-	fi
-	net=$(printf '%s' "$out" | net_rate)
-	speed_fmt "$net"
+# ---- r88：吞吐判定用的三个纯函数（只用四则运算与 sort，不用 log/sqrt）----
+# 为什么不引 libm：busybox 的 awk 常常把它裁掉了，一用 log/sqrt 就在真机上报
+# 「function not defined」，而 CI 的 GNU awk 照样通过 —— 那种只在设备上炸的坑
+# 最难查。分档取值只需要比较，不需要对数。
+#
+# stdin = 每行一个 bps 整数（只放有效样本）-> stdout = 参考值 ref
+# n>=5 取中位数（偶数个取中间两个的平均）；1<=n<5 取最大值 —— 样本太少时中位数
+# 就是某个随机样本，反而会把门槛钉在某一次抖动的结果上，最大值更保守。
+# n==0 什么都不输出，调用方据此进「降级模式」（这一轮没有可用的尺子）。
+speed_ref() {
+	awk '
+	{ if ($1 ~ /^[0-9]+$/) a[++n] = $1 + 0 }
+	END {
+		if (n == 0) exit 0
+		for (i = 2; i <= n; i++) {          # 插入排序：busybox awk 没有 asort
+			t = a[i]; j = i - 1
+			while (j >= 1 && a[j] > t) { a[j + 1] = a[j]; j-- }
+			a[j + 1] = t
+		}
+		if (n < 5) { printf "%.0f", a[n]; exit 0 }
+		if (n % 2) printf "%.0f", a[(n + 1) / 2]
+		else printf "%.0f", (a[n / 2] + a[n / 2 + 1]) / 2
+	}'
 }
 
-# cfst 兼容 CSV 行（r71）：$1 = vfields.tsv 路径，stdin = colored.tsv（9 字段）。
+# $1=bps $2=ref（可空）$3=abs_min_bytes $4=rel_min(%) $5=truncated(0/1) $6=valid(0/1)
+# -> 1=合格 / 0=不合格。门槛 = max(绝对下限, 相对下限% × ref)；ref 缺失或为 0 时
+# 只看绝对下限。被 --max-time 截断的样本（truncated=1）放宽到门槛的 80%：
+# 那是真测量，但慢线路在超时点上的瞬时吞吐本来就会偏低一截。
+speed_gate() {
+	awk -v bps="${1:-0}" -v ref="${2:-}" -v absb="${3:-0}" -v rel="${4:-0}" \
+		-v trunc="${5:-0}" -v valid="${6:-0}" '
+	BEGIN {
+		if (valid + 0 != 1) { print 0; exit }
+		b = bps + 0
+		gate = absb + 0
+		if (ref != "" && ref + 0 > 0) {
+			r = (rel + 0) / 100 * (ref + 0)
+			if (r > gate) gate = r
+		}
+		ok = (b >= gate) ? 1 : 0
+		if (ok == 0 && trunc + 0 == 1 && b >= gate * 0.8) ok = 1
+		print ok
+	}'
+}
+
+# $1=ttfb_ms $2=bps（可空）$3=ttfb_limit $4=权重 0..100 -> 0..100 的整数分
+# 延迟项做线性归一并夹到 0..1；吞吐项分档（十进制 MB/s）。没测到吞吐时给 0.50
+# 的中性分：既不能因为「没测」把它顶上去，也不能因为「没测」把它踩下去 ——
+# 粗筛之外的那些 IP 正是这种状态。
+speed_score() {
+	awk -v ttfb="${1:-0}" -v bps="${2:-}" -v lim="${3:-3000}" -v w="${4:-0}" '
+	BEGIN {
+		l = lim + 0; if (l <= 0) l = 3000
+		ln = (l - (ttfb + 0)) / l
+		if (ln < 0) ln = 0
+		if (ln > 1) ln = 1
+		sn = 0.50
+		if (bps != "" && bps + 0 > 0) {
+			m = (bps + 0) / 1000000
+			if (m >= 5) sn = 1.00
+			else if (m >= 2) sn = 0.85
+			else if (m >= 1) sn = 0.70
+			else if (m >= 0.5) sn = 0.50
+			else if (m >= 0.25) sn = 0.30
+			else sn = 0.10
+		}
+		wt = w + 0
+		if (wt < 0) wt = 0
+		if (wt > 100) wt = 100
+		printf "%d", int((100 - wt) * ln + wt * sn)
+	}'
+}
+
+# $1=IP $2=字节数 $3=超时 -> 一行：bps code size want truncated（空格分隔，bps 整数）
+# 为什么改签名（r88）：吞吐现在要粗筛、过门槛、参与排序，三个阶段用不同样本大小与
+# 超时，写死全局 C_SPEEDKB/C_SPEEDTO 就没法在同一轮里既做小样本粗筛又做大样本精测。
+# 返回值也换成原始数字：判定要算门槛、排序要算分数，只有最后写页面/CSV 时才换算成
+# 两位小数。仍然是串行调用 —— 并发一起拉会互抢带宽，测出来全是被压平的假数。
+speed_of() {
+	sp_ip=${1:-}
+	sp_want=${2:-$C_SPEEDKB}
+	sp_to=${3:-$C_SPEEDTO}
+	# 三个入参都会被拼进交给 `su -c` 的 shell 字符串，先各过一道闸；空值在 set -u
+	# 下会拼出半个参数（表现是整列都测不出来），一律退回默认。
+	case "${sp_want:-}" in ''|*[!0-9]*) sp_want=${C_SPEEDKB:-10485760} ;; esac
+	case "${sp_to:-}" in ''|*[!0-9]*) sp_to=${C_SPEEDTO:-25} ;; esac
+	if ! valid_ip4 "$sp_ip"; then
+		printf '0 0 0 %s 0\n' "$sp_want"
+		return 0
+	fi
+	# 五个量：净速率靠 size/(total−ttfb) 算，末位状态码是判「回的是不是文件」的依据
+	# （只看 rc 会让十几 KB 的 403 挑战页混成真吞吐，r75 真机那整列 0.01MB/s 就是它）。
+	sp_out=$(run_probe "${CURL_BIN:-curl} -4 -o $NULL_DEV -sS --connect-timeout $C_TIMEOUT --max-time $sp_to --resolve $C_SPEEDDOM:$C_PORT:$sp_ip $(speed_url "$C_SPEEDPATH" "$C_SPEEDDOM" "$C_PORT" "$sp_want") -w '%{speed_download} %{size_download} %{time_total} %{time_starttransfer} %{http_code}'" 2>/dev/null)
+	sp_rc=$?
+	# rc=28 是「--max-time 到了」：慢线路上这是**真测量**（已经下了几个 MB），
+	# 不能整条丢掉，但要标 truncated 让门槛放宽 20%。其余非零都是没量到东西。
+	sp_tr=0
+	if [ "$sp_rc" = 28 ]; then
+		sp_tr=1
+	elif [ "$sp_rc" != 0 ]; then
+		sp_size=$(printf '%s\n' "$sp_out" | awk '{ print ($2 + 0) }')
+		case "${sp_size:-}" in ''|*[!0-9]*) sp_size=0 ;; esac
+		printf '%s\t%s\t%s\ttransport_%s\n' "$sp_ip" 0 "$sp_size" "$sp_rc" >>"$RUN_DIR/speed_reject.tsv" 2>/dev/null
+		printf '0 0 %s %s %s\n' "$sp_size" "$sp_want" "$sp_tr"
+		return 0
+	fi
+	sp_code=$(printf '%s\n' "$sp_out" | awk '{ print ($5 + 0) }')
+	sp_size=$(printf '%s\n' "$sp_out" | awk '{ print ($2 + 0) }')
+	case "${sp_code:-}" in ''|*[!0-9]*) sp_code=0 ;; esac
+	case "${sp_size:-}" in ''|*[!0-9]*) sp_size=0 ;; esac
+	# rc=0（或 28）只说明「HTTP 事务跑完了」，不说明「回的是那个文件」。判据只有
+	# 一份，仍在 speed_valid：HTTP 200 且响应体至少 1% 请求量。不合格的记一笔取证
+	# （只有 ip/code/size 三个数字，不落任何配置内容）并按未测出处理。
+	if [ "$(printf '%s\n' "$sp_out" | speed_valid "$sp_want")" != 1 ]; then
+		sp_why=not_file
+		[ "$sp_code" = 200 ] && sp_why=too_small
+		[ "$sp_code" = 0 ] && sp_why=no_response
+		printf '%s\t%s\t%s\t%s\n' "$sp_ip" "$sp_code" "$sp_size" "$sp_why" >>"$RUN_DIR/speed_reject.tsv" 2>/dev/null
+		printf '0 %s %s %s %s\n' "$sp_code" "$sp_size" "$sp_want" "$sp_tr"
+		return 0
+	fi
+	sp_bps=$(printf '%s\n' "$sp_out" | net_rate)
+	case "${sp_bps:-}" in ''|*[!0-9]*) sp_bps=0 ;; esac
+	printf '%s %s %s %s %s\n' "$sp_bps" "$sp_code" "$sp_size" "$sp_want" "$sp_tr"
+}
+
+# $1=speed.tsv 路径 $2=IP $3=字节数 $4=超时 $5=stage(screen|confirm)
+# speed_of 的五段结果 + IP + stage => speed.tsv 的七列。
+speed_measure() {
+	printf '%s %s %s\n' "$2" "$(speed_of "$2" "$3" "$4")" "$5" | \
+		awk '{ printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", $1, $2, $3, $4, $5, $6, $7 }' >>"$1"
+}
+
+# 按加权分重排 qualified（就地覆盖）。
+# $1=qualified 文件 $2=speed.tsv $3=below_gate 名单
+# 分数先算成一列再交给 sort：busybox 的 sort 常常没有 -k，而 qualified 的 8 字段
+# 结构不能动（err_counts 与 result.json 都按字段位置读），所以用定宽数字前缀排序、
+# 再 cut 掉前缀。排序键：below_gate 标记（正常行永远在前，否则「补足」的行可能把
+# 唯一一个真正合格的行挤出 best-ip.txt）→ 分数降序 → ttfb 升序 → total 升序。
+speed_resort() {
+	awk -F'\t' -v st="$2" '
+	FILENAME == st {
+		if ($7 == "confirm") bps[$1] = $2
+		else if (!($1 in bps)) bps[$1] = $2
+		next
+	}
+	{ printf "%s\t%s\n", $0, (($1 in bps) ? bps[$1] : "") }' "$2" "$1" >"$RUN_DIR/qual.bps"
+	: >"$RUN_DIR/qual.sorted"
+	while IFS="$(printf '\t')" read -r sr_ip sr_code sr_c sr_tls sr_ttfb sr_tot sr_err sr_dom sr_bps; do
+		[ -n "$sr_ip" ] || continue
+		sr_sc=$(speed_score "$sr_ttfb" "${sr_bps:-}" "$C_TTFB" "$C_SPEED_W")
+		sr_bg=0
+		grep -qxF "$sr_ip" "$3" 2>/dev/null && sr_bg=1
+		printf '%s\t%03d\t%015.3f\t%015.3f\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+			"$sr_bg" "$((100 - sr_sc))" "$sr_ttfb" "$sr_tot" \
+			"$sr_ip" "$sr_code" "$sr_c" "$sr_tls" "$sr_ttfb" "$sr_tot" "$sr_err" "$sr_dom" \
+			>>"$RUN_DIR/qual.sorted"
+	done <"$RUN_DIR/qual.bps"
+	sort "$RUN_DIR/qual.sorted" | cut -f5- >"$RUN_DIR/qual.new"
+	mv -f "$RUN_DIR/qual.new" "$1"
+}
+
+# cfst 兼容 CSV 行（r71）：$1 = vfields.tsv 路径，stdin = colored.tsv（11 字段）。
 # 七列与 XIU2/CloudflareSpeedTest 的 result.csv 同规格——edgetunnel 的 ADDCSV 直接
 # 消费（按 DLS  Mbps 阈值过滤），社区生态里这是事实标准格式。已发送/已接收反映多样本
 # 验证的真实样本数（未验证的 1/1）；丢包率来自验证；速度未测写 0.00（与 cfst 一致，
 # edgetunnel 的 DLS 会把 0.00 滤掉，不会把未测当成快）。
+# 第 6 列（r88）换成 **MiB/s**（bps ÷ 1048576），对齐 CFST 自己的口径 —— 页面和
+# result.json 仍是十进制 MB/s（Ryan 定的），两处口径不同是各自的消费方决定的。
+# 换算取第 10 列的 bps 真值而不是格式化过的第 8 列：11.81 这种两位小数乘回去会丢精度。
 csv_rows() {
 	# 用 FILENAME == vf 判首文件而不是 NR == FNR：vfields.tsv 可能是空文件
 	# （verify_top=0 时就是空的），NR == FNR 在首文件为空时会把第二文件的第一行
@@ -1578,7 +1629,8 @@ csv_rows() {
 		l = ($1 in loss) ? loss[$1] : 0
 		recv = n - int(l * n + 0.5)
 		if (recv < 0) recv = 0
-		sp = ($8 == "" || $8 == "-") ? "0.00" : $8
+		sp = "0.00"
+		if (NF >= 10 && $10 != "" && $10 + 0 > 0) sp = sprintf("%.2f", ($10 + 0) / 1048576)
 		printf "%s,%d,%d,%.2f,%s,%s,%s\n", $1, n, recv, l, $5, sp, $7
 	}' "${1:-/dev/null}" -
 }
@@ -1595,73 +1647,92 @@ write_outputs() {
 	# best-ip.txt 与 result.json 都从 colored.tsv 生成，避免两个输出内容不一致
 	# （页面上的「落地机房」列读的就是 result.json 的 colo 字段）。
 	#
-	# 第 7 列 colo、第 8 列吞吐（十进制 MB/s，'-' 表示未测）、第 9 列胜出时用的域名。
+	# colored.tsv 的 11 列（r88）：
+	#   1 ip 2 code 3 connect 4 tls 5 ttfb 6 total 7 colo
+	#   8 吞吐（十进制 MB/s，'-' = 未测出） 9 胜出时用的域名
+	#   10 bps 真值（整数，空 = 未测出） 11 below_gate 标记（1 = 只进 result.json）
+	#
+	# 吞吐**不再在这里现场测**：测速已经在 do_run 里做完了（粗筛 → 门槛 → 重排 →
+	# 精测），这里只负责回填。老流程是在这里才对前 speed_count 个现场测，那时名次
+	# 早已定死，第 11 名再快也进不来 —— 那正是 r88 要修的东西。
 	colored=$RUN_DIR/colored.tsv
 	: >"$colored"
+	spd_map=$RUN_DIR/speed.map
+	: >"$spd_map"
+	if [ -s "$RUN_DIR/speed.tsv" ]; then
+		# 同一个 IP 既有 screen 又有 confirm 时以 confirm 为准（大样本、截断更少）。
+		awk -F'\t' '
+		$7 == "confirm" { bps[$1] = $2; next }
+		!($1 in bps) { bps[$1] = $2 }
+		END { for (ip in bps) printf "%s\t%s\n", ip, bps[ip] }' "$RUN_DIR/speed.tsv" >"$spd_map"
+	fi
+	bg_file=$RUN_DIR/below_gate.lst
+	[ -f "$bg_file" ] || : >"$bg_file"
 	ck=0
 	cptotal=$(grep -c . "$RUN_DIR/ranked.tsv" 2>/dev/null || printf 0)
 	progress_set colo 0 $cptotal
 	while IFS="$(printf '\t')" read -r ip code c tls ttfb tot err dom; do
 		[ -n "$ip" ] || continue
 		colo=''
-		# 出口被接管时，colo 和吞吐量的都是代理自己那条路，跟候选 IP 无关，
-		# 再花两轮请求测只会得到一整列一模一样的假数据 —— 直接不测。
+		# 出口被接管时，colo 量的都是代理自己那条路，跟候选 IP 无关，
+		# 再花一轮请求测只会得到一整列一模一样的假数据 —— 直接不测。
 		if [ "$C_COLOR" = 1 ] && [ "$intercepted" = 0 ]; then
 			colo=$(colo_of "$ip")
 		fi
 		[ -n "$colo" ] || colo='n/a'
-		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\n' \
-			"$ip" "$code" "$c" "$tls" "$ttfb" "$tot" "$colo" "$dom" >>"$colored"
+		# 回填这一颗的吞吐：bps 是规范真值，第 8 列那串十进制 MB/s 只是给人看的。
+		# bps=0 表示测了但不算数（服务端没给文件），一律记未测出。
+		bsp=$(awk -F'\t' -v want="$ip" '$1 == want { print $2; exit }' "$spd_map")
+		case "${bsp:-}" in ''|*[!0-9]*) bsp='' ;; esac
+		if [ -n "$bsp" ] && [ "$bsp" -gt 0 ] 2>/dev/null; then
+			spd=$(speed_fmt "$bsp")
+		else
+			bsp=''
+			spd='-'
+		fi
+		bg=0
+		grep -qxF "$ip" "$bg_file" 2>/dev/null && bg=1
+		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+			"$ip" "$code" "$c" "$tls" "$ttfb" "$tot" "$colo" "$spd" "$dom" "$bsp" "$bg" >>"$colored"
 		ck=$((ck + 1))
 		progress_set colo $ck $cptotal
 	done <"$RUN_DIR/ranked.tsv"
 
-	# 吞吐只对榜单前 speed_count 个串行实测，其余留 '-'；
-	# 关了 speed_probe（或本轮不可信）就整列都是 '-'（零流量开销）。
-	if [ "$C_SPEED" = 1 ] && [ "$intercepted" = 0 ]; then
-		sp_tmp=$RUN_DIR/colored_sp.tsv
-		: >"$sp_tmp"
-		# 取证文件每轮重开：RUN_DIR 是复用的（只有 mkdir -p），不清零就会把上一轮
-		# 那批「没测出」的 IP 当成这一轮的，日志里的 N 也就越滚越大。
-		: >"$RUN_DIR/speed_reject.tsv"
-		k=0
-		progress_set speed 0 "$C_SPEEDN"
-		sum=''
-		while IFS="$(printf '\t')" read -r ip code c tls ttfb tot colo spd dom; do
-			[ -n "$ip" ] || continue
-			if [ "$k" -lt "$C_SPEEDN" ] && [ ! -f "$STOP" ]; then
-				spd=$(speed_of "$ip")
-				k=$((k + 1))
-				progress_set speed $k "$C_SPEEDN"
-				# '-' 拼进 `X=-MB/s` 读起来像"等于负 MB/s"（真机日志里就是这样）
-				if [ -z "$spd" ] || [ "$spd" = '-' ]; then
-					sum="$sum $ip=未测出"
-				else
-					sum="$sum $ip=${spd}MB/s"
-				fi
-			fi
-			printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-				"$ip" "$code" "$c" "$tls" "$ttfb" "$tot" "$colo" "$spd" "$dom" >>"$sp_tmp"
-		done <"$colored"
-		mv "$sp_tmp" "$colored"
-		# 同一数量三处一个说法（r70）：精确字节数 + 十进制 MB 换算（÷1e6，与 speed_fmt
-		# 同口径）—— 10485760 字节 = 10.49 MB，不是 10MB（那是 MiB 口径）。
-		# awk 只在真有实测时跑一次（每轮至多一次），不在探测路径上。
-		[ "$k" = 0 ] || log "吞吐实测 $k 个（每个 $C_SPEEDKB 字节 = $(printf '%s' "$C_SPEEDKB" | awk '{ printf "%.2f", $1 / 1000000 }') MB，单位十进制 MB/s）:$sum"
-		# r75：有 IP 回的不是那个文件（错误页/挑战页）时，speed_of 已经把它记成 '-'。
-		# 这行日志是给人看的解释 —— 否则页面上一片 '-' 会被当成「引擎坏了」，
-		# 而实情是服务端没给文件。样例只带 ip/code/size 三个数字，不碰配置内容。
-		rej_n=$(grep -c . "$RUN_DIR/speed_reject.tsv" 2>/dev/null || true)
-		rej_n=${rej_n:-0}
-		if [ "$rej_n" -gt 0 ]; then
-			rej_one=$(head -1 "$RUN_DIR/speed_reject.tsv" | awk -F'\t' '{ printf "%s code=%s 只有 %s 字节", $1, $2, $3 }')
-			log "吞吐有 $rej_n 个没测出真实吞吐（服务端回的不是文件：如 $rej_one），已记作未测出"
-		fi
+	# 本轮吞吐的汇总。页面上一片 '-' 到底是「没测」「测了不算」还是「被门槛刷掉」，
+	# 这三行日志要能分开说清。
+	if [ -s "$RUN_DIR/speed.tsv" ]; then
+		spd_all=$(grep -c . "$RUN_DIR/speed.tsv" || true)
+		spd_ok=$(awk -F'\t' '$2 + 0 > 0' "$RUN_DIR/speed.tsv" | grep -c . || true)
+		spd_bad=$((${spd_all:-0} - ${spd_ok:-0}))
+		[ "$spd_bad" -lt 0 ] 2>/dev/null && spd_bad=0
+		log "吞吐实测 ${spd_all:-0} 次（粗筛 + 精测），其中 ${spd_ok:-0} 次拿到有效吞吐、$spd_bad 次没测出；单位十进制 MB/s"
+	fi
+	bg_n=$(grep -c . "$bg_file" 2>/dev/null || true)
+	bg_n=${bg_n:-0}
+	# JSON 顶层那个计数只数**进了结果**的行（补足名单里可能还有排在 keep 之外的）。
+	bg_in=$(awk -F'\t' '$11 == 1' "$colored" | grep -c . || true)
+	bg_in=${bg_in:-0}
+	if [ "$bg_n" -gt 0 ]; then
+		log "吞吐门槛：有 $bg_n 个 IP 没达标，按「最接近门槛」补进了结果详情，但不写进 best-ip.txt"
+	fi
+	# r75：有 IP 回的不是那个文件（错误页/挑战页）时按未测出处理。这行是给人看的
+	# 解释 —— 否则页面上一片 '-' 会被当成「引擎坏了」，而实情是服务端没给文件。
+	# 样例只带 ip/code/size 三个数字，不碰配置内容；below_gate 那类不在这里重复。
+	rej_n=$(awk -F'\t' '$4 != "below_gate"' "$RUN_DIR/speed_reject.tsv" 2>/dev/null | grep -c . || true)
+	rej_n=${rej_n:-0}
+	if [ "$rej_n" -gt 0 ]; then
+		rej_one=$(awk -F'\t' '$4 != "below_gate"' "$RUN_DIR/speed_reject.tsv" 2>/dev/null | head -1 | \
+			awk -F'\t' '{ printf "%s code=%s 只有 %s 字节", $1, $2, $3 }')
+		log "吞吐有 $rej_n 个没测出真实吞吐（服务端回的不是文件：如 $rej_one），已记作未测出"
 	fi
 
 	: >"$tmp"
-	while IFS="$(printf '\t')" read -r ip code c tls ttfb tot colo spd dom; do
+	bn=0
+	while IFS="$(printf '\t')" read -r ip code c tls ttfb tot colo spd dom bsp bg; do
 		[ -n "$ip" ] || continue
+		# below_gate 的行只写进 result.json：它是「比门槛差一点、但榜单太空所以拉来
+		# 凑数」的，推到客户端只会让设备连上一颗明显慢的 IP。
+		[ "${bg:-0}" = 1 ] && continue
 		# 渲染后去掉首尾空白：模板填成一个空格 = 只要一行纯 IP（uci 分不清
 		# “显式留空”和“没这一项”，真空值取回来是 rc=1，会落回默认模板）。
 		# 行首不拼 :端口 —— 这份文件就是推给 Gist 的那份，客户端要的是纯 IP；
@@ -1675,29 +1746,40 @@ write_outputs() {
 		else
 			printf '%s\n' "$ip" >>"$tmp"
 		fi
+		bn=$((bn + 1))
 	done <"$colored"
+	# 一行都写不出来（理论上只会发生在「本轮结果全是补足行」时）绝不能拿空文件
+	# 覆盖上一轮那份好的：客户端会把空榜当成「没有可用 IP」，比一份旧榜单糟得多。
+	publish=1
+	[ "$bn" -gt 0 ] || publish=0
 
 	{
-		printf '{"state":"done","started":"%s","finished":"%s","pool":%s,"qualified":%s,"usable":%s,"intercepted":%s,"counts":%s,"domains":"%s","budget":%s,"port":%s,"items":[' \
+		printf '{"state":"done","started":"%s","finished":"%s","pool":%s,"qualified":%s,"usable":%s,"intercepted":%s,"counts":%s,"domains":"%s","budget":%s,"port":%s,"speed_mode":"%s","speed_weight":%s,"below_gate":%s,"bypass":"%s","items":[' \
 			"${STARTED:-}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$pool_n" "$qualified" \
-			"$(grep -c . "$colored" || true)" "$intercepted" "$counts" "$C_DOMAINS" "$C_BUDGET" "$C_PORT"
+			"$(grep -c . "$colored" || true)" "$intercepted" "$counts" "$C_DOMAINS" "$C_BUDGET" "$C_PORT" \
+			"${SPEED_MODE:-display}" "${C_SPEED_W:-0}" "${bg_in:-0}" "${BYPASS:-unknown}"
 		# r71：多样本验证的四个派生键（loss/jitter_ms/net_ttfb_ms/ray_ok）从边表按 IP
 		# 并入。未验证的 IP 四项都是 null——页面据此区分"没验过"和"验了没丢包"，
 		# 不会把 null 读成 0 说成"零丢包"。边表由 do_run 保证存在（可能为空）。
 		# 同理用 FILENAME 判首文件：空边表时 NR == FNR 会吃掉 colored 第一行。
+		# r88 新增 speed_bps（整数真值，没测出是 null）与 speed_mib（MiB 两位小数，
+		# 对齐 CFST 的 CSV 口径）。speed_mbytes 保持十进制 MB/s 不变 —— 页面上的
+		# 数字和他手机测速软件对得上，靠的就是这一列。
 		[ -f "$RUN_DIR/vfields.tsv" ] || : >"$RUN_DIR/vfields.tsv"
 		awk -v vf="$RUN_DIR/vfields.tsv" '
 		BEGIN { FS = "\t" }
 		FILENAME == vf { loss[$1] = $4; jit[$1] = $5; net[$1] = $7; ray[$1] = $8; next }
-		NF >= 9 {
+		NF >= 11 {
 			if (n++) printf ","
 			sp = ($8 == "" || $8 == "-") ? "null" : $8
+			bp = ($10 == "") ? "null" : $10
+			mi = ($10 == "") ? "null" : sprintf("%.2f", ($10 + 0) / 1048576)
 			l = ($1 in loss) ? loss[$1] : "null"
 			j = ($1 in jit) ? jit[$1] : "null"
 			nt = ($1 in net && net[$1] != "") ? net[$1] : "null"
 			ry = ($1 in ray) ? ray[$1] : "null"
-			printf "{\"ip\":\"%s\",\"code\":%s,\"connect_ms\":%s,\"tls_ms\":%s,\"ttfb_ms\":%s,\"total_ms\":%s,\"colo\":\"%s\",\"speed_mbytes\":%s,\"domain\":\"%s\",\"loss\":%s,\"jitter_ms\":%s,\"net_ttfb_ms\":%s,\"ray_ok\":%s}",
-				$1, $2, $3, $4, $5, $6, $7, sp, $9, l, j, nt, ry
+			printf "{\"ip\":\"%s\",\"code\":%s,\"connect_ms\":%s,\"tls_ms\":%s,\"ttfb_ms\":%s,\"total_ms\":%s,\"colo\":\"%s\",\"speed_mbytes\":%s,\"speed_bps\":%s,\"speed_mib\":%s,\"below_gate\":%s,\"domain\":\"%s\",\"loss\":%s,\"jitter_ms\":%s,\"net_ttfb_ms\":%s,\"ray_ok\":%s}",
+				$1, $2, $3, $4, $5, $6, $7, sp, bp, mi, $11, $9, l, j, nt, ry
 		}' "$RUN_DIR/vfields.tsv" "$colored"
 		printf ']}\n'
 	} >"$RUN_DIR/result.tmp" && mv "$RUN_DIR/result.tmp" "$RESULT"
@@ -1706,6 +1788,11 @@ write_outputs() {
 	cp "$RESULT" "$RUN_DIR/status.new" 2>/dev/null && mv -f "$RUN_DIR/status.new" "$STATUS" || rm -f "$RUN_DIR/status.new"
 	cp "$RESULT" "$ETC_DIR/result.keep.new" 2>/dev/null && mv -f "$ETC_DIR/result.keep.new" "$RESULT_KEEP" || rm -f "$ETC_DIR/result.keep.new"
 
+	if [ "$publish" = 0 ]; then
+		rm -f "$tmp"
+		log '本轮没有可发布的 IP（结果全是没达到吞吐门槛的补足项），best-ip.txt 保持上一轮内容'
+		return 0
+	fi
 	# best-ip.txt 放在最后一笔：它一换新版，就说明这一轮的状态也已经落定了。
 	# 反过来（榜单先写）真机上撞过：轮次被杀在中间，文件已经是下一轮的、
 	# status 还停在上一轮，页面和文件各说一套。
@@ -1713,9 +1800,11 @@ write_outputs() {
 	# cfst 兼容 CSV（r71）与 best-ip.txt 同源，写在它之后：这份是给 edgetunnel 的
 	# ADDCSV 消费的第二产物，契约上 best-ip.txt 仍是第一产物，CSV 是加法不是替换。
 	# 同样先写临时再 rename——半截 CSV 会被 edgetunnel 当成缺列直接拒。
+	# below_gate 的行同样不进 CSV：它和 best-ip.txt 一样是给客户端用的清单，
+	# 只把「补足用」的 IP 留在 result.json 里给人看。
 	{
 		printf 'IP 地址,已发送,已接收,丢包率,平均延迟,下载速度(MB/s),地区码\n'
-		csv_rows "$RUN_DIR/vfields.tsv" <"$colored"
+		awk -F'\t' '$11 != 1' "$colored" | csv_rows "$RUN_DIR/vfields.tsv"
 	} >"$RUN_DIR/best-ip.csv.tmp" && mv "$RUN_DIR/best-ip.csv.tmp" "$CSV" || rm -f "$RUN_DIR/best-ip.csv.tmp"
 }
 
@@ -1944,10 +2033,22 @@ do_run() {
 	# `2026-10-13 10:26:49` 又是按**本地时区**解释的 —— 差一整段 +0800（28800 秒）。
 	# 写在子壳里：目录不存在时重定向失败是 shell 级错误，不能让它打断整轮。
 	( printf '%s\n' "$(date +%s)" >"$LAST_RUN" ) 2>/dev/null || true
+	# 代理旁路自检（r88，只读）：探测身份（默认 nobody）到底有没有被判给「直连」。
+	# 放在最前面是因为它是这一整轮数字成立的前提；任何异常都不影响主流程，
+	# 拿不到结论就记 unknown。绝不改任何代理配置、不停任何服务。
+	BYPASS=$(bypass_check 2>/dev/null || true)
+	case "${BYPASS:-}" in
+		exempt)     log '代理旁路自检：探测身份已被代理豁免（直连），本轮数字可信' ;;
+		not_needed) log '代理旁路自检：本机流量不进代理，本轮数字可信' ;;
+		absent)     log '代理旁路自检：本机代理没有给探测身份留直连规则（探测流量可能被接管）' ;;
+		*)          BYPASS=unknown
+		            log '代理旁路自检：看不出本机代理是否豁免了探测身份（按未知处理）' ;;
+	esac
 	# budget / port 一起写进状态：真机上出现过"表单改成 64 没保存，跑的还是 256"，
-	# 而页面只报候选数，看不出这一轮到底按什么配置跑的。
-	printf '{"state":"running","started":"%s","budget":%s,"port":%s,"items":[]}' \
-		"$STARTED" "$C_BUDGET" "$C_PORT" >"$STATUS"
+	# 而页面只报候选数，看不出这一轮到底按什么配置跑的。bypass 同理 —— 页面要能
+	# 说清「这轮的数字为什么不可信」。
+	printf '{"state":"running","started":"%s","budget":%s,"port":%s,"bypass":"%s","items":[]}' \
+		"$STARTED" "$C_BUDGET" "$C_PORT" "$BYPASS" >"$STATUS"
 
 	# sink 先于 curl：这条检查只是"以探测身份往自己的文件里写一个 x"，不需要 curl，
 	# 放在后面就会在没装 curl 的环境里永远测不到（CI 的 busybox 容器正是这种环境）。
@@ -1986,6 +2087,16 @@ do_run() {
 	intercepted=$(canary_check)
 	progress_set canary 1 1
 	[ "$intercepted" = 1 ] && log '本轮结果不可信：出口被代理接管，逐 IP 差异被它抹平'
+	# 静态前提破了（bypass=absent）时也按不可信处理：跳过测速与上传。
+	# 但 canary 是实测证据，它说没被接管就以它为准 —— 那说明这条链没在管我们的包。
+	if [ "$BYPASS" = absent ]; then
+		if [ "$C_CANARY" = 1 ] && [ "$intercepted" = 0 ]; then
+			log '代理旁路自检没看到直连规则，但 canary 实测没被接管，本轮照常测速与上传'
+		else
+			intercepted=1
+			log '本机代理未豁免探测身份：本轮结果不可信，已跳过测速与上传'
+		fi
+	fi
 	# 分母是「候选 × 域名」：探测是笛卡尔积，页面那条进度要说的是总共要发多少请求。
 	ndom=0
 	for d in $(printf '%s' "$C_DOMAINS" | tr ',' ' '); do ndom=$((ndom + 1)); done
@@ -2077,12 +2188,154 @@ do_run() {
 			log "多样本验证 $vkept 个（各 3 次取中位数）；验证后达标 $vout 个"
 		fi
 	fi
+	# ---- r88：稳定性 → 粗筛测速 → 吞吐门槛 → 加权重排 → 精测复排 → 截断 ----
+	# 顺序是这次改动的全部意义：老流程在 write_outputs 里才对前 speed_count 个现场
+	# 测速，那时名次早已截断完毕，第 11 名再快也进不来。要让吞吐影响名次，测速就
+	# 必须发生在截断之前，而且被测的范围要比榜单大一圈。
+	speed_tsv=$RUN_DIR/speed.tsv
+	: >"$speed_tsv"
+	# 取证文件每轮重开：RUN_DIR 是复用的（只有 mkdir -p），不清零就会把上一轮
+	# 那批「没测出」的 IP 当成这一轮的，日志里的 N 也越滚越大。
+	: >"$RUN_DIR/speed_reject.tsv"
+	: >"$RUN_DIR/below_gate.lst"
+	SPEED_MODE=display
+	spd_pass=0
+	spd_meas=0
+	spd_ref=''
+
+	# L3 稳定性：丢包 > 1/3 的踢出。丢包率是上面多样本验证顺手量到的（vfields.tsv
+	# 第 4 列），没有验证数据的 IP 一律保留 —— 没测到不等于有问题。
+	# 阈值写 0.34 而不是 0.3333：那一列是两位小数，1/3 存成 0.33，用 1/3 去比会把
+	# 「三探一失」也一起踢掉，而它正是这条门槛允许的下限。
+	if [ -s "$RUN_DIR/vfields.tsv" ] && [ -s "$qual" ]; then
+		qbefore=$(grep -c . "$qual" || true)
+		awk -F'\t' 'NR == FNR { if ($4 != "" && $4 + 0 > 0.34) drop[$1] = 1; next }
+			!($1 in drop)' "$RUN_DIR/vfields.tsv" "$qual" >"$RUN_DIR/qual3.tsv" && \
+			mv -f "$RUN_DIR/qual3.tsv" "$qual"
+		qafter=$(grep -c . "$qual" || true)
+		log "稳定性过滤：剔除 $(( ${qbefore:-0} - ${qafter:-0} )) 个（丢包 > 1/3）"
+	fi
+
+	# 粗筛：初榜前 speed_screen_count 个各拉一个小样本（默认 4MiB / 8 秒）。
+	# 串行是硬要求：并发一起拉会互抢带宽，测出来全是被压平的假数。
+	if [ "$C_SPEED" = 1 ] && [ "$intercepted" = 0 ] && [ "$C_SCREENN" -gt 0 ] && [ -s "$qual" ]; then
+		head -n "$C_SCREENN" "$qual" | cut -f1 >"$RUN_DIR/screen.ips"
+		spd_total=$(grep -c . "$RUN_DIR/screen.ips" || true)
+		progress_set speed 0 "$spd_total"
+		spd_i=0
+		while IFS= read -r sip; do
+			[ -n "$sip" ] || continue
+			# 叫停之后不再开新的下载：测速是整轮里最费流量的一步
+			[ -f "$STOP" ] && break
+			speed_measure "$speed_tsv" "$sip" "$C_SCREENBYTES" "$C_SCREENTO" screen
+			spd_i=$((spd_i + 1))
+			progress_set speed $spd_i "$spd_total"
+		done <"$RUN_DIR/screen.ips"
+		spd_ref=$(awk -F'\t' '$2 + 0 > 0 { print $2 }' "$speed_tsv" | speed_ref)
+		log "粗筛测速 $spd_i 个（每个 $C_SCREENBYTES 字节，超时 ${C_SCREENTO}s）"
+		if [ -z "$spd_ref" ]; then
+			# 一个有效样本都没有：这一轮没有可用的尺子。不猜、不罚，降级成只展示。
+			SPEED_MODE=degraded
+			log '吞吐门槛：一个有效样本都没测到（服务端没给文件，或线路全断），本轮降级为只展示，不改名次'
+		elif [ "$C_SPEEDGATE" = 1 ]; then
+			SPEED_MODE=gate
+			# 门槛判定要按「这颗有没有测过、测出来多少」逐条走，所以先把 speed.tsv
+			# 的三列并到 qualified 的 IP 上，再逐条调 speed_gate（判定规则只留一份）。
+			awk -F'\t' -v st="$speed_tsv" '
+			FILENAME == st {
+				if ($7 == "confirm") { bps[$1] = $2; tr[$1] = $6 }
+				else if (!($1 in bps)) { bps[$1] = $2; tr[$1] = $6 }
+				next
+			}
+			{ printf "%s\t%s\t%s\n", $1, (($1 in bps) ? bps[$1] : ""), (($1 in tr) ? tr[$1] : "") }' \
+				"$speed_tsv" "$qual" >"$RUN_DIR/qual.spd"
+			cp "$qual" "$RUN_DIR/qual.pre" 2>/dev/null || true
+			: >"$RUN_DIR/gate.pass"
+			: >"$RUN_DIR/gate.drop"
+			spd_pass=0
+			spd_meas=0
+			while IFS="$(printf '\t')" read -r gip gbps gtr; do
+				[ -n "$gip" ] || continue
+				# 粗筛之外（没测过）：没有证据说它慢，保留。
+				if [ -z "${gbps:-}" ]; then
+					printf '%s\n' "$gip" >>"$RUN_DIR/gate.pass"
+					continue
+				fi
+				spd_meas=$((spd_meas + 1))
+				gvalid=0
+				[ "$gbps" -gt 0 ] 2>/dev/null && gvalid=1
+				if [ "$(speed_gate "$gbps" "$spd_ref" "$C_ABSBYTES" "$C_SPEED_REL" "${gtr:-0}" "$gvalid")" = 1 ]; then
+					printf '%s\n' "$gip" >>"$RUN_DIR/gate.pass"
+					spd_pass=$((spd_pass + 1))
+				else
+					printf '%s\t%s\n' "$gbps" "$gip" >>"$RUN_DIR/gate.drop"
+				fi
+			done <"$RUN_DIR/qual.spd"
+			awk -F'\t' 'NR == FNR { keep[$1] = 1; next } ($1 in keep)' \
+				"$RUN_DIR/gate.pass" "$qual" >"$RUN_DIR/qual.gated"
+			mv -f "$RUN_DIR/qual.gated" "$qual"
+			gfmt=$(printf '%s\t%s\t%s\n' "$spd_ref" "$C_ABSBYTES" "$C_SPEED_REL" | awk -F'\t' '
+				{
+					g = $2 + 0
+					r = $3 / 100 * ($1 + 0)
+					if (r > g) g = r
+					printf "%.2f %.2f", $1 / 1000000, g / 1000000
+				}')
+			log "吞吐门槛：合格 $spd_pass / 测了 $spd_meas（参考 $(printf '%s' "$gfmt" | cut -d' ' -f1) MB/s，门槛 $(printf '%s' "$gfmt" | cut -d' ' -f2) MB/s）"
+			# 合格数不够 keep_count 时按「最接近门槛」补齐：它们只是差一点，比完全
+			# 没测过的可靠。补进来的标记成 below_gate —— 只进 result.json，不进
+			# best-ip.txt（把明显慢的 IP 推给客户端没有任何好处）。
+			if [ "$spd_pass" -lt "$C_KEEP" ] && [ -s "$RUN_DIR/gate.drop" ]; then
+				need=$((C_KEEP - spd_pass))
+				awk -F'\t' '$1 + 0 > 0' "$RUN_DIR/gate.drop" | sort -nr | head -n "$need" | \
+					cut -f2 >"$RUN_DIR/refill.ips"
+				refill_n=$(grep -c . "$RUN_DIR/refill.ips" || true)
+				refill_n=${refill_n:-0}
+				if [ "$refill_n" -gt 0 ]; then
+					awk -F'\t' 'NR == FNR { keep[$1] = 1; next } ($1 in keep)' \
+						"$RUN_DIR/refill.ips" "$RUN_DIR/qual.pre" >>"$qual"
+					cat "$RUN_DIR/refill.ips" >>"$RUN_DIR/below_gate.lst"
+					log "吞吐门槛：合格只有 $spd_pass 个，按最接近门槛补 $refill_n 个到 $C_KEEP 个（补的这几个只进结果详情，不进 best-ip.txt）"
+				fi
+			fi
+			# 加权重排：分数降序 → ttfb 升序 → total 升序，正常行永远排在补足行前面
+			speed_resort "$qual" "$speed_tsv" "$RUN_DIR/below_gate.lst"
+		else
+			SPEED_MODE=display
+			log '吞吐门槛已关闭（speed_gate=0）：只展示实测吞吐，名次仍按延迟'
+		fi
+		# 精测：排序之后前 confirm_top 个用大样本复测。粗筛那 4MiB 里 TCP 慢启动
+		# 占的比例太大，名次靠前的几个值得多花点流量量准。display 模式也测（展示的
+		# 数字要对），degraded 模式跳过（连尺子都没有，再测也是 0）。
+		if [ "$SPEED_MODE" != degraded ] && [ "$C_CONFIRMN" -gt 0 ] && [ ! -f "$STOP" ] && [ -s "$qual" ]; then
+			head -n "$C_CONFIRMN" "$qual" | cut -f1 >"$RUN_DIR/confirm.ips"
+			cftotal=$(grep -c . "$RUN_DIR/confirm.ips" || true)
+			progress_set speed 0 "$cftotal"
+			cfi=0
+			while IFS= read -r cip; do
+				[ -n "$cip" ] || continue
+				[ -f "$STOP" ] && break
+				speed_measure "$speed_tsv" "$cip" "$C_CONFBYTES" "$C_CONFTO" confirm
+				cfi=$((cfi + 1))
+				progress_set speed $cfi "$cftotal"
+			done <"$RUN_DIR/confirm.ips"
+			[ "$cfi" = 0 ] || log "精测 $cfi 个（每个 $C_CONFBYTES 字节，超时 ${C_CONFTO}s）"
+			# 换了样本就要重算分数。只重排名次，不重判是否合格 —— 已经过门槛的
+			# 不会因为精测慢了一点就被踢掉，那会让「合格数」随样本波动。
+			if [ "$SPEED_MODE" = gate ] && [ "$cfi" -gt 0 ]; then
+				speed_resort "$qual" "$speed_tsv" "$RUN_DIR/below_gate.lst"
+			fi
+		fi
+	fi
+	bg_n=$(grep -c . "$RUN_DIR/below_gate.lst" 2>/dev/null || true)
+	bg_n=${bg_n:-0}
+
 	qualified=$(grep -c . "$qual" || true)
 	ranked=$(head -n "$C_KEEP" "$qual")
 	kept=$(printf '%s\n' "$ranked" | grep -c . || true)
 	counts=$(counts_json <"$agg")
 	progress_set rank 1 1
-	log "达标 $qualified / $pool_n（榜单保留 $kept）；分类 $counts"
+	log "达标 $qualified / $pool_n（榜单保留 $kept，其中按门槛补足 $bg_n 个）；分类 $counts"
 	if [ "$kept" = 0 ]; then
 		# 绝不能拿一份空榜单去覆盖上一轮那份好的（真机上撞过一次：stop 之后
 		# best-ip.txt 被写成 0 行）。所以不发布任何产物 —— 但状态要**当场自己写**：
@@ -2109,7 +2362,11 @@ do_run() {
 	write_outputs "$ranked" "$pool_n" "$qualified" "$intercepted" "$counts"
 	rm -f "$LOCK"
 	if [ "$C_UPLOAD" = 1 ]; then
-		if [ -f "$STOP" ]; then
+		if [ "$intercepted" = 1 ]; then
+			# 出口被接管（或本机代理没给探测身份留直连）时，这份榜单上的数字是代理
+			# 那条路的，推给订阅端等于用噪声覆盖别人的可用列表。
+			log '本轮出口不可信（被代理接管或探测身份没被豁免），结果只写本地，不推公开 Gist'
+		elif [ -f "$STOP" ]; then
 			# 叫停落在"已经攒够达标 IP"之后时，上一支会照常把这份**跑到一半**的榜单
 			# 推到公开 Gist（真机量到：04:28:34 按停，04:28:44 Gist 已更新）。
 			# 按停的语义是"这一轮别继续了"，不是"把我没看完的结果发出去"，
@@ -2446,32 +2703,6 @@ selftest() {
 	got=$(printf '104.16.0.0/12\n' | sh "$0" _expand 2>/dev/null | grep -c . || true)
 	check '/12 展开成 4096 个 /24 代表地址' "$got" '4096'
 
-	# r78：池收敛的三个纯函数。真机事故：域名只认自己那两个段，池外 IP 全被拒绝，
-	# 榜单写进池外 IP 后客户端反而连不上。
-	# 用 echo 逐行造样本，并改用空格分隔：真机上 nslookup 有的是 tab 有的是空格，
-	# 解析器两种都吃；这么写还避开了 printf 的 \t/\n 在不同 shell 里语义不一致的坑
-	# （CI 的 busybox 容器里就栽过一次，返回空）。
-	got=$(
-		{
-			echo 'Server: 127.0.0.1'
-			echo 'Address: 127.0.0.1:53'
-			echo
-			echo 'Name: st.example.com'
-			echo 'Address 1: 104.21.65.176'
-			echo 'Address 2: 172.67.147.224'
-		} | sh "$0" _poolparse 2>/dev/null | tr '\n' ' '
-	)
-	check '池推导：只取 Name 之后的 A 记录，本地 DNS 地址不算' "$got" '104.21.0.0/16 172.67.0.0/16 '
-	got=$(printf '104.21.0.1\n104.22.0.1\n172.67.255.254\n172.68.0.1\n198.41.211.93\n' | sh "$0" _poolin '104.21.0.0/16 172.67.0.0/16' 2>/dev/null | tr '\n' ' ')
-	check '池过滤：段边界内外分得清（.0 与 .255 之外都算段内）' "$got" '104.21.0.1 172.67.255.254 '
-	got=$(sh "$0" _poolsample 8 '104.21.0.0/16 172.67.0.0/16' 2>/dev/null | grep -cE '^(104\.21|172\.67)\.' || true)
-	check '池抽样：8 个全落在给定段内' "$got" '8'
-	got=$(sh "$0" _poolsample 0 '104.21.0.0/16' 2>/dev/null | grep -c . || true)
-	check '池抽样：要 0 个就一个都不输出' "$got" '0'
-	got=$(printf '%s' '{"Status":0,"Answer":[{"name":"st.xy-nas.eu.org.","type":1,"data":"104.21.65.176"},{"name":"st.xy-nas.eu.org.","type":1,"data":"172.67.147.224"}]}' | sh "$0" _pooldoh 2>/dev/null | tr '\n' ' ')
-	check 'DoH 解析：两条 A 记录都变成 /16' "$got" '104.21.0.0/16 172.67.0.0/16 '
-	got=$(printf '198.18.0.0/16\n10.0.0.0/8\n172.16.0.0/16\n192.168.0.0/16\n104.21.0.0/16\n' | sh "$0" _poolfilter 2>/dev/null | tr '\n' ' ')
-	check '池兜底：fake-IP 与内网段一律丢掉，只留公网段' "$got" '104.21.0.0/16 '
 	got=$(sh "$0" _gistmsg '{"message":"Bad credentials","documentation_url":"x"}' 2>/dev/null)
 	check 'Gist 报错取 message（人话，不甩 JSON）' "$got" '（Bad credentials）'
 	got=$(sh "$0" _gistmsg '' 2>/dev/null)
@@ -2776,6 +3007,44 @@ selftest() {
 	check '吞吐判据：慢线路被 max-time 截断只剩 5MB（48%）⇒ 仍算数（1）' "$got" '1'
 	got=$(printf '0 0 0.5 0.2 000\n' | sh "$0" _speedvalid 10485760)
 	check '吞吐判据：状态码 000（没建成事务）⇒ 不算（0）' "$got" '0'
+
+	# r88：吞吐判定的三个纯函数。它们决定「谁合格」「谁排前面」，所以边界必须钉住：
+	# 参考值在样本少时取最大值（中位数就是某个随机样本，反而把门槛钉在一次抖动上）、
+	# 截断样本有 20% 宽容带、没测到吞吐给中性分（既不奖也不罚）。
+	got=$(sh "$0" _speedref </dev/null 2>/dev/null)
+	check '参考值：一个有效样本都没有 ⇒ 不输出（调用方据此降级）' "$got" ''
+	got=$(printf '100000\n300000\n200000\n' | sh "$0" _speedref 2>/dev/null)
+	check '参考值：样本少于 5 个时取最大值（300000）' "$got" '300000'
+	got=$(printf '100000\n200000\n300000\n400000\n500000\n' | sh "$0" _speedref 2>/dev/null)
+	check '参考值：5 个样本取中位数（300000）' "$got" '300000'
+	got=$(printf '100000\n200000\n300000\n400000\n500000\n600000\n' | sh "$0" _speedref 2>/dev/null)
+	check '参考值：偶数个样本取中间两个的平均（350000）' "$got" '350000'
+
+	got=$(sh "$0" _speedgate 400000 2000000 500000 25 0 0 2>/dev/null)
+	check '门槛：valid=0（没测出）一律不合格' "$got" '0'
+	got=$(sh "$0" _speedgate 400000 2000000 500000 25 0 1 2>/dev/null)
+	check '门槛：低于门槛不合格（400K < 500K）' "$got" '0'
+	got=$(sh "$0" _speedgate 400000 2000000 500000 25 1 1 2>/dev/null)
+	check '门槛：被超时截断的样本有 20% 宽容带（400K ≥ 400K 合格）' "$got" '1'
+	got=$(sh "$0" _speedgate 600000 2000000 500000 25 0 1 2>/dev/null)
+	check '门槛：高于门槛合格' "$got" '1'
+	got=$(sh "$0" _speedgate 500000 '' 500000 25 0 1 2>/dev/null)
+	check '门槛：没有参考值时只按绝对下限判' "$got" '1'
+	got=$(sh "$0" _speedgate 1500000 2000000 100000 60 0 1 2>/dev/null)
+	check '门槛：相对下限（中位数的 60% = 1.2M）压过绝对下限' "$got" '1'
+
+	got=$(sh "$0" _speedscore 0 '' 3000 0 2>/dev/null)
+	check '加权分：weight=0 时只看延迟（ttfb=0 给满分 100）' "$got" '100'
+	got=$(sh "$0" _speedscore 4000 '' 3000 0 2>/dev/null)
+	check '加权分：ttfb 超上限时延迟项夹到 0' "$got" '0'
+	got=$(sh "$0" _speedscore 1500 '' 3000 40 2>/dev/null)
+	check '加权分：没测到吞吐给中性 0.50（lat 0.5 + 中性 0.5 = 50）' "$got" '50'
+	got=$(sh "$0" _speedscore 1500 '' 3000 100 2>/dev/null)
+	check '加权分：weight=100 且没测到吞吐 = 中性分 50' "$got" '50'
+	got=$(sh "$0" _speedscore 1500 5000000 3000 100 2>/dev/null)
+	check '加权分：weight=100 且 ≥5MB/s 给满分' "$got" '100'
+	got=$(sh "$0" _speedscore 1500 300000 3000 100 2>/dev/null)
+	check '加权分：weight=100 时 0.3MB/s 落在 0.30 档' "$got" '30'
 
 	# 运行锁的存活判定。回归点：只判断文件存在会把被 OOM 打断的轮次
 	# 永久当成“还在跑”，服务静默停摆。
@@ -3083,13 +3352,16 @@ selftest() {
 	got=$(printf '700000 0 3.0 1.0\n' | sh "$0" _netrate)
 	check '净速率：size=0（没下到东西）时也退回原值' "$got" '700000'
 
-	# CSV 行：七列格式、未测速度 0.00、未验证 1/1、空边表不吃首行
+	# CSV 行：七列格式、未测速度 0.00、未验证 1/1、空边表不吃首行。
+	# r88：第 6 列从「十进制 MB/s（第 8 列）」改成「MiB/s（第 10 列的 bps 真值）」
+	# —— CFST 的 result.csv 就是 MiB 口径，edgetunnel 按它设 DLS 阈值。
+	# 所以 10485760 B/s 在这里写成 10.00（而页面/JSON 的同一颗是 10.49 MB/s）。
 	vf=$T/vf.tsv
 	: >"$vf"
 	printf '1.1.1.1\t200.0\t300.0\t0.33\t150.0\t3\t150.0\t1\n' >"$vf"
-	printf '1.1.1.1\t200\t10\t5\t200.0\t300.0\tNRT\t11.81\twww.cloudflare.com\n2.2.2.2\t200\t10\t5\t150.0\t250.0\tSIN\t-\twww.cloudflare.com\n' >"$T/cl.tsv"
+	printf '1.1.1.1\t200\t10\t5\t200.0\t300.0\tNRT\t10.49\twww.cloudflare.com\t10485760\t0\n2.2.2.2\t200\t10\t5\t150.0\t250.0\tSIN\t-\twww.cloudflare.com\t\t0\n' >"$T/cl.tsv"
 	got=$(sh "$0" _csvrows "$vf" <"$T/cl.tsv" | head -1)
-	check 'CSV 行：已验证 IP 用真实样本数与丢包（3,2,0.33）' "$got" '1.1.1.1,3,2,0.33,200.0,11.81,NRT'
+	check 'CSV 行：已验证 IP 用真实样本数与丢包（3,2,0.33），速度按 MiB 口径' "$got" '1.1.1.1,3,2,0.33,200.0,10.00,NRT'
 	got=$(sh "$0" _csvrows "$vf" <"$T/cl.tsv" | tail -1)
 	check 'CSV 行：未验证 IP 记 1/1、丢包 0.00、未测速度 0.00' "$got" '2.2.2.2,1,1,0.00,150.0,0.00,SIN'
 	got=$(sh "$0" _csvrows /dev/null <"$T/cl.tsv" | grep -c . || true)
@@ -3221,14 +3493,13 @@ case "${1:-}" in
 	_verifystats) verify_stats ;;
 	_raydur) ray_dur "${2:-}" ;;
 	_netrate) net_rate ;;
+	# r88：吞吐判定的三个纯函数（参考值 / 门槛 / 加权分），全部离线可跑。
+	_speedref) speed_ref ;;
+	_speedgate) speed_gate "${2:-0}" "${3:-}" "${4:-0}" "${5:-0}" "${6:-0}" "${7:-0}" ;;
+	_speedscore) speed_score "${2:-0}" "${3:-}" "${4:-3000}" "${5:-0}" ;;
 	_gistgap) gist_gap "${2:-0}" "${3:-0}" ;;
 	_gistmsg) gist_api_msg "${2:-}" ;;
 	_gistwhy) gist_why_rc "${2:-0}" ;;
-	_poolparse) pool_parse_nslookup ;;
-	_pooldoh) pool_parse_doh ;;
-	_poolfilter) pool_filter_cidrs ;;
-	_poolin) pool_in_cidrs "${2:-}" ;;
-	_poolsample) pool_sample "${2:-0}" "${3:-}" ;;
 	# 注意别写成 "${2:-/__down?bytes={bytes}}" —— 默认值里那个 } 会被 shell 当成
 	# 参数展开的右括号，展开完把剩下的 } 当字面量拼回结果，URL 末尾多一个 }。
 	_speedurl)

@@ -24,12 +24,6 @@ config global 'global'
 	# "别人的线路"，你这条线上最快的 IP 可能就在某颗好 IP 隔壁、却不在任何清单里。
 	# 代价是每轮多约 40 次探测（几十秒）。填 0 关闭，完全按社区清单测。
 	option neighbor_expand '1'
-	# 只在「探测域名」认可的那几段里找 IP（r78）：Cloudflare 给每个域名只开放
-	# 一部分 IP，别的段会回「禁止访问」错误页。关掉就是所有 CF IP 都测。
-	option pool_follow_domain '1'
-	# 手工指定候选网段（英文逗号分隔，如 104.21.0.0/16,172.67.0.0/16）。
-	# 留空 = 自动跟着探测域名推导。
-	option candidate_cidrs ''
 	# 社区源只是"别人替你挑出来的种子"，好坏仍以本机实测为准。
 	# 每条下面的注释格式：段内/提取数 · 原始出处（2026-09-27 用
 	# api.cloudflare.com/client/v4/ips 逐条算过占比）。bestcf.pages.dev 是别人的
@@ -86,13 +80,34 @@ config global 'global'
 	# 拦成 403），改用这个域名 + 同一个候选 IP 再取一次。保持默认即可。
 	option colo_domain 'www.cloudflare.com'
 
-	# 下载速度实测：延迟榜出来后，只对榜单前 speed_count 个 IP **串行**拉
-	# speed_domain 的 __down?bytes=speed_bytes，量十进制 MB/s（1 MB = 1000 KB，与测速网站同口径）。
-	# 必须串行：并发一起拉会互抢带宽，数字全废。要单独一个超时：跨境拉 10.49MB（10485760 字节）
-	# 常在几秒到几十秒，复用 probe_timeout 会把所有测量都截断成 0。代价是流量：默认
-	# 10 × 10485760 字节 ≈ 104.86MB/轮。
-	# 出口被接管（canary 报警）或 probe_user 没绕开代理时整列不测，直接记 -。
+	# 下载速度实测与判定（r88）。吞吐不再只是一列展示：它先用于粗筛，再过门槛，
+	# 最后参与加权排序 —— 排在榜单外面但拉得动的 IP 有机会顶掉慢的那几个。
+	# 全程串行：并发一起拉会互抢带宽，数字全废。单位统一十进制 MB/s（1 MB = 1e6 字节，
+	# 与测速网站同口径）。出口被接管（canary 报警）或探测身份没绕开代理时整段不测。
 	option speed_probe '1'
+	# 1=吞吐参与判定（测速结果会影响名次与是否入榜）；0=只展示，名次仍按延迟。
+	option speed_gate '1'
+	# 绝对下限：低于这个数直接判不合格。0.50 就是每秒 500KB。
+	option speed_abs_min '0.50'
+	# 相对下限：不低于本轮有效样本中位数的 N%。同一条线路上快慢差一倍是常态，
+	# 用本批中位数当尺子比写死一个数更贴合实际。
+	option speed_rel_min '25'
+	# 粗筛：初榜前 N 个各拉一个小样本。要比 keep_count 大，否则榜单外面那些
+	# 永远没有机会进来。N × speed_screen_bytes 就是这一步的流量。
+	option speed_screen_count '20'
+	option speed_screen_bytes '4194304'
+	option speed_screen_timeout '8'
+	# 精测：排序之后，前 N 个再用大样本复测一次（0 = 关闭）。小样本受 TCP 慢启动
+	# 影响大，名次靠前的几个值得多花点流量量准。
+	option speed_confirm_top '3'
+	option speed_confirm_bytes '10485760'
+	option speed_confirm_timeout '25'
+	# 排序权重 0..100：吞吐在总分里占多少。0=只看延迟，100=只看吞吐。
+	# 默认 40：延迟仍然更重要，但慢到拉不动网页的那几个会被压下去。
+	option speed_weight '40'
+	# 下面三项是旧选项，留着是为了 sysupgrade 带回来的老配置能平滑升级：
+	# speed_count 在新选项 speed_screen_count 没配置时充当粗筛个数，
+	# speed_bytes / speed_timeout 充当精测的字节数与超时。
 	option speed_count '10'
 	option speed_bytes '10485760'
 	option speed_timeout '25'
