@@ -1991,12 +1991,17 @@ speed_resort() {
 		sr_sc=$(speed_score "$sr_m" "${sr_bps:-}" "$C_TTFB" "$C_SPEED_W" "$sr_ln")
 		sr_bg=0
 		grep -qxF "$sr_ip" "$3" 2>/dev/null && sr_bg=1
-		printf '%s\t%03d\t%015.3f\t%015.3f\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-			"$sr_bg" "$((100 - sr_sc))" "$sr_m" "$sr_tot" \
+		# r94：4xx 排在 2xx/3xx 之后，且优先级高于加权分 —— 403 的错误页正文只有
+		# 十几字节，TTFB 天然最低，加权分里延迟项必然接近满分；只改 rank() 只能让
+		# 它们进不了 qualified，能进榜的照样霸榜（真机：修完 rank 后榜单前 5 仍是
+		# 172.64.52.x 的 403）。这类 IP 对你的域名就是不可用，位置必须让出来。
+		case "$sr_code" in 2*|3*) sr_tier=0 ;; *) sr_tier=1 ;; esac
+		printf '%s\t%s\t%03d\t%015.3f\t%015.3f\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+			"$sr_bg" "$sr_tier" "$((100 - sr_sc))" "$sr_m" "$sr_tot" \
 			"$sr_ip" "$sr_code" "$sr_c" "$sr_tls" "$sr_ttfb" "$sr_tot" "$sr_err" "$sr_dom" \
 			>>"$RUN_DIR/qual.sorted"
 	done <"$RUN_DIR/qual.bps"
-	sort "$RUN_DIR/qual.sorted" | cut -f5- >"$RUN_DIR/qual.new"
+	sort "$RUN_DIR/qual.sorted" | cut -f6- >"$RUN_DIR/qual.new"
 	mv -f "$RUN_DIR/qual.new" "$1"
 }
 
