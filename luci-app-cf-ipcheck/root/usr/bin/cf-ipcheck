@@ -375,7 +375,9 @@ screen_src() {
 	esac
 	case "${2:-}" in
 		''|*[!0-9]*) printf 'default'; return 0 ;;
+		0) printf 'off'; return 0 ;;
 	esac
+	# 0 是旧界面上写明的「关掉测速」，属于显式意图 —— 不能被新的默认 20 覆盖。
 	if [ "$2" -gt "${3:-0}" ] 2>/dev/null; then
 		printf 'old'
 	else
@@ -461,6 +463,12 @@ load_config() {
 		old)
 			C_SCREENN=$(cfg_range speed_count 20 1 100)
 			C_SCREENSRC='配置的旧选项 speed_count'
+			;;
+		off)
+			C_SCREENN=0
+			C_SPEED=0
+			C_SCREENSRC='旧选项 speed_count=0（明确关掉测速）'
+			cfg_warn 'speed_count 设为 0（旧界面的“关掉测速”）：本轮不做下载测速'
 			;;
 		*)
 			C_SCREENN=20
@@ -3228,6 +3236,8 @@ selftest() {
 	check '粗筛来源：新选项缺失、旧值等于 keep_count ⇒ 用默认（不是旧默认 10）' "$got" 'default'
 	got=$(sh "$0" _screensrc '' '10' '5' 2>/dev/null)
 	check '粗筛来源：旧值比 keep_count 大一点就采纳（显式配置被尊重）' "$got" 'old'
+	got=$(sh "$0" _screensrc '' '0' '10' 2>/dev/null)
+	check 'r89 旧选项填 0 视为明确关掉测速（不被新默认 20 覆盖）' "$got" 'off'
 	got=$(sh "$0" _screensrc '' '' '10' 2>/dev/null)
 	check '粗筛来源：两个选项都没有 ⇒ 默认' "$got" 'default'
 	got=$(sh "$0" _screensrc '20' '30' '10' 2>/dev/null)
