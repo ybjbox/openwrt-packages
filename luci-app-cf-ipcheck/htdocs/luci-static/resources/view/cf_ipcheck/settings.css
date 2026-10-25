@@ -610,3 +610,36 @@
   .cfp .dc{padding:var(--s2)}
   .cfp .dc-tag{margin-left:.35em;padding:.02em .3em}
 }
+
+/* ---------- r92：机房行展开测速明细 ----------
+ * 可展开的那一行整行就是点击面（role=button），箭头复用分组头那颗 .chev：
+ * 收起指右、展开指下，跟 .grp.open 同一套旋转。
+ * 明细是三列栅格，不复用 .brow 的十条轨道：那些列在这里一个都用不上。
+ * IP 吃满剩余宽度，延迟与吞吐各给固定 em —— 数字列不能随窗口宽度漂，
+ * 否则同一机房里两行的数字会站不齐。
+ * 12.5px 等宽下 5.4em≈68px 装得下「1234.5」(≈45px)、6.2em≈78px 装得下「10.00」
+ * 与表头「MB/s」；420px 收到 4.6em/5.2em（≈58/65px），IP 仍剩 200px 以上。 */
+.cfp .dcrow[role=button]{cursor:pointer;user-select:none}
+.cfp .dcrow[role=button]:hover{background:var(--panel-2)}
+.cfp .dcrow[role=button]:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+/* 第一格改成 flex，只为了把箭头和机房码排成一行（不展开的行没有箭头，位置不变）。
+ * 只认第一格：最后一格也是 .dc.l（最快 IP），跟着变 flex 会让那串 IP 的省略号失效。 */
+.cfp .dcrow.data > .dc:first-child{display:flex;align-items:center;gap:.4em;min-width:0}
+.cfp .dcrow.data:not(.open) .chev{transform:rotate(-45deg)}
+.cfp .dcitems{background:var(--panel-2);border-bottom:1px solid var(--rule-soft);
+  padding:var(--s1) 0 var(--s2)}
+.cfp .dcitem{display:grid;grid-template-columns:minmax(0,1fr) 5.4em 6.2em;
+  align-items:center;gap:.35em;min-width:0;
+  padding:.22em var(--s3) .22em 2.4em;font-size:var(--t-sm)}
+.cfp .dcitem.head{padding-top:0;padding-bottom:.1em;font-size:var(--t-xs);
+  font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--ink-3)}
+.cfp .dcitem .dci-ms,.cfp .dcitem .dci-sp,.cfp .dcitem .dci-h.r{text-align:right;
+  white-space:nowrap}
+.cfp .dcitem .dci-ip{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 明细里的「还有 N 个」与截断说明：进那一列文字的左边界，别顶着行首 */
+.cfp .dcitems .dc-more{padding:0 var(--s3) 0 2.4em;border-top:0;margin-top:.15em}
+.cfp .dim{color:var(--ink-3)}
+@media (max-width:620px){
+  .cfp .dcitem{grid-template-columns:minmax(0,1fr) 4.6em 5.2em;padding-left:1.8em}
+  .cfp .dcitems .dc-more{padding-left:1.8em}
+}

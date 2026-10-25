@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r91';
+var VIEW_BUILD = 'r92';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -1244,7 +1244,7 @@ function Leaderboard(items, opts) {
 }
 
 /* ==========================================================================
- * 9b. 数据中心汇总（r90）
+ * 9b. 数据中心汇总（r90；r92 起每一行可展开看测速明细）
  * ==========================================================================
  * 引擎给的 dc_summary 已经按中位耗时排好序，这里只负责摆：一个机房一行。
  * 这张表回答「这些 IP 落在哪几个机房、哪个机房整体更快」，榜单回答「用哪一颗」
@@ -1252,9 +1252,55 @@ function Leaderboard(items, opts) {
  * 超过 6 个机房时先只摆前 6 个：它是背景信息，不该比榜单还长。展开状态放模块级，
  * 否则每拍重画都会把用户刚点开的那张表收回去（和日志「完整时刻」同一个道理）。
  * dc_summary 为空或缺失时整块不渲染 —— 不留一个空壳占版面。
+ *
+ * r92：引擎在 dc_summary 的每个元素里多给一份 items（这个机房这一轮测到的每一颗
+ * IP，已经排好：有吞吐的在前按吞吐降序，其余按延迟升序）。于是有明细的机房行变成
+ * 一颗展开按钮，点开就在该行下方插一段明细，再点收起。
+ * 两张明细列的口径都跟着**这一轮的结果**走，不跟配置走：延迟看 probe_metric、
+ * 吞吐看 speed_unit —— 手里这份数字是怎么测的就怎么解释，改设置还没重跑时
+ * 不该给旧数字贴新标签（与榜单表头同一条规矩）。
+ *
+ * 为什么不再是 role=table/row/cell：要展开的那一行本身就是按钮，而按钮里的 cell
+ * 不成立（读屏器把按钮的子节点当纯文本念）。列头退成一行视觉图例，每行是一颗
+ * disclosure 按钮 —— 视觉栅格一格没动，无障碍树从「表格」变成「一组可展开的行」，
+ * 这正是它实际能做的事。
  */
 var DC_SHOW = 6;
+var DC_ITEM_SHOW = 12;
 var dcOpen = false;
+/* r92：哪些机房行被点开了、哪些把明细看全了（按机房码记）。模块级 ——
+ * 轮询每拍都会重建 DcSummary，状态放函数里就会出现「刚展开、三秒后自己合上」。 */
+var dcItemOpen = new Set();
+var dcItemAll = new Set();
+
+/* items 是引擎这一版才给的键：形状不对的一条都不收。混进字符串会让整列变成 —
+ * 而那种「看着没坏、数字全空」的错最难查。 */
+function dcItemsOf(r) {
+	var out = [];
+	var src = r && r.items;
+	if (!src || !src.length)
+		return out;
+	for (var i = 0; i < src.length; i++) {
+		if (src[i] && typeof src[i] === 'object')
+			out.push(src[i]);
+	}
+	return out;
+}
+
+/* 明细的延迟列：口径是 tcp 时看建连时间，与榜单表头的切换同一套说法。
+ * 某一条没记这个字段就给 —（老结果 / 引擎没写），不编数。 */
+function dcItemLag(d, useConn) {
+	return ms(useConn ? d.connect_ms : d.ttfb_ms);
+}
+
+/* 明细的吞吐列：引擎给的是 bit/s。unit=mib 除 1048576，否则十进制除 1e6。
+ * 这一颗没测速时 speed_bps 是 null —— 返回 null，由调用方写成 — 并弱化。 */
+function dcItemSpd(d, unit) {
+	var bps = d.speed_bps;
+	if (bps === null || bps === undefined || bps === '' || !isFinite(Number(bps)))
+		return null;
+	return Number(bps) / (unit === 'mib' ? 1048576 : 1e6);
+}
 
 function DcSummary(st) {
 	var src = st && st.dc_summary;
@@ -1272,40 +1318,181 @@ function DcSummary(st) {
 	/* dc_pick 只有「具体机房码」才算「当前」；all / auto 是两种策略，不是某个机房 */
 	var cur = st.dc_pick && st.dc_pick !== 'all' && st.dc_pick !== 'auto' ? String(st.dc_pick) : null;
 	/* 列头恒写 TTFB：引擎的 dc_summary 不论判定口径是什么，中位数都按首字节时间算
-	 * （tcp 只换排序与门槛那一列），写 TCP 会把这列数字说成另一件事。 */
+	 * （tcp 只换排序与门槛那一列），写 TCP 会把这列数字说成另一件事。
+	 * 明细里就不一样了 —— 那条走的是 items 的逐颗读数，口径切了值也跟着切。 */
 	var midHead = T('中位 TTFB');
+	var useConn = st.probe_metric === 'tcp';
+	var unit = st.speed_unit === 'mib' ? 'mib' : 'mb';
 
-	var head = el('div', { class: 'dcrow head', role: 'row' }, [
-		el('div', { class: 'dc l', role: 'columnheader', text: T('数据中心') }),
-		el('div', { class: 'dc r', role: 'columnheader', text: T('条数') }),
-		el('div', { class: 'dc r', role: 'columnheader', text: midHead }),
-		el('div', { class: 'dc l', role: 'columnheader', text: T('最快 IP') })
+	/* 列头是一行视觉图例（不再挂 row/columnheader，理由见函数头） */
+	var head = el('div', { class: 'dcrow head' }, [
+		el('div', { class: 'dc l', text: T('数据中心') }),
+		el('div', { class: 'dc r', text: T('条数') }),
+		el('div', { class: 'dc r', text: midHead }),
+		el('div', { class: 'dc l', text: T('最快 IP') })
 	]);
 	var body = el('div', { class: 'dcbody' });
+	var rowAt = {};
 
+	function codeOf(r) {
+		return r.dc ? String(r.dc) : DASH;
+	}
+
+	/* 一行 = 四格读数。有明细时才多这三样：箭头、role=button + tabindex、
+	 * aria-expanded。没有明细的机房（老结果 / 这一轮没测到）保持死的 ——
+	 * 给它一颗箭头却点不开，比干脆不给更糟。 */
 	function dcRow(r) {
-		var code = r.dc ? String(r.dc) : DASH;
+		var code = codeOf(r);
 		var on = !!cur && code === cur;
+		var can = dcItemsOf(r).length > 0;
+		var open = can && dcItemOpen.has(code);
 		var ip = r.best_ip ? String(r.best_ip) : null;
-		return el('div', { class: 'dcrow data' + (on ? ' cur' : ''), role: 'row' }, [
-			el('div', { class: 'dc l', role: 'cell' }, [
+		var props = { class: 'dcrow data' + (on ? ' cur' : '') + (open ? ' open' : '') };
+
+		if (can) {
+			props.tabindex = '0';
+			props.role = 'button';
+			props['aria-expanded'] = open ? 'true' : 'false';
+			props.on = {
+				click: function (ev) {
+					if (ev && ev.preventDefault)
+						ev.preventDefault();
+					toggle(code);
+				},
+				/* role=button 得自己接键盘：真 <button> 白送的那两个键这里没有 */
+				keydown: function (ev) {
+					if (!ev)
+						return;
+					if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') {
+						if (ev.preventDefault)
+							ev.preventDefault();
+						toggle(code);
+					}
+				}
+			};
+		}
+
+		return el('div', props, [
+			el('div', { class: 'dc l' }, [
+				/* 箭头复用配置页分组头那颗 .chev：收起指右、展开指下 */
+				can ? el('span', { class: 'chev', 'aria-hidden': 'true' }) : null,
 				el('span', { class: 'dc-code n', text: code }),
 				/* 「当前」用实心小块，和榜首那颗 1 同一种记号：不动列宽、一眼能认 */
-				on ? el('span', { class: 'dc-tag', text: T('当前') }) : null
+				on ? el('span', { class: 'dc-tag', text: T('当前') }) : null,
+				/* 这一行是按钮，元素内容就是它的无障碍名字（按钮的子节点对读屏器
+				 * 是纯文本）：读数照旧念出来，这里补一句「按下去会发生什么」。
+				 * 不写 aria-label —— 那会把这一行的数字整个盖掉。 */
+				can ? el('span', {
+					class: 'sr-only',
+					text: open ? T('收起测速明细') : T('展开测速明细')
+				}) : null
 			]),
-			el('div', { class: 'dc r', role: 'cell' }, el('span', { class: 'n', text: num(r.count) })),
-			el('div', { class: 'dc r', role: 'cell' }, el('span', { class: 'n', text: ms(r.ttfb_med) })),
-			el('div', { class: 'dc l', role: 'cell' },
+			el('div', { class: 'dc r' }, el('span', { class: 'n', text: num(r.count) })),
+			el('div', { class: 'dc r' }, el('span', { class: 'n', text: ms(r.ttfb_med) })),
+			el('div', { class: 'dc l' },
 				el('span', { class: 'n dc-ip', text: ip || DASH, title: ip }))
 		]);
 	}
 
-	/* 重画这一块只换 body：展开/收起不碰 store，也不会连带重建别的东西 */
-	function paint() {
+	/* 明细：一颗 IP 一行，三列（IP / 延迟 / 吞吐）。上面带一行同样栅格的小表头 ——
+	 * 「延迟」在这两种口径下量的不是同一件事，不写清会被当成同一个数。
+	 * 默认只摆 12 条（一屏扫得完），剩下的走和上面「其余 N 个」同一套 more 交互。 */
+	function dcDetail(r, code) {
+		var items = dcItemsOf(r);
+		var all = dcItemAll.has(code);
+		var shown = all ? items : items.slice(0, DC_ITEM_SHOW);
+		var kids = [
+			el('div', { class: 'dcitem head', 'aria-hidden': 'true' }, [
+				el('span', { class: 'dci-h', text: T('IP') }),
+				el('span', { class: 'dci-h r', text: useConn ? T('TCP') : T('TTFB') }),
+				el('span', { class: 'dci-h r', text: unit === 'mib' ? T('MiB/s') : T('MB/s') })
+			])
+		];
+
+		var box = el('div', { class: 'dcilist', role: 'list' });
+		for (var k = 0; k < shown.length; k++) {
+			var d = shown[k];
+			var spd = dcItemSpd(d, unit);
+			var pip = d.ip ? String(d.ip) : DASH;
+			box.appendChild(el('div', { class: 'dcitem', role: 'listitem' }, [
+				el('span', { class: 'dci-ip n', text: pip, title: pip }),
+				el('span', { class: 'dci-ms n', text: dcItemLag(d, useConn) }),
+				/* 没测速的不写 0.00：那会让人以为测出来就是 0 */
+				el('span', {
+					class: 'dci-sp n' + (spd == null ? ' dim' : ''),
+					text: spd == null ? DASH : spd.toFixed(2)
+				})
+			]));
+		}
+		kids.push(box);
+
+		var foot = [];
+		if (items.length > DC_ITEM_SHOW) {
+			var rest = items.length - DC_ITEM_SHOW;
+			foot.push(el('button', {
+				class: 'lnk',
+				type: 'button',
+				aria: { expanded: all ? 'true' : 'false' },
+				on: {
+					click: function (ev) {
+						if (ev && ev.preventDefault)
+							ev.preventDefault();
+						if (all)
+							dcItemAll.delete(code);
+						else
+							dcItemAll.add(code);
+						paint(code);
+					}
+				}
+			}, el('span', {
+				text: all
+					? T('只看前 %s 个').format(DC_ITEM_SHOW)
+					: T('还有 %s 个').format(rest)
+			})));
+		}
+		/* 引擎超过 100 条会截断，并用 items_total 报真数：不说这一句，
+		 * 把列表看全了也仍会以为那就是全部。 */
+		var total = Number(r.items_total);
+		if (isFinite(total) && total > items.length) {
+			foot.push(el('span', {
+				class: 'dci-note dim',
+				text: T('共 %s 条，这里只列前 %s 条').format(total, items.length)
+			}));
+		}
+		if (foot.length)
+			kids.push(el('div', { class: 'dc-more' }, foot));
+
+		return el('div', { class: 'dcitems' }, kids);
+	}
+
+	function toggle(code) {
+		if (dcItemOpen.has(code)) {
+			dcItemOpen.delete(code);
+			/* 收起时把「看全部」也忘掉：下次点开从 12 条开始，和第一次一样 */
+			dcItemAll.delete(code);
+		} else {
+			dcItemOpen.add(code);
+		}
+		paint(code);
+	}
+
+	/* 重画这一块只换 body：展开/收起不碰 store，也不会连带重建别的东西。
+	 * focusCode 是刚点过的那一行 —— 整段 body 被换掉时焦点会掉到 <body>，
+	 * 键盘用户按第二次回车就没地方可按了。 */
+	function paint(focusCode) {
 		clear(body);
+		rowAt = {};
 		var rows = dcOpen ? list : list.slice(0, DC_SHOW);
-		for (var k = 0; k < rows.length; k++)
-			body.appendChild(dcRow(rows[k]));
+		for (var k = 0; k < rows.length; k++) {
+			var r = rows[k];
+			var code = codeOf(r);
+			var n = dcRow(r);
+			rowAt[code] = n;
+			body.appendChild(n);
+			/* 明细紧贴在该行下方；缩进由 .dcitems 自己给 */
+			if (dcItemOpen.has(code) && dcItemsOf(r).length)
+				body.appendChild(dcDetail(r, code));
+		}
 		var rest = list.length - DC_SHOW;
 		if (rest > 0) {
 			/* 用真的 <button>：回车/空格天生可点，不用自己接 keydown */
@@ -1329,13 +1516,15 @@ function DcSummary(st) {
 				})))
 			);
 		}
+		if (focusCode && rowAt[focusCode] && rowAt[focusCode].focus)
+			rowAt[focusCode].focus();
 	}
 	paint();
 
 	return el('div', {}, [
 		Section(T('数据中心汇总'),
 			st.dc_pick === 'auto' ? el('span', { class: 'dc-note', text: T('自动选了中位最快的一个') }) : null),
-		el('div', { class: 'board dcsum', role: 'table' }, [ head, body ])
+		el('div', { class: 'board dcsum' }, [ head, body ])
 	]);
 }
 

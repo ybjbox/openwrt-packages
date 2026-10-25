@@ -935,6 +935,160 @@ has('跑完但空榜单时指向配置页', pane, '测速与判定');
 }
 
 /* ================================================================== *
+ * 6c. r92：点开机房这一行，看该机房的全部测速明细
+ * ------------------------------------------------------------------
+ * 断言全在渲染树上量，不看源码：行是不是真的能点（role/tabindex）、点开之后
+ * 摆了几条、折叠阈值是多少、两种口径下取的是哪一列、没有明细的机房是不是
+ * 真的点不动 —— 以及轮询重画之后用户展开的那一段还在不在（模块级 Set 的
+ * 用处只在这条上看得出来）。
+ * 每个用例用自己的机房码：展开状态是模块级的，复用同一个码会让上一条的
+ * 状态漏到下一条里。
+ * ================================================================== */
+{
+	const it1 = (ip, ttfb, conn, bps) => ({ ip: ip, ttfb_ms: ttfb, connect_ms: conn, speed_bps: bps });
+	const dcOf = (code, items, extra) => Object.assign({
+		dc: code, count: items.length,
+		ttfb_med: items.length ? items[0].ttfb_ms : null,
+		best_ip: items.length ? items[0].ip : null,
+		items: items
+	}, extra || {});
+	const rowOf = (node, code) => byClass(node, 'dcrow').filter(n =>
+		/\bdata\b/.test(String(n.attrs['class'] || '')) && textOf(n).indexOf(code) >= 0)[0];
+	/* 明细只是 role=list 那一段里的 listitem；表头那行不在里面（它没有 role） */
+	const itemsIn = node => {
+		const box = byClass(node, 'dcilist')[0];
+		return box ? all(box).filter(n => n.attrs.role === 'listitem') : [];
+	};
+
+	/* --- 1) 有明细：整行是一颗展开按钮，初始 aria-expanded=false --- */
+	const s1 = t.DcSummary({
+		dc_summary: [ dcOf('AMS', [ it1('104.21.9.1', 200, 40.2, 10000000) ]) ], dc_pick: 'all'
+	});
+	const r1 = rowOf(s1, 'AMS');
+	ok('r92 有明细的机房行是 role=button 且可聚焦',
+		!!r1 && r1.attrs.role === 'button' && r1.attrs.tabindex === '0');
+	eq('r92 展开前 aria-expanded 是 false', r1 && r1.attrs['aria-expanded'], 'false');
+	eq('r92 展开前一条明细都不渲染', byClass(s1, 'dcilist').length, 0);
+
+	/* --- 2) 点开：条数一致、三列各一格、aria 跟上 --- */
+	r1.dispatch('click');
+	eq('r92 点开后明细条数与该机房的 items 一致', itemsIn(s1).length, 1);
+	eq('r92 点开后 aria-expanded 变 true', rowOf(s1, 'AMS').attrs['aria-expanded'], 'true');
+	eq('r92 明细容器这时是 role=list', byClass(s1, 'dcilist')[0].attrs.role, 'list');
+	const f1 = itemsIn(s1)[0];
+	eq('r92 明细每行三格（IP / 延迟 / 吞吐）',
+		byClass(f1, 'dci-ip').length + byClass(f1, 'dci-ms').length + byClass(f1, 'dci-sp').length, 3);
+	eq('r92 IP 是等宽那一档（.n）', textOf(byClass(f1, 'dci-ip')[0]), '104.21.9.1');
+	eq('r92 吞吐按十进制两位小数', textOf(byClass(f1, 'dci-sp')[0]), '10.00');
+	eq('r92 明细表头给三列各自的名字',
+		byClass(s1, 'dcitem')[0] ? byClass(byClass(s1, 'dcitem')[0], 'dci-h').length : 0, 3);
+
+	/* --- 3) 13 条：默认 12 条 + 「还有 1 个」，点开补上 --- */
+	const many = [];
+	for (let i = 1; i <= 13; i++)
+		many.push(it1('104.22.0.' + i, 300 + i, 50 + i, null));
+	const s3 = t.DcSummary({ dc_summary: [ dcOf('BOM', many) ], dc_pick: 'all' });
+	rowOf(s3, 'BOM').dispatch('click');
+	eq('r92 items 13 条时默认只摆 12 条', itemsIn(s3).length, 12);
+	has('r92 末尾一行写「还有 1 个」', s3, '还有 1 个');
+	const more3 = byTag(s3, 'button').filter(b => /还有 1 个/.test(textOf(b)))[0];
+	ok('r92 那颗「还有」是 reuse 了 .lnk 的行内按钮', !!more3 && /\blnk\b/.test(String(more3.attrs['class'] || '')));
+	more3.dispatch('click');
+	eq('r92 点开「还有 1 个」后 13 条都在', itemsIn(s3).length, 13);
+	has('r92 这时那颗按钮改说「只看前 12 个」', s3, '只看前 12 个');
+
+	/* --- 4) 没测速的那颗：吞吐写 — 且弱化 --- */
+	const s4 = t.DcSummary({
+		dc_summary: [ dcOf('CDG', [ it1('104.23.0.1', 250, 44, 9000000),
+			it1('104.23.0.2', 260, 45, null) ]) ], dc_pick: 'all'
+	});
+	rowOf(s4, 'CDG').dispatch('click');
+	eq('r92 没测速的那颗吞吐写 —（不写 0.00）',
+		textOf(byClass(itemsIn(s4)[1], 'dci-sp')[0]), '—');
+	ok('r92 这个 — 带 .dim 弱化',
+		/\bdim\b/.test(String(byClass(itemsIn(s4)[1], 'dci-sp')[0].attrs['class'] || '')));
+	ok('r92 有吞吐的那颗不带 .dim',
+		!/\bdim\b/.test(String(byClass(itemsIn(s4)[0], 'dci-sp')[0].attrs['class'] || '')));
+
+	/* --- 5) 判定口径=tcp：延迟列取建连时间 --- */
+	const tcp5 = t.DcSummary({
+		dc_summary: [ dcOf('DME', [ it1('104.24.0.1', 350, 61.2, null) ]) ],
+		dc_pick: 'all', probe_metric: 'tcp'
+	});
+	rowOf(tcp5, 'DME').dispatch('click');
+	eq('r92 口径=tcp 时明细延迟取建连时间（61.2，不是 350.0）',
+		textOf(byClass(itemsIn(tcp5)[0], 'dci-ms')[0]), '61.2');
+	has('r92 这时明细表头写 TCP', tcp5, 'TCP');
+	const http5 = t.DcSummary({
+		dc_summary: [ dcOf('EDI', [ it1('104.24.0.2', 350, 61.2, null) ]) ], dc_pick: 'all'
+	});
+	rowOf(http5, 'EDI').dispatch('click');
+	eq('r92 没切口径时同一颗显示首字节时间（350.0）',
+		textOf(byClass(itemsIn(http5)[0], 'dci-ms')[0]), '350.0');
+
+	/* --- 6) speeds_unit=mib：吞吐换 MiB 口径 --- */
+	const mib6 = t.DcSummary({
+		dc_summary: [ dcOf('EWR', [ it1('104.25.0.1', 100, 30, 10000000) ]) ],
+		dc_pick: 'all', speed_unit: 'mib'
+	});
+	rowOf(mib6, 'EWR').dispatch('click');
+	eq('r92 单位=mib 时吞吐按 MiB 口径（9.54，不是十进制 10.00）',
+		textOf(byClass(itemsIn(mib6)[0], 'dci-sp')[0]), '9.54');
+	has('r92 这时明细表头写 MiB/s', mib6, 'MiB/s');
+
+	/* --- 7) items 缺失 / 为空：那一行点不动、也不给箭头 --- */
+	const s7 = t.DcSummary({
+		dc_summary: [ dcOf('FRA', []), { dc: 'GIG', count: 3, ttfb_med: 200, best_ip: '1.2.3.4', items: [] },
+			{ dc: 'HND', count: 2, ttfb_med: 210, best_ip: '1.2.3.5' } ],
+		dc_pick: 'all'
+	});
+	const dead = byClass(s7, 'dcrow').filter(n => /\bdata\b/.test(String(n.attrs['class'] || '')));
+	ok('r92 items 缺失或为空时那三行都不可点（没有 role / tabindex / aria-expanded）',
+		dead.length === 3 && dead.every(n => !n.attrs.role && !n.attrs.tabindex && !n.attrs['aria-expanded']));
+	eq('r92 这种行连展开箭头都不给', byClass(s7, 'chev').length, 0);
+
+	/* --- 8) 展开状态跨重画（轮询）保持 --- */
+	const sum8 = [ dcOf('ICN', [ it1('104.26.0.1', 180, 33, 8000000) ]) ];
+	const s8a = t.DcSummary({ dc_summary: sum8, dc_pick: 'all' });
+	rowOf(s8a, 'ICN').dispatch('click');
+	eq('r92 展开后本轮就有明细', itemsIn(s8a).length, 1);
+	const s8b = t.DcSummary({ dc_summary: sum8, dc_pick: 'all' });   /* 模拟轮询重画 */
+	eq('r92 轮询重画之后仍是展开的（状态在模块级 Set 里）', itemsIn(s8b).length, 1);
+	eq('r92 重画后 aria-expanded 仍是 true', rowOf(s8b, 'ICN').attrs['aria-expanded'], 'true');
+	rowOf(s8b, 'ICN').dispatch('click');
+	eq('r92 再点一下收起：明细消失、aria 回到 false',
+		itemsIn(s8b).length + '|' + rowOf(s8b, 'ICN').attrs['aria-expanded'], '0|false');
+
+	/* --- 9) 键盘：空格与回车都要能开合（role=button 不白送这两个键） --- */
+	const s9 = t.DcSummary({ dc_summary: [ dcOf('KIX', [ it1('104.27.0.1', 190, 35, null) ]) ], dc_pick: 'all' });
+	rowOf(s9, 'KIX').dispatch('keydown', { key: ' ', preventDefault() {} });
+	eq('r92 空格键也能展开', itemsIn(s9).length, 1);
+	rowOf(s9, 'KIX').dispatch('keydown', { key: 'Enter', preventDefault() {} });
+	eq('r92 回车键收起', itemsIn(s9).length, 0);
+
+	/* --- 10) 两个机房各开各的：状态按机房码分开记 --- */
+	const two = [ dcOf('LAS', [ it1('104.28.0.1', 170, 31, null) ]),
+		dcOf('MAD', [ it1('104.28.1.1', 175, 32, null) ]) ];
+	const s10 = t.DcSummary({ dc_summary: two, dc_pick: 'all' });
+	rowOf(s10, 'LAS').dispatch('click');
+	rowOf(s10, 'MAD').dispatch('click');
+	eq('r92 两个机房都展开时两段明细并存', byClass(s10, 'dcitems').length, 2);
+	rowOf(s10, 'LAS').dispatch('click');
+	eq('r92 收起其中一个，另一个还开着', byClass(s10, 'dcitems').length, 1);
+	ok('r92 留下的那一段属于 MAD',
+		byClass(s10, 'dcitems')[0] && textOf(byClass(s10, 'dcitems')[0]).indexOf('104.28.1.1') >= 0);
+
+	/* --- 11) 与「其余 N 个数据中心」互不干扰：展开机房表时明细不跟着收回 --- */
+	const seven2 = [ 'NRT', 'SIN', 'LAX', 'HKG', 'ICN', 'FRA', 'LHR' ].map((c, i) =>
+		dcOf(c, i === 0 ? [ it1('104.29.0.1', 160, 30, 5000000) ] : []));
+	const s11 = t.DcSummary({ dc_summary: seven2, dc_pick: 'all' });
+	rowOf(s11, 'NRT').dispatch('click');
+	byTag(s11, 'button').filter(b => /其余 1 个数据中心/.test(textOf(b)))[0].dispatch('click');
+	eq('r92 展开「其余 1 个」之后，已展开的明细还在', itemsIn(s11).length, 1);
+	eq('r92 这时 7 行机房都摆出来了', byClass(s11, 'dcrow').filter(n => /\bdata\b/.test(String(n.attrs['class'] || ''))).length, 7);
+}
+
+/* ================================================================== *
  * 7. 源检测：段内占比是判定源是否还可用的关键
  * ================================================================== */
 const srcRows = [
