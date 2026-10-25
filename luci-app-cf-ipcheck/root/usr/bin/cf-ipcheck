@@ -1027,7 +1027,8 @@ colo_of() {
 #
 # 不能用 sort -k：OpenWrt 的 busybox sort 常常是无 KEY_SUPPORT 的精简版
 # （usage 只有 -nru -z），-k6,6n 会被**静默忽略**、原序输出，CI 里也一样。
-# 所以改成把 ttfb/total 补成定宽数字前缀后用 sort -n（busybox 与 GNU 行为一致），
+# 所以改成把 ttfb/total 补成定宽数字前缀后用字典序 sort（等宽的零填充数字，
+# 字典序等价于数值序；不用 sort -n，因为 busybox 那版在 1e12 量级会排错）。
 # 再用 cut 去掉前缀。定宽保证同 ttfb 时按 total 依次比较。
 rank() {
 	awk -v ttfb="$C_TTFB" -v tot="$C_TOTAL" -v mcol="${C_MCOL:-5}" '
@@ -1041,7 +1042,7 @@ rank() {
 			tier = ($2 ~ /^[23]/) ? 0 : 1
 			printf "%015.0f\t%015.3f\t%s\n", tier * 1000000000000 + $(mcol) * 1000, $6, $0
 		}' |
-		sort -n |
+		sort |
 		cut -f3- |
 		head -n "$C_KEEP"
 }
@@ -1059,7 +1060,7 @@ rank_all() {
 			tier = ($2 ~ /^[23]/) ? 0 : 1
 			printf "%015.0f\t%015.3f\t%s\n", tier * 1000000000000 + $(mcol) * 1000, $6, $0
 		}' |
-		sort -n |
+		sort |
 		cut -f3-
 }
 
@@ -1247,10 +1248,10 @@ dc_summary() {
 		for (i = 1; i <= nd; i++) {
 			d = order[i]
 			m = med(d, cnt[d])
-			# 定宽数字前缀 → sort -n（busybox sort 常常没有 -k），排完切掉
+			# 定宽数字前缀 → 字典序 sort（等宽零填充，等价数值序；不用 -n 见 rank() 注释），排完切掉
 			printf "%015.3f\t%s\t%d\t%.1f\t%s\n", m, d, cnt[d], m, best[d]
 		}
-	}' "$1" "${2:-/dev/null}" | sort -n | cut -f2-
+	}' "$1" "${2:-/dev/null}" | sort | cut -f2-
 }
 
 # 单个机房的展开明细（r92，纯函数，selftest 直接驱动）。
@@ -1279,7 +1280,7 @@ dc_items_all() {
 		cn = ($3 == "" ? 0 : $3 + 0)
 		# bps=0 是「测了但不算数」，和没测到一样不进"有吞吐"组
 		b = (NF >= 9 && $9 != "" && $9 + 0 > 0) ? $9 + 0 : ""
-		# 定宽数字前缀 → sort -n（busybox sort 常常没有 -k），排完切掉。
+		# 定宽数字前缀 → 字典序 sort（等宽零填充，等价数值序；不用 -n 见 rank() 注释），排完切掉。
 		# 分组与组内次序必须编进**同一个数字**：早先写成「第 1 列放 0/1 分组、
 		# 第 2 列放负 bps」，sort -n 只按第一列比，两个 0 相等后回退成整行字符串
 		# 比较，于是 "-0000005000000" 排到了 "-0000010900000" 前面 —— 5MB/s 抢在
@@ -1287,7 +1288,7 @@ dc_items_all() {
 		# 2e12+ttfb*1000：前者恒定小于后者，且 bps 越大键越小 → 降序成立。
 		if (b == "") printf "%015.0f\t%s\t%.1f\t%.1f\t\n", (2000000000000 + tt * 1000), $1, tt, cn
 		else printf "%015.0f\t%s\t%.1f\t%.1f\t%.0f\n", (1000000000000 - b), $1, tt, cn, b
-	}' "$dia_dc" "$dia_q" | sort -n | cut -f2-
+	}' "$dia_dc" "$dia_q" | sort | cut -f2-
 }
 
 # 展开明细的落地版：最多 100 项（界面展开用，防止机房大时 JSON 膨胀）。
