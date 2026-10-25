@@ -1,0 +1,40 @@
+#!/bin/sh
+# 给升级上来的旧配置补上新增选项的默认值。
+#
+# 为什么需要：/etc/config/cf_ipcheck 是 conffiles，apk/opkg 升级时保留旧文件，
+# 新增的 option 在 uci 里根本不存在。页面显示的是 JS 里的默认值，引擎读到的却是空 ——
+# r88 真机撞过：界面写"粗筛 20 个"、实际按旧值 10 跑，「多测一圈让快的逆袭」等于没生效，
+# 而且从界面上完全看不出来。引擎侧已经做了"缺失即按同一默认值"的兜底，这里再把状态写实，
+# 让 `uci get` / diag / 排障看到的就是实际在跑的值。
+#
+# 只补缺失的键，不覆盖任何已有值（包括被手工清空的）；用 @global[0] 而不是 global，
+# 段名被改过也能命中。本脚本由 /etc/init.d/boot 在开机时执行一次，成功后自动删除，
+# 下次升级再装回来。想立刻生效（不重启）：sh /etc/uci-defaults/90-cf-ipcheck
+
+[ -f /etc/config/cf_ipcheck ] || exit 0
+
+cfip_default() {
+	# $1 = 选项名，$2 = 默认值
+	uci -q get "cf_ipcheck.@global[0].$1" >/dev/null 2>&1 && return 0
+	uci -q set "cf_ipcheck.@global[0].$1=$2"
+}
+
+# r88：吞吐判定（缺任何一个都会让判定链路退回旧行为）
+cfip_default speed_gate 1
+cfip_default speed_abs_min 0.50
+cfip_default speed_rel_min 25
+cfip_default speed_screen_count 20
+cfip_default speed_screen_bytes 4194304
+cfip_default speed_screen_timeout 8
+cfip_default speed_confirm_top 3
+cfip_default speed_confirm_bytes 10485760
+cfip_default speed_confirm_timeout 25
+cfip_default speed_weight 40
+
+# r90：数据中心与判定口径
+cfip_default probe_metric http
+cfip_default dc_pick all
+cfip_default speed_unit mb
+
+uci -q commit cf_ipcheck
+exit 0

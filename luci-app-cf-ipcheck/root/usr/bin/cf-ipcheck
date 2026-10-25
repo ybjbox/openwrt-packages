@@ -1789,11 +1789,13 @@ speed_gate() {
 # 延迟项做线性归一并夹到 0..1；吞吐项分档（十进制 MB/s）。没测到吞吐时给 0.50
 # 的中性分：既不能因为「没测」把它顶上去，也不能因为「没测」把它踩下去 ——
 # 粗筛之外的那些 IP 正是这种状态。
-speed_score() {
-	awk -v ttfb="${1:-0}" -v bps="${2:-}" -v lim="${3:-3000}" -v w="${4:-0}" '
+speed_score() { # $1=指标毫秒 $2=bps $3=绝对上限ms $4=权重 $5=(可选)预先算好的延迟归一 0..1
+	awk -v ttfb="${1:-0}" -v bps="${2:-}" -v lim="${3:-3000}" -v w="${4:-0}" -v lnp="${5:-}" '
 	BEGIN {
 		l = lim + 0; if (l <= 0) l = 3000
-		ln = (l - (ttfb + 0)) / l
+		# 第 5 参给了就用它（r91：TCP 口径下按本批名次归一），否则仍按绝对毫秒
+		if (lnp != "") ln = lnp + 0
+		else ln = (l - (ttfb + 0)) / l
 		if (ln < 0) ln = 0
 		if (ln > 1) ln = 1
 		sn = 0.50
@@ -1879,6 +1881,35 @@ speed_measure() {
 # 结构不能动（err_counts 与 result.json 都按字段位置读），所以用定宽数字前缀排序、
 # 再 cut 掉前缀。排序键：below_gate 标记（正常行永远在前，否则「补足」的行可能把
 # 唯一一个真正合格的行挤出 best-ip.txt）→ 分数降序 → ttfb 升序 → total 升序。
+# ---------------- 延迟名次归一（r91）--------------------------------------
+# stdin: "ip<TAB>指标毫秒"；stdout: "ip<TAB>0..1"
+#
+# 为什么需要它：TCP 口径下 connect 集中在很窄的区间（真机实测 52–59ms），
+# 而加权分的延迟项按 ttfb_limit=3000ms 归一 —— (3000-55)/3000 与 (3000-59)/3000
+# 只差 0.0013，等于延迟项对所有人都一样，名次实际被吞吐独自决定。HTTP 口径下
+# 毫秒跨度几百级，绝对归一是合理的，所以只在 tcp 模式启用本函数。
+#
+# 并列怎么算：相同毫秒必须给同一个分值，否则 55ms 与 55ms 会被排序位置拆开，
+# 变成"谁先出现谁靠前"的假区分。做法是把并列组取平均名次再折成 0..1。
+lat_rank() {
+	awk -F'\t' '{ print $2 + 0 "\t" $1 }' | sort -n | awk -F'\t' '
+		{ v[NR] = $1 + 0; ip[NR] = $2 }
+		END {
+			n = NR
+			i = 1
+			while (i <= n) {
+				j = i
+				while (j < n && v[j + 1] == v[i]) j++
+				# 并列组按"组首名次"折算（竞争排名）：最快的那几颗都拿 1.0000，
+				# 而不是取平均名次把 1.0 拉低成 0.75 —— 本批最快就是满分。
+				ln = 1
+				if (n > 1) ln = 1 - (i - 1) / (n - 1)
+				for (k = i; k <= j; k++) printf "%s\t%.4f\n", ip[k], ln
+				i = j + 1
+			}
+		}'
+}
+
 speed_resort() {
 	awk -F'\t' -v st="$2" '
 	FILENAME == st {
@@ -1888,13 +1919,21 @@ speed_resort() {
 	}
 	{ printf "%s\t%s\n", $0, (($1 in bps) ? bps[$1] : "") }' "$2" "$1" >"$RUN_DIR/qual.bps"
 	: >"$RUN_DIR/qual.sorted"
+	# r91：tcp 口径先算一份"本批名次归一"，HTTP 口径留空（沿用绝对毫秒）
+	sr_lnfile=$RUN_DIR/latnorm.tsv
+	: >"$sr_lnfile"
+	[ "${C_MCOL:-5}" = 3 ] && lat_rank <"$RUN_DIR/qual.bps" >"$sr_lnfile"
 	while IFS="$(printf '\t')" read -r sr_ip sr_code sr_c sr_tls sr_ttfb sr_tot sr_err sr_dom sr_bps; do
 		[ -n "$sr_ip" ] || continue
 		# r90：判定指标可切换，加权分的延迟项与并列时的第一比较键都跟着走
 		# （tcp 模式用第 3 列 connect）。不跟着切的话，speed_gate=1 时名次会被
 		# 这一步悄悄拉回 ttfb 口径，用户看到的排序与 probe_metric 对不上。
 		case "${C_MCOL:-5}" in 3) sr_m=$sr_c ;; *) sr_m=$sr_ttfb ;; esac
-		sr_sc=$(speed_score "$sr_m" "${sr_bps:-}" "$C_TTFB" "$C_SPEED_W")
+		sr_ln=''
+		if [ -s "$sr_lnfile" ]; then
+			sr_ln=$(awk -F'\t' -v ip="$sr_ip" '$1 == ip { print $2; exit }' "$sr_lnfile")
+		fi
+		sr_sc=$(speed_score "$sr_m" "${sr_bps:-}" "$C_TTFB" "$C_SPEED_W" "$sr_ln")
 		sr_bg=0
 		grep -qxF "$sr_ip" "$3" 2>/dev/null && sr_bg=1
 		printf '%s\t%03d\t%015.3f\t%015.3f\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
@@ -2431,6 +2470,7 @@ do_run() {
 	# 每轮都记（脚本没有"上一轮用的是哪个"的状态，也不值得为它落一个文件）。
 	if [ "$C_METRIC" = tcp ]; then
 		log '判定指标：TCP 建连耗时（比 HTTP 首字节低 30–50%，两种模式的结果不可互相比较）'
+		[ "${C_MCOL:-5}" = 3 ] && log '打分：TCP 口径下延迟项按本批名次归一（绝对毫秒在几十毫秒内没有区分度；HTTP 口径仍按绝对毫秒）'
 	else
 		log '判定指标：HTTP 首字节（TTFB，含 TCP+TLS 与首字节等待）'
 	fi
@@ -4015,7 +4055,22 @@ selftest() {
 
 	# 速度单位：同一个 bps，两种口径给出的 CSV 第 6 列不同（10485760 B/s）。
 	crow='1.1.1.1\t200\t10\t5\t200.0\t300.0\tNRT\t10.49\twww.cloudflare.com\t0\t10485760'
-	check 'speed_unit=mb：10485760 B/s ⇒ 10.49（十进制）' \
+		# r91：名次归一（lat_rank）——并列取平均名次，单条恒为 1
+	lr_in=$(printf 'a\t55\nb\t55\nc\t75\n')
+	check 'lat_rank：三行含一对并列 → a/b 同分 1.0000，c 为 0.0000' \
+		"$(printf '%s\n' "$lr_in" | lat_rank | tr '\n' ' ')" 'a	1.0000 b	1.0000 c	0.0000 '
+	check 'lat_rank：单条 → 1.0000（不出现除零）' \
+		"$(printf 'x\t88\n' | lat_rank | cut -f2)" '1.0000'
+	check 'lat_rank：严格递增 → 1.0 / 0.5 / 0.0' \
+		"$(printf 'p\t50\nq\t60\nr\t70\n' | lat_rank | cut -f2 | tr '\n' ' ')" '1.0000 0.5000 0.0000 '
+	# r91：speed_score 第 5 参优先于绝对毫秒
+	check 'speed_score 传 ln=1.0：100 分（延迟与吞吐都满分）' \
+		"$(speed_score 55 10000000 3000 40 1.0)" '100'
+	check 'speed_score 传 ln=0.0：只剩吞吐项 40 分' \
+		"$(speed_score 55 10000000 3000 40 0.0)" '40'
+	check 'speed_score 不传第 5 参：仍按绝对毫秒（55ms → 98）' \
+		"$(speed_score 55 10000000 3000 40)" '98'
+check 'speed_unit=mb：10485760 B/s ⇒ 10.49（十进制）' \
 		"$(printf "$crow\n" | csv_rows /dev/null 1000000 | cut -d, -f6)" '10.49'
 	check 'speed_unit=mib：10485760 B/s ⇒ 10.00（二进制）' \
 		"$(printf "$crow\n" | csv_rows /dev/null 1048576 | cut -d, -f6)" '10.00'
@@ -4164,7 +4219,8 @@ case "${1:-}" in
 	# r88：吞吐判定的三个纯函数（参考值 / 门槛 / 加权分），全部离线可跑。
 	_speedref) speed_ref ;;
 	_speedgate) speed_gate "${2:-0}" "${3:-}" "${4:-0}" "${5:-0}" "${6:-0}" "${7:-0}" ;;
-	_speedscore) speed_score "${2:-0}" "${3:-}" "${4:-3000}" "${5:-0}" ;;
+	_speedscore) speed_score "${2:-0}" "${3:-}" "${4:-3000}" "${5:-0}" "${6:-}" ;;
+	_latrank) lat_rank ;;
 	# r89：粗筛个数的取值来源（new/old/default）。
 	_screensrc) screen_src "${2:-}" "${3:-}" "${4:-0}" ;;
 	_gistgap) gist_gap "${2:-0}" "${3:-0}" ;;
