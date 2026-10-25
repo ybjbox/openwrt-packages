@@ -123,6 +123,16 @@ BYPASS=unknown
 # 吞吐在本轮扮演的角色：gate（参与判定）/ display（只展示）/ degraded（想判但没测出）。
 # 同样是给 result.json 用的，页面据此解释「为什么名次没变」。
 SPEED_MODE=display
+# r90 三个新选项的保底值。和 BYPASS 同理：selftest 会绕过 load_config 直接驱动
+# rank/csv_rows/write_outputs，set -u 下这些变量必须已经有定义。
+#   C_METRIC 判定指标（http=TTFB / tcp=TCP 建连），C_MCOL 是它在 TSV 里的列号
+#   C_DCPICK 数据中心过滤模式（all / auto / 三位码）
+#   C_SUUNIT 速度单位（mb=十进制 / mib=二进制），C_SPDIV 是换算除数
+C_METRIC=${C_METRIC:-http}
+C_MCOL=${C_MCOL:-5}
+C_DCPICK=${C_DCPICK:-all}
+C_SUUNIT=${C_SUUNIT:-mb}
+C_SPDIV=${C_SPDIV:-1000000}
 # 配置告警的缓冲（r89）。load_config 会被只读子命令反复调用：页面每 3 秒问一次
 # status、每次打开页面都会走 show/pool，而它里面的「配置值不合法，按 X 处理」
 # 这类提示原来是无条件 log 的 —— 页面开着不动，一天就能追加十几条同文，把真正
@@ -529,6 +539,42 @@ load_config() {
 	# 邻居扩展（r71）：对初榜前 5 颗各探同 /24 的 ±4 邻居。社区清单测的是"别人的
 	# 线路"，这颗线路上最快的 IP 可能就在某颗好 IP 隔壁却不在任何清单里。0 = 关闭。
 	C_NBR=$(cfg_range neighbor_expand 1 0 1)
+	# ---- 判定指标（r90）--------------------------------------------------
+	# http = 用「首字节时间」（TSV 第 5 列 ttfb，含 TCP+TLS）；tcp = 用「TCP 建连耗时」
+	# （第 3 列 connect，不含 TLS 与首字节）。我们的探针一次请求就把四列都量回来了，
+	# 所以切换指标**不需要额外请求**，只是换一列来排序与判门槛。
+	# 代价要说清：tcp 的数字天生比 ttfb 低 30–50%，两种模式的结果不可互相比较 ——
+	# 这也是结果里必须写明 probe_metric 的原因（否则切了下拉框，历史行会被误读）。
+	metric_raw=$(cfg probe_metric http | tr 'A-Z' 'a-z')
+	case "$metric_raw" in
+		tcp)  C_METRIC=tcp;  C_MCOL=3 ;;
+		http) C_METRIC=http; C_MCOL=5 ;;
+		*)
+			cfg_warn "配置项 probe_metric 只认 http 或 tcp（现在是「$metric_raw」），按 http 处理"
+			C_METRIC=http; C_MCOL=5
+			;;
+	esac
+	# 按数据中心过滤（r90）：all=不过滤（仍出汇总）/ auto=取汇总第一名 / 三位码。
+	# 归一化放在 dc_pick_norm 里（纯函数，selftest 直接驱动）；非法值在这里退回
+	# all 并告警 —— 告警必须在**这个** shell 里记，不能在命令替换里（见函数注释）。
+	dcp_raw=$(cfg dc_pick all)
+	C_DCPICK=$(dc_pick_norm "$dcp_raw")
+	if [ -z "$C_DCPICK" ]; then
+		cfg_warn "配置项 dc_pick 只认 all / auto / 三位机房码（现在是「$dcp_raw」），按 all 处理"
+		C_DCPICK=all
+	fi
+	# 速度单位（r90）：mb=十进制 MB/s（÷1000000，与测速站同口径，用户习惯的那个）；
+	# mib=二进制 MiB/s（÷1048576，CFST 的 result.csv 口径）。**只影响 CSV 那一列与
+	# 表头**，页面与 result.json 的 speed_mbytes 永远十进制 —— 那是给人的数字。
+	sunit_raw=$(cfg speed_unit mb | tr 'A-Z' 'a-z')
+	case "$sunit_raw" in
+		mb)  C_SUUNIT=mb;  C_SPDIV=1000000 ;;
+		mib) C_SUUNIT=mib; C_SPDIV=1048576 ;;
+		*)
+			cfg_warn "配置项 speed_unit 只认 mb 或 mib（现在是「$sunit_raw」），按 mb 处理"
+			C_SUUNIT=mb; C_SPDIV=1000000
+			;;
+	esac
 	# CSV  companion 文件名（r71）：与 gist_file 同源，.txt 换成 .csv（没有 .txt
 	# 后缀就原样加 .csv）。不新增 uci 选项——它就是给 edgetunnel 的 ADDCSV 消费的
 	# 第二份产物，配置面上多一个开关的代价大于它的灵活性。
@@ -843,9 +889,12 @@ build_pool() {
 
 # ---------------- 单 IP 探测 ----------------------------------------------
 # 输出（TAB 分隔）： ip code connect_ms tls_ms ttfb_ms total_ms err domain
+# $3（r90，可省）= 响应头转储文件：给了就让 curl 顺手把头落盘，供 ray_colo 取机房码。
+# 只对**每颗 IP 的首个样本**传它 —— 头文件是一颗 IP 一个，多传就是自己覆盖自己。
 probe_one() {
 	ip=$1
 	dom=$2
+	phdr=${3:-}
 	# 地址与域名都会被拼进整条交给 `su -c` 的 shell 字符串，进来先各过一道校验
 	if ! valid_ip4 "$ip"; then
 		printf '%s\t0\t0\t0\t0\t0\tinvalid_ip\t%s\n' "${ip%% *}" "$dom"
@@ -858,7 +907,7 @@ probe_one() {
 		printf '%s\t0\t0\t0\t0\t0\tstopped\t%s\n' "$ip" "$dom"
 		return 0
 	fi
-	raw=$(run_probe "$(probe_cmd "$ip" "$dom" /)" 2>/dev/null)
+	raw=$(run_probe "$(probe_cmd "$ip" "$dom" / "$phdr")" 2>/dev/null)
 	rc=$?
 	if [ "$rc" = 0 ] && [ -n "$raw" ]; then
 		printf '%s' "$raw" | awk -F, -v ip="$ip" -v dom="$dom" '
@@ -981,10 +1030,10 @@ colo_of() {
 # 所以改成把 ttfb/total 补成定宽数字前缀后用 sort -n（busybox 与 GNU 行为一致），
 # 再用 cut 去掉前缀。定宽保证同 ttfb 时按 total 依次比较。
 rank() {
-	awk -v ttfb="$C_TTFB" -v tot="$C_TOTAL" '
+	awk -v ttfb="$C_TTFB" -v tot="$C_TOTAL" -v mcol="${C_MCOL:-5}" '
 		BEGIN { FS = "\t"; OFS = "\t" }
-		NF >= 7 && $7 == "none" && $6+0 > 0 && $6+0 <= tot && $5+0 <= ttfb {
-			printf "%015.3f\t%015.3f\t%s\n", $5, $6, $0
+		NF >= 7 && $7 == "none" && $6+0 > 0 && $6+0 <= tot && $(mcol)+0 <= ttfb {
+			printf "%015.3f\t%015.3f\t%s\n", $(mcol), $6, $0
 		}' |
 		sort -n |
 		cut -f3- |
@@ -993,10 +1042,10 @@ rank() {
 
 # 达标数（截断前）与榜单行数（截断后）分开统计，别让日志把两者混为一谈
 rank_all() {
-	awk -v ttfb="$C_TTFB" -v tot="$C_TOTAL" '
+	awk -v ttfb="$C_TTFB" -v tot="$C_TOTAL" -v mcol="${C_MCOL:-5}" '
 		BEGIN { FS = "\t"; OFS = "\t" }
-		NF >= 7 && $7 == "none" && $6+0 > 0 && $6+0 <= tot && $5+0 <= ttfb {
-			printf "%015.3f\t%015.3f\t%s\n", $5, $6, $0
+		NF >= 7 && $7 == "none" && $6+0 > 0 && $6+0 <= tot && $(mcol)+0 <= ttfb {
+			printf "%015.3f\t%015.3f\t%s\n", $(mcol), $6, $0
 		}' |
 		sort -n |
 		cut -f3-
@@ -1085,6 +1134,152 @@ ray_dur() {
 		}
 	}
 	END { printf "%d %s\n", ray ? 1 : 0, dur }' "$1"
+}
+
+# ---------------- 数据中心（r90）-------------------------------------------
+# 参考实现（cfdataweb combined_refactor）是**另外发一次** /cdn-cgi/trace 才拿到 colo，
+# 我们没有这笔开销：初筛那次请求的响应头里就有 CF-RAY，形如
+#   cf-ray: 8e2a1b2c3d4e5f67-NRT
+# 末尾三字码就是落地机房（IATA）。所以 ray_colo 只解析已经落盘的头文件，
+# 全程零额外请求 —— 这正是"不重复造请求"的落地方式。
+#
+# $1 = curl -D 落盘的响应头文件 -> stdout: 三字码（大写，取不到则为空）。
+# 为什么不像 ray_dur 那样只看字段名存在与否：这里要的是**值**，格式必须是
+# `<十六进制>-<三位码>`，少一段就说明不是 CF 的响应（或头被裁了），返回空。
+ray_colo() {
+	[ -f "${1:-}" ] || return 0
+	awk '
+	{
+		if (tolower($1) != "cf-ray:") next
+		v = $2
+		n = split(v, p, "-")
+		if (n < 2) next
+		c = p[n]
+		gsub(/\r/, "", c)
+		c = toupper(c)
+		if (c ~ /^[A-Z0-9][A-Z0-9][A-Z0-9]$/) { print c; exit }
+	}' "$1"
+}
+
+# 配置 dc_pick 的归一化（纯函数，selftest 直接驱动）：
+#   all / auto / 三位码；大小写与首尾空格都容忍（手抄 NRT/nrt 都该work）。
+# 非法值输出**空串**，由调用方退回 all 并记一条配置告警 —— 「填了个看不懂的值」
+# 不能变成「静默只看了一个机房」或者「静默不过滤」。
+# 为什么不在这里直接 cfg_warn：调用方是用 $( ) 接结果的，命令替换是子壳，
+# cfg_warn 攒在子壳的缓冲区里，随子壳一起消失 —— 告警永远打不出来（踩过）。
+dc_pick_norm() {
+	dpv=$(printf '%s' "${1:-}" | tr -d ' \t\r' | tr 'a-z' 'A-Z')
+	case "$dpv" in
+		''|ALL) printf 'all' ;;
+		AUTO)   printf 'auto' ;;
+		*)
+			case "$dpv" in
+				[A-Z0-9][A-Z0-9][A-Z0-9]) printf '%s' "$dpv" ;;
+				*) : ;;
+			esac
+			;;
+	esac
+}
+
+# 把 $RUN_DIR/hdr/*.hdr 里的 CF-RAY 收成 ip \t colo 追加进 dc.tsv。
+# 为什么不直接在探测的并发子壳里 `>>`：8 路并发的追加会字符级交错（真机在
+# probed.tsv 上撞过 —— 两行粘成一行、IP 变成 103.21.244.102103.31.4.2）。
+# 头文件是一颗 IP 一个文件，天然无竞争；收尾时串行扫一遍才是安全写法。
+dc_collect() {
+	[ -d "$RUN_DIR/hdr" ] || return 0
+	for hf in "$RUN_DIR"/hdr/*.hdr; do
+		[ -f "$hf" ] || continue
+		hip=${hf##*/}
+		hip=${hip%.hdr}
+		hc=$(ray_colo "$hf")
+		[ -n "$hc" ] || continue
+		printf '%s\t%s\n' "$hip" "$hc" >>"$RUN_DIR/dc.tsv"
+	done
+	return 0
+}
+
+# 按数据中心汇总（纯函数，selftest 直接驱动）。
+# $1 = dc.tsv（ip \t colo，可重复，后写覆盖）  $2 = qualified（8 字段 TSV）
+# stdout = 每行 `dc \t count \t ttfb_med \t best_ip`，**按 ttfb_med 升序**。
+# 口径与参考实现对齐（tasks_official.go:423-450 的 IPCount/MinLatency），只是
+# 我们排序用中位 TTFB 而不是 MinLatency：单颗最小值是一颗 IP 的运气，中位数
+# 才是"这个机房对我这条线整体多快"。best_ip 是给 UI 直接用的那一颗
+# （ttfb 最小，ttfb 相同比 total）。
+dc_summary() {
+	awk -F'\t' -v dcf="${1:-/dev/null}" '
+	function med(d, n,   i, j, t) {
+		if (n <= 0) return 0
+		for (i = 2; i <= n; i++) {          # 插入排序：busybox awk 没有 asort
+			t = sv[d, i]; j = i - 1
+			while (j >= 1 && sv[d, j] + 0 > t + 0) { sv[d, j + 1] = sv[d, j]; j-- }
+			sv[d, j + 1] = t
+		}
+		if (n % 2 == 0) return (sv[d, n / 2] + sv[d, n / 2 + 1]) / 2
+		return sv[d, (n + 1) / 2]
+	}
+	FILENAME == dcf {
+		if (NF >= 2 && $2 != "") colo[$1] = $2
+		next
+	}
+	NF >= 7 {
+		if (!($1 in colo)) next
+		d = colo[$1]
+		if (!(d in seen)) { seen[d] = 1; order[++nd] = d }
+		cnt[d]++
+		sv[d, cnt[d]] = $5 + 0
+		if (best[d] == "" || ($5 + 0) < bv[d] || (($5 + 0) == bv[d] && ($6 + 0) < bt[d])) {
+			best[d] = $1; bv[d] = $5 + 0; bt[d] = $6 + 0
+		}
+	}
+	END {
+		for (i = 1; i <= nd; i++) {
+			d = order[i]
+			m = med(d, cnt[d])
+			# 定宽数字前缀 → sort -n（busybox sort 常常没有 -k），排完切掉
+			printf "%015.3f\t%s\t%d\t%.1f\t%s\n", m, d, cnt[d], m, best[d]
+		}
+	}' "$1" "${2:-/dev/null}" | sort -n | cut -f2-
+}
+
+# 过滤模式 -> 实际生效的码（纯函数）。找不到就回 all —— 让调用方走"不过滤"，
+# 绝不因为「用户点了一个本轮不存在的机房」而交出一张空榜单。
+dc_select() { # $1=dc.summary 路径 $2=all|auto|CODE -> stdout: 生效码或 all
+	case "${2:-all}" in
+		all) printf 'all'; return 0 ;;
+		auto)
+			ds_top=$(head -n 1 "${1:-/dev/null}" 2>/dev/null | cut -f1)
+			[ -n "$ds_top" ] || { printf 'all'; return 0; }
+			printf '%s' "$ds_top"
+			;;
+		*)
+			if cut -f1 "${1:-/dev/null}" 2>/dev/null | grep -qxF "${2:-}"; then
+				printf '%s' "${2:-}"
+			else
+				printf 'all'
+			fi
+			;;
+	esac
+}
+
+# 只留某个机房的行（纯函数）：$1=dc.tsv $2=目标码，stdin=qualified，stdout=该码的行。
+# qualified 的 8 字段结构原样透传 —— 下游（rank/csv/result.json）全靠列位置读。
+dc_filter() {
+	awk -F'\t' -v dcf="${1:-/dev/null}" -v want="${2:-}" '
+	FILENAME == dcf { if (NF >= 2 && $2 != "") colo[$1] = $2; next }
+	(colo[$1] == want)' "$1" -
+}
+
+# 汇总日志的一句话（纯函数）：stdin=dc.summary -> 最多列 6 个，其余用「等 N 个」收尾。
+# 为什么封顶：机房多的时候这行能到几百字节，而它只是给人扫一眼用的。
+dc_summary_line() {
+	awk -F'\t' '
+	{ n++ }
+	n <= 6 {
+		if (n > 1) printf " · "
+		if (n == 1) printf "%s %s 个（中位 %.0fms）", $1, $2, $3
+		else printf "%s %s 个（%.0fms）", $1, $2, $3
+	}
+	END { if (n > 6) printf " · 等 %d 个", n - 6 }'
 }
 
 # 多样本统计（r71/r72）。stdin = 每个样本一行：
@@ -1217,6 +1412,12 @@ verify_top_n() { # $1=个数
 		[ -s "$hdr/$ip.ray" ] && ray=1
 		if [ -n "$row" ]; then
 			printf '%s\t%s\n' "$row" "$ray" >>"$all"
+		fi
+		# r90：验证阶段的头文件里同样有 CF-RAY，顺手补进 dc.tsv（零额外请求）。
+		# 同一个 IP 后写覆盖前面的没关系：dc_summary / dc_filter 都按最后一次取值。
+		if [ -f "$hdr/$ip.2" ]; then
+			vc=$(ray_colo "$hdr/$ip.2")
+			[ -n "$vc" ] && printf '%s\t%s\n' "$ip" "$vc" >>"$RUN_DIR/dc.tsv"
 		fi
 		rm -f "$s"
 	done
@@ -1689,11 +1890,15 @@ speed_resort() {
 	: >"$RUN_DIR/qual.sorted"
 	while IFS="$(printf '\t')" read -r sr_ip sr_code sr_c sr_tls sr_ttfb sr_tot sr_err sr_dom sr_bps; do
 		[ -n "$sr_ip" ] || continue
-		sr_sc=$(speed_score "$sr_ttfb" "${sr_bps:-}" "$C_TTFB" "$C_SPEED_W")
+		# r90：判定指标可切换，加权分的延迟项与并列时的第一比较键都跟着走
+		# （tcp 模式用第 3 列 connect）。不跟着切的话，speed_gate=1 时名次会被
+		# 这一步悄悄拉回 ttfb 口径，用户看到的排序与 probe_metric 对不上。
+		case "${C_MCOL:-5}" in 3) sr_m=$sr_c ;; *) sr_m=$sr_ttfb ;; esac
+		sr_sc=$(speed_score "$sr_m" "${sr_bps:-}" "$C_TTFB" "$C_SPEED_W")
 		sr_bg=0
 		grep -qxF "$sr_ip" "$3" 2>/dev/null && sr_bg=1
 		printf '%s\t%03d\t%015.3f\t%015.3f\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-			"$sr_bg" "$((100 - sr_sc))" "$sr_ttfb" "$sr_tot" \
+			"$sr_bg" "$((100 - sr_sc))" "$sr_m" "$sr_tot" \
 			"$sr_ip" "$sr_code" "$sr_c" "$sr_tls" "$sr_ttfb" "$sr_tot" "$sr_err" "$sr_dom" \
 			>>"$RUN_DIR/qual.sorted"
 	done <"$RUN_DIR/qual.bps"
@@ -1746,17 +1951,18 @@ speed_refill() {
 # 消费（按 DLS  Mbps 阈值过滤），社区生态里这是事实标准格式。已发送/已接收反映多样本
 # 验证的真实样本数（未验证的 1/1）；丢包率来自验证；速度未测写 0.00（与 cfst 一致，
 # edgetunnel 的 DLS 会把 0.00 滤掉，不会把未测当成快）。
-# 第 6 列（r88）换成 **MiB/s**（bps ÷ 1048576），对齐 CFST 自己的口径 —— 页面和
-# result.json 仍是十进制 MB/s（Ryan 定的），两处口径不同是各自的消费方决定的。
+# 第 6 列（r90 起跟 speed_unit 走）：默认十进制 MB/s（÷1000000，用户习惯的口径）；
+# speed_unit=mib 时退回二进制 MiB/s（÷1048576，CFST 的 result.csv 口径，edgetunnel
+# 的 ADDCSV/DLS 按它设阈值）。表头与除数都由调用方一起给，两处不可能各说一套。
 # 换算取第 11 列的 bps 真值而不是格式化过的第 8 列：11.81 这种两位小数乘回去会丢精度。
-# r89 起表头也写 MiB/s —— 值早就是 MiB，标签却写 MB/s，同一个 IP 页面 15.55、
-# CSV 14.83，两处口径不同可以、标签写错不行。列序见 write_outputs（bps 在最后）。
-csv_rows() {
+# 列序见 write_outputs（bps 在最后）。
+csv_rows() { # $1=vfields.tsv $2=换算除数（默认 $C_SPDIV）
 	# 用 FILENAME == vf 判首文件而不是 NR == FNR：vfields.tsv 可能是空文件
 	# （verify_top=0 时就是空的），NR == FNR 在首文件为空时会把第二文件的第一行
 	# 当成首文件的记录吃掉——榜首那颗的丢包/样本数就整行错位。
 	# 末尾的 `-` 是 colored.tsv 的 stdin：awk 只给文件参数时根本不读标准输入。
-	awk -F'\t' -v vf="${1:-/dev/null}" '
+	awk -F'\t' -v vf="${1:-/dev/null}" -v div="${2:-${C_SPDIV:-1000000}}" '
+	BEGIN { if (div + 0 <= 0) div = 1000000 }
 	FILENAME == vf { sent[$1] = $6 + 0; loss[$1] = $4 + 0; next }
 	NF >= 9 {
 		n = ($1 in sent && sent[$1] > 0) ? sent[$1] : 1
@@ -1764,7 +1970,7 @@ csv_rows() {
 		recv = n - int(l * n + 0.5)
 		if (recv < 0) recv = 0
 		sp = "0.00"
-		if (NF >= 11 && $11 != "" && $11 + 0 > 0) sp = sprintf("%.2f", ($11 + 0) / 1048576)
+		if (NF >= 11 && $11 != "" && $11 + 0 > 0) sp = sprintf("%.2f", ($11 + 0) / div)
 		printf "%s,%d,%d,%.2f,%s,%s,%s\n", $1, n, recv, l, $5, sp, $7
 	}' "${1:-/dev/null}" -
 }
@@ -1808,15 +2014,25 @@ write_outputs() {
 	fi
 	bg_file=$RUN_DIR/below_gate.lst
 	[ -f "$bg_file" ] || : >"$bg_file"
+	# r90：进榜这几颗的 colo 优先用初筛时**免费**拿到的那份（dc.tsv）。
+	# 只有它没覆盖到的（头被裁、或那颗是邻居扩展后没探到头的）才退回 colo_of 的
+	# 额外请求。注意这条与 colo_probe 无关：dc.tsv 是顺带产物，不是新开销，
+	# 所以即使 colo_probe=0 也能填上这一列。
+	dc_map=$RUN_DIR/dc.map
+	: >"$dc_map"
+	if [ -s "$RUN_DIR/dc.tsv" ]; then
+		awk -F'\t' 'NF >= 2 && $2 != "" { c[$1] = $2 }
+			END { for (ip in c) printf "%s\t%s\n", ip, c[ip] }' "$RUN_DIR/dc.tsv" >"$dc_map"
+	fi
 	ck=0
 	cptotal=$(grep -c . "$RUN_DIR/ranked.tsv" 2>/dev/null || printf 0)
 	progress_set colo 0 $cptotal
 	while IFS="$(printf '\t')" read -r ip code c tls ttfb tot err dom; do
 		[ -n "$ip" ] || continue
-		colo=''
+		colo=$(awk -F'\t' -v want="$ip" '$1 == want { print $2; exit }' "$dc_map" 2>/dev/null)
 		# 出口被接管时，colo 量的都是代理自己那条路，跟候选 IP 无关，
 		# 再花一轮请求测只会得到一整列一模一样的假数据 —— 直接不测。
-		if [ "$C_COLOR" = 1 ] && [ "$intercepted" = 0 ]; then
+		if [ -z "$colo" ] && [ "$C_COLOR" = 1 ] && [ "$intercepted" = 0 ]; then
 			colo=$(colo_of "$ip")
 		fi
 		[ -n "$colo" ] || colo='n/a'
@@ -1846,7 +2062,7 @@ write_outputs() {
 		spd_ok=$(awk -F'\t' '$2 + 0 > 0' "$RUN_DIR/speed.tsv" | grep -c . || true)
 		spd_bad=$((${spd_all:-0} - ${spd_ok:-0}))
 		[ "$spd_bad" -lt 0 ] 2>/dev/null && spd_bad=0
-		log "吞吐实测 ${spd_all:-0} 次（粗筛 + 精测），其中 ${spd_ok:-0} 次拿到有效吞吐、$spd_bad 次没测出；单位十进制 MB/s"
+		log "吞吐实测 ${spd_all:-0} 次（粗筛 + 精测），其中 ${spd_ok:-0} 次拿到有效吞吐、$spd_bad 次没测出；页面与 JSON 用十进制 MB/s，CSV 第 6 列按 speed_unit=${C_SUUNIT:-mb} 换算"
 	fi
 	# r89：这一行只认「进了结果的」。补足名单与榜单是同一批（r89 起补足发生在
 	# 截断之后、补的行直接进 ranked），所以这里的数字必然等于 JSON 的 below_gate
@@ -1894,11 +2110,22 @@ write_outputs() {
 	publish=1
 	[ "$bn" -gt 0 ] || publish=0
 
+	# r90：数据中心汇总是数组，塞不进下面那条定长 printf，先单独拼成 JSON 片段。
+	# dc / best_ip 都只含 [A-Z0-9] 与 IPv4（分别由 ray_colo 的字符集校验与
+	# valid_ip4 把关），ttfb_med/count 是数字 —— 这里不需要再转义。
+	dcsum_json='[]'
+	if [ -s "$RUN_DIR/dc.summary" ]; then
+		dcsum_json=$(awk -F'\t' '
+		BEGIN { printf "[" }
+		NF >= 4 { printf "%s{\"dc\":\"%s\",\"count\":%s,\"ttfb_med\":%s,\"best_ip\":\"%s\"}", (n++ ? "," : ""), $1, $2, $3, $4 }
+		END { printf "]" }' "$RUN_DIR/dc.summary")
+	fi
 	{
-		printf '{"state":"done","started":"%s","finished":"%s","pool":%s,"qualified":%s,"usable":%s,"intercepted":%s,"counts":%s,"domains":"%s","budget":%s,"port":%s,"speed_mode":"%s","speed_weight":%s,"below_gate":%s,"bypass":"%s","items":[' \
+		printf '{"state":"done","started":"%s","finished":"%s","pool":%s,"qualified":%s,"usable":%s,"intercepted":%s,"counts":%s,"domains":"%s","budget":%s,"port":%s,"speed_mode":"%s","speed_weight":%s,"below_gate":%s,"bypass":"%s","probe_metric":"%s","speed_unit":"%s","dc_pick":"%s","dc_summary":%s,"items":[' \
 			"${STARTED:-}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$pool_n" "$qualified" \
 			"$(grep -c . "$colored" || true)" "$intercepted" "$counts" "$C_DOMAINS" "$C_BUDGET" "$C_PORT" \
-			"${SPEED_MODE:-display}" "${C_SPEED_W:-0}" "${bg_in:-0}" "${BYPASS:-unknown}"
+			"${SPEED_MODE:-display}" "${C_SPEED_W:-0}" "${bg_in:-0}" "${BYPASS:-unknown}" \
+			"${C_METRIC:-http}" "${C_SUUNIT:-mb}" "${C_DCPICK:-all}" "$dcsum_json"
 		# r71：多样本验证的四个派生键（loss/jitter_ms/net_ttfb_ms/ray_ok）从边表按 IP
 		# 并入。未验证的 IP 四项都是 null——页面据此区分"没验过"和"验了没丢包"，
 		# 不会把 null 读成 0 说成"零丢包"。边表由 do_run 保证存在（可能为空）。
@@ -1943,12 +2170,14 @@ write_outputs() {
 	# 同样先写临时再 rename——半截 CSV 会被 edgetunnel 当成缺列直接拒。
 	# below_gate 的行同样不进 CSV：它和 best-ip.txt 一样是给客户端用的清单，
 	# 只把「补足用」的 IP 留在 result.json 里给人看。
-	# 表头写 MiB/s（r89 修）：值一直是 bps÷1048576（对齐 CFST 的 result.csv，
-	# edgetunnel 的 DLS 阈值按那个口径设），但 r88 的表头还写着 MB/s，同一个 IP
-	# 页面 15.55、CSV 14.83 —— 两处口径不同可以，标签写错不行。
+	# CSV 第 6 列与表头都跟 speed_unit 走（r90）：mb → MB/s + ÷1000000（用户习惯的
+	# 十进制，与页面/测速站同口径）；mib → MiB/s + ÷1048576（CFST 的 result.csv 口径，
+	# edgetunnel 的 DLS 阈值按那个设）。r89 曾经把值钉死在 MiB 而页面对不上，
+	# r90 起改成「值、表头、配置三者永远一致」——不再需要用户自己对齐口径。
+	csvhdr=$( [ "${C_SUUNIT:-mb}" = mib ] && printf '下载速度(MiB/s)' || printf '下载速度(MB/s)' )
 	{
-		printf 'IP 地址,已发送,已接收,丢包率,平均延迟,下载速度(MiB/s),地区码\n'
-		awk -F'\t' '$10 != 1' "$colored" | csv_rows "$RUN_DIR/vfields.tsv"
+		printf 'IP 地址,已发送,已接收,丢包率,平均延迟,%s,地区码\n' "$csvhdr"
+		awk -F'\t' '$10 != 1' "$colored" | csv_rows "$RUN_DIR/vfields.tsv" "${C_SPDIV:-1000000}"
 	} >"$RUN_DIR/best-ip.csv.tmp" && mv "$RUN_DIR/best-ip.csv.tmp" "$CSV" || rm -f "$RUN_DIR/best-ip.csv.tmp"
 }
 
@@ -2194,9 +2423,17 @@ do_run() {
 	esac
 	# budget / port 一起写进状态：真机上出现过"表单改成 64 没保存，跑的还是 256"，
 	# 而页面只报候选数，看不出这一轮到底按什么配置跑的。bypass 同理 —— 页面要能
-	# 说清「这轮的数字为什么不可信」。
-	printf '{"state":"running","started":"%s","budget":%s,"port":%s,"bypass":"%s","items":[]}' \
-		"$STARTED" "$C_BUDGET" "$C_PORT" "$BYPASS" >"$STATUS"
+	# 说清「这轮的数字为什么不可信」。probe_metric（r90）同理：页面在跑的过程中
+	# 就要按它把表头文案从「首字节」切到「TCP 建连」，不能等轮次结束。
+	printf '{"state":"running","started":"%s","budget":%s,"port":%s,"bypass":"%s","probe_metric":"%s","speed_unit":"%s","items":[]}' \
+		"$STARTED" "$C_BUDGET" "$C_PORT" "$BYPASS" "${C_METRIC:-http}" "${C_SUUNIT:-mb}" >"$STATUS"
+	# r90：判定指标是与 http 不可互相比较的另一把尺子，切换后第一眼就要说清。
+	# 每轮都记（脚本没有"上一轮用的是哪个"的状态，也不值得为它落一个文件）。
+	if [ "$C_METRIC" = tcp ]; then
+		log '判定指标：TCP 建连耗时（比 HTTP 首字节低 30–50%，两种模式的结果不可互相比较）'
+	else
+		log '判定指标：HTTP 首字节（TTFB，含 TCP+TLS 与首字节等待）'
+	fi
 
 	# sink 先于 curl：这条检查只是"以探测身份往自己的文件里写一个 x"，不需要 curl，
 	# 放在后面就会在没装 curl 的环境里永远测不到（CI 的 busybox 容器正是这种环境）。
@@ -2229,6 +2466,17 @@ do_run() {
 	mkdir -p "$parts"
 	# 先把上一轮那份清掉：现在它要到整轮收尾才写，留着旧内容会让人误读成"这一轮的"。
 	: >"$probed"
+	# r90：机房码的旁路表（ip \t colo）。同样每轮重开 —— RUN_DIR 是复用的，
+	# 不清零就会把上一轮的机房码混进这一轮的汇总里。
+	: >"$RUN_DIR/dc.tsv"
+	# 响应头落盘目录。和多样本验证（verify_top_n）踩过的坑一样：procd 的 umask 077
+	# 会让目录变成 700，而探测身份是 nobody，连"按名字打开一个已存在的文件"都要
+	# 目录的 x 权限。所以目录给 711、每个头文件由 root 预建成 666。
+	# 目录名与验证用的 vhdr 分开：那边的文件按 ip.<k> 命名，这里按 ip.hdr。
+	dhdr=$RUN_DIR/hdr
+	rm -rf "$dhdr"
+	mkdir -p "$dhdr" 2>/dev/null || true
+	chmod 711 "$dhdr" 2>/dev/null || true
 	# 先问一次出口有没有被接管：接管了的话后面的数字全都没意义，
 	# 但仍要跑（他可能想知道 clash 自己走哪条路），所以只是打标，不中断。
 	progress_set canary 0 1
@@ -2254,9 +2502,25 @@ do_run() {
 	i=0
 	n=0
 	for ip in $pool; do
+		di=0
 		for dom in $(printf '%s' "$C_DOMAINS" | tr ',' ' '); do
+			di=$((di + 1))
 			n=$((n + 1))
-			probe_one "$ip" "$dom" >"$parts/$n.tsv" &
+			# r90：每颗 IP 只在**首个样本**上顺手落一份响应头（CF-RAY 里带机房码）。
+			# 多传没有意义（同名文件自己覆盖自己），少传就丢机房码。
+			# 文件必须先由父进程建成 666：nobody 只能打开已存在的文件，不能在
+			# 711 的目录里创建东西。建不出来就**不传** —— 让 curl 去写一个打不开
+			# 的 -D 目标会直接 rc=23，整轮候选全被记成传输错误（r9 那类事故）。
+			phf=''
+			if [ "$di" = 1 ]; then
+				phf=$dhdr/$ip.hdr
+				if ! : >"$phf" 2>/dev/null; then
+					phf=''
+				else
+					chmod 666 "$phf" 2>/dev/null || true
+				fi
+			fi
+			probe_one "$ip" "$dom" "$phf" >"$parts/$n.tsv" &
 			i=$((i + 1))
 			[ "$i" -ge "$C_CONC" ] && { wait; i=0; progress_set probe "$(probe_done)" $ptotal; }
 		done
@@ -2291,9 +2555,22 @@ do_run() {
 			nbase=$n
 			i=0
 			for ip in $nbr; do
+				di=0
 				for dom in $(printf '%s' "$C_DOMAINS" | tr ',' ' '); do
+					di=$((di + 1))
 					n=$((n + 1))
-					probe_one "$ip" "$dom" >"$parts/$n.tsv" &
+					# r90：邻居也要机房码 —— 它和已有的那颗往往同段不同机房，
+					# 少了 colo 这些新候选就进不了 DC 汇总，等于白探一轮。
+					phf=''
+					if [ "$di" = 1 ]; then
+						phf=$dhdr/$ip.hdr
+						if ! : >"$phf" 2>/dev/null; then
+							phf=''
+						else
+							chmod 666 "$phf" 2>/dev/null || true
+						fi
+					fi
+					probe_one "$ip" "$dom" "$phf" >"$parts/$n.tsv" &
 					i=$((i + 1))
 					[ "$i" -ge "$C_CONC" ] && { wait; i=0; }
 				done
@@ -2311,6 +2588,10 @@ do_run() {
 	fi
 	rm -rf "$parts"
 	progress_set probe $ptotal $ptotal
+	# r90：初筛结束时把每颗 IP 的响应头收成 ip \t colo。串行扫一遍而不是在并发
+	# 子壳里直接 `>>` —— 8 路并发追加会字符级交错（probed.tsv 上真机撞过）。
+	dc_collect
+	rm -rf "$dhdr" 2>/dev/null || true
 
 	progress_set rank 0 1
 	qual=$RUN_DIR/qualified.tsv
@@ -2336,6 +2617,46 @@ do_run() {
 			log "多样本验证 $vkept 个（各 3 次取中位数）；验证后达标 $vout 个"
 		fi
 	fi
+	# ---- r90：数据中心汇总（零额外请求）→ 可选按 DC 过滤 --------------------
+	# 汇总先算出来：即使 dc_pick=all（不过滤），这份列表也要交给页面与 result.json。
+	# 输入是初筛阶段落的 dc.tsv（每颗 IP 的 CF-RAY 机房码）与当前 qualified
+	# （多样本验证的中位数已经合回去，所以这里的中位 TTFB 是"验过"的数字）。
+	dc_summary "$RUN_DIR/dc.tsv" "$qual" >"$RUN_DIR/dc.summary"
+	dcn=$(grep -c . "$RUN_DIR/dc.summary" 2>/dev/null || true)
+	dcn=${dcn:-0}
+	if [ "$dcn" -gt 0 ]; then
+		log "数据中心汇总：$(dc_summary_line <"$RUN_DIR/dc.summary")"
+	elif [ -s "$RUN_DIR/dc.tsv" ]; then
+		# 拿到机房码但没有达标的 IP 可汇总 —— 和「一个码都没拿到」是两件事，
+		# 混成一句话会让人去查 CF-RAY，而问题其实在延迟门槛上。
+		log '数据中心汇总：本轮取到了机房码，但没有达标的 IP 可汇总（qualified 为空）'
+	else
+		log '数据中心汇总：本轮没有任何 IP 从响应头里拿到 CF-RAY 的机房码（dc.tsv 为空）'
+	fi
+	# 过滤只做一件事：把 qualified 收窄到一个机房。auto = 汇总第一名（按中位升序）。
+	# 收窄后为空必须**退回 all** —— 一张白榜比一张没过滤的榜糟得多。
+	if [ "$C_DCPICK" != all ]; then
+		if [ "$dcn" -gt 0 ]; then
+			dcw=$(dc_select "$RUN_DIR/dc.summary" "$C_DCPICK")
+			if [ "$dcw" = all ]; then
+				log "按数据中心过滤：dc_pick=$C_DCPICK 在本轮汇总里找不到，本轮不过滤"
+			else
+				dc_filter "$RUN_DIR/dc.tsv" "$dcw" <"$qual" >"$RUN_DIR/qual.dc.tsv"
+				dc_after=$(grep -c . "$RUN_DIR/qual.dc.tsv" 2>/dev/null || true)
+				dc_after=${dc_after:-0}
+				if [ "$dc_after" -gt 0 ]; then
+					mv -f "$RUN_DIR/qual.dc.tsv" "$qual"
+					log "按数据中心过滤：只保留 $dcw（$dc_after 个）"
+				else
+					rm -f "$RUN_DIR/qual.dc.tsv"
+					log "按数据中心过滤：$dcw 没有任何达标的 IP，本轮退回不过滤（不交空榜）"
+				fi
+			fi
+		else
+			log "按数据中心过滤：dc_pick=$C_DCPICK 但本轮没有可过滤的机房（汇总为空），退回不过滤"
+		fi
+	fi
+
 	# ---- r88：稳定性 → 粗筛测速 → 吞吐门槛 → 加权重排 → 精测复排 → 截断 ----
 	# 顺序是这次改动的全部意义：老流程在 write_outputs 里才对前 speed_count 个现场
 	# 测速，那时名次早已截断完毕，第 11 名再快也进不来。要让吞吐影响名次，测速就
@@ -3606,6 +3927,127 @@ selftest() {
 	check 'probe_cmd 第 4 参：不破坏原有 --resolve 与 -o' "$got" '1'
 	got=$(sh "$0" _probecmd 1.2.3.4 example.com / | grep -c -- '-D ' || true)
 	check 'probe_cmd 不给第 4 参时完全没有 -D（旧形状不变）' "$got" '0'
+
+	# ---- r90：CF-RAY 里的机房码 / DC 汇总 / 按 DC 过滤 / 判定指标 / 速度单位 ----
+	# ray_colo 只解析已落盘的响应头，不发请求 —— 这条路径的全部价值就在这。
+	dhf=$T/ray.txt
+	printf 'HTTP/2 200\r\ncf-ray: 8e2a1b2c3d4e5f67-NRT\r\ncontent-type: text/html\r\n' >"$dhf"
+	check 'ray_colo：<hex>-NRT ⇒ NRT' "$(ray_colo "$dhf")" 'NRT'
+	printf 'HTTP/2 200\r\nCF-RAY: 8e2a1b2c3d4e5f67-nrt\r\n' >"$dhf"
+	check 'ray_colo：字段名与码大小写都容忍，统一成大写' "$(ray_colo "$dhf")" 'NRT'
+	printf 'HTTP/2 200\r\ncf-ray: 8e2a1b2c3d4e5f67\r\n' >"$dhf"
+	check 'ray_colo：没有 -COLO 段 ⇒ 空（不能截出一段假的）' "$(ray_colo "$dhf")" ''
+	printf 'HTTP/2 200\r\ncf-ray: abc-NR\r\n' >"$dhf"
+	check 'ray_colo：末尾不足三字 ⇒ 空' "$(ray_colo "$dhf")" ''
+	printf 'HTTP/2 200\r\nserver: cloudflare\r\n' >"$dhf"
+	check 'ray_colo：没有 CF-RAY ⇒ 空' "$(ray_colo "$dhf")" ''
+	check 'ray_colo：文件不存在 ⇒ 空，不报错' "$(ray_colo "$T/no-such-hdr")" ''
+	rm -f "$dhf"
+
+	# dc_summary：聚合 + 中位数 + 最佳 IP + 按中位升序。
+	# 同一颗 IP 出现两次（HKG 在前、NRT 在后）要靠「后写覆盖」只算 NRT 一次。
+	dct=$T/dc.tsv
+	printf '1.1.1.1\tHKG\n1.1.1.2\tNRT\n1.1.1.1\tNRT\n1.1.1.3\tNRT\n2.2.2.2\tLAX\n2.2.2.3\tLAX\n3.3.3.3\tSIN\n' >"$dct"
+	dqu=$T/dcqual.tsv
+	printf '1.1.1.1\t200\t150.0\t30.0\t300.0\t400.0\tnone\ta.example\n1.1.1.2\t200\t80.0\t20.0\t100.0\t180.0\tnone\ta.example\n1.1.1.3\t200\t90.0\t25.0\t200.0\t280.0\tnone\ta.example\n2.2.2.2\t200\t100.0\t30.0\t150.0\t250.0\tnone\ta.example\n2.2.2.3\t200\t300.0\t40.0\t400.0\t500.0\tnone\ta.example\n3.3.3.3\t200\t40.0\t10.0\t50.0\t120.0\tnone\ta.example\n9.9.9.9\t200\t50.0\t10.0\t60.0\t130.0\tnone\ta.example\n' >"$dqu"
+	got=$(dc_summary "$dct" "$dqu")
+	check 'dc_summary：按中位 ttfb 升序（SIN 50 < NRT 200 < LAX 275）' \
+		"$(printf '%s\n' "$got" | cut -f1 | tr '\n' ' ')" 'SIN NRT LAX '
+	check 'dc_summary：个数与中位数（NRT 3 个 / 200.0，LAX 2 个取均值 275.0）' \
+		"$(printf '%s\n' "$got" | grep -E '^(NRT|LAX)' | cut -f2,3 | tr '\n' ' ')" "$(printf '3\t200.0 2\t275.0 ')"
+	check 'dc_summary：best_ip 取该机房 ttfb 最小的那颗' \
+		"$(printf '%s\n' "$got" | awk -F'\t' '$1=="NRT"{print $4}')" '1.1.1.2'
+	check 'dc_summary：同一 IP 后写覆盖（HKG 不算数）' \
+		"$(printf '%s\n' "$got" | grep -c '^HKG')" '0'
+	check 'dc_summary：qualified 里没有机房码的 IP 不进汇总（9.9.9.9）' \
+		"$(printf '%s\n' "$got" | awk -F'\t' '$4=="9.9.9.9"' | grep -c . || true)" '0'
+	# dc_pick 的归一化：all/auto/三位码，其它形状退回 all（并记一条配置告警）
+	check 'dc_pick：all 原样' "$(dc_pick_norm all)" 'all'
+	check 'dc_pick：auto 原样' "$(dc_pick_norm AUTO)" 'auto'
+	check 'dc_pick：小写三字码被规范成大写' "$(dc_pick_norm nrt)" 'NRT'
+	check 'dc_pick：空值当 all' "$(dc_pick_norm '')" 'all'
+	check 'dc_pick：看不懂的值输出空（由调用方退回 all 并告警）' "$(dc_pick_norm 'tokyo')" ''
+	# 走一遍真实配置路径：非法值必须退回 all，并且告警真的落进了缓冲（不在子壳里丢）
+	printf '%s\n' "$( export CFIP_DC_PICK='tokyo'; CFG_WARN=''; load_config
+		printf '%s|%s' "$C_DCPICK" "$(printf '%s' "$CFG_WARN" | grep -c 'dc_pick')" )" >"$T/dcp.out"
+	check 'dc_pick 非法时 load_config 退回 all 且记了告警' "$(cat "$T/dcp.out")" 'all|1'
+	# dc_select：auto 取汇总第一行；指定码存在就用它；不存在退回 all；空汇总退回 all
+	dcs=$T/dc.summary
+	printf '%s\n' "$got" >"$dcs"
+	check 'dc_select：auto 取中位最低的那个机房' "$(dc_select "$dcs" auto)" 'SIN'
+	check 'dc_select：指定码命中' "$(dc_select "$dcs" NRT)" 'NRT'
+	check 'dc_select：指定码本轮不存在 ⇒ all' "$(dc_select "$dcs" HKG)" 'all'
+	check 'dc_select：汇总为空时 auto ⇒ all（不交空榜）' "$(dc_select /dev/null auto)" 'all'
+	# dc_filter：只留指定机房的行（保持 qualified 的原顺序），8 字段结构原样透传
+	check 'dc_filter：只留 NRT 的 3 行' \
+		"$(dc_filter "$dct" NRT <"$dqu" | cut -f1 | tr '\n' ' ')" '1.1.1.1 1.1.1.2 1.1.1.3 '
+	check 'dc_filter：过滤后仍是 8 字段（下游按列位置读）' \
+		"$(dc_filter "$dct" NRT <"$dqu" | awk -F'\t' '{print NF}' | sort -u | tr '\n' ' ')" '8 '
+	check 'dc_filter：机房不存在的 IP（9.9.9.9）被滤掉' \
+		"$(dc_filter "$dct" NRT <"$dqu" | grep -c '^9\.9\.9\.9' || true)" '0'
+	# 汇总日志：最多列 6 个，其余用「等 N 个」收尾
+	printf 'A1\t1\t10.0\t1.1.1.1\nA2\t1\t20.0\t1.1.1.1\nA3\t1\t30.0\t1.1.1.1\nA4\t1\t40.0\t1.1.1.1\nA5\t1\t50.0\t1.1.1.1\nA6\t1\t60.0\t1.1.1.1\nA7\t1\t70.0\t1.1.1.1\nA8\t1\t80.0\t1.1.1.1\n' >"$dcs"
+	got=$(dc_summary_line <"$dcs")
+	check '汇总日志：列满 6 个后收尾成「等 2 个」' "$(printf '%s' "$got" | grep -c '等 2 个')" '1'
+	check '汇总日志：第 7 个机房不再单独列出来' "$(printf '%s' "$got" | grep -c 'A7')" '0'
+
+	# 判定指标：同一批数据，ttfb（第 5 列）与 connect（第 3 列）给出的名次不同。
+	#   ttfb 升序    = 2.2.2.2(120) 3.3.3.3(200) 1.1.1.1(300)
+	#   connect 升序 = 1.1.1.1(10)  3.3.3.3(50)  2.2.2.2(100)
+	# 两个口径的答案不一样，所以这条断言真的能抓到「mcol 没生效」。
+	mrow=$(printf '1.1.1.1\t200\t10.0\t5.0\t300.0\t400.0\tnone\ta.example\n2.2.2.2\t200\t100.0\t5.0\t120.0\t260.0\tnone\ta.example\n3.3.3.3\t200\t50.0\t5.0\t200.0\t300.0\tnone\ta.example')
+	C_KEEP=10; C_TTFB=3000; C_TOTAL=5000
+	C_MCOL=5
+	check 'probe_metric=http：按第 5 列（ttfb）排序' \
+		"$(printf '%s\n' "$mrow" | rank | cut -f1 | tr '\n' ' ')" '2.2.2.2 3.3.3.3 1.1.1.1 '
+	C_MCOL=3
+	check 'probe_metric=tcp：按第 3 列（connect）排序' \
+		"$(printf '%s\n' "$mrow" | rank | cut -f1 | tr '\n' ' ')" '1.1.1.1 3.3.3.3 2.2.2.2 '
+	# 门槛也跟着走：connect 4000 在 tcp 模式下超上限被剔，而它的 ttfb 只有 100。
+	slowc=$(printf '4.4.4.4\t200\t4000.0\t20.0\t100.0\t4100.0\tnone\ta.example')
+	check 'probe_metric=tcp：connect 超上限时剔除（同一个上限换个列）' \
+		"$(printf '%s\n' "$slowc" | rank | grep -c . || true)" '0'
+	C_MCOL=5
+	check 'probe_metric=http：同一颗按 ttfb 看是达标的' \
+		"$(printf '%s\n' "$slowc" | rank | grep -c . || true)" '1'
+	C_MCOL=5
+
+	# 速度单位：同一个 bps，两种口径给出的 CSV 第 6 列不同（10485760 B/s）。
+	crow='1.1.1.1\t200\t10\t5\t200.0\t300.0\tNRT\t10.49\twww.cloudflare.com\t0\t10485760'
+	check 'speed_unit=mb：10485760 B/s ⇒ 10.49（十进制）' \
+		"$(printf "$crow\n" | csv_rows /dev/null 1000000 | cut -d, -f6)" '10.49'
+	check 'speed_unit=mib：10485760 B/s ⇒ 10.00（二进制）' \
+		"$(printf "$crow\n" | csv_rows /dev/null 1048576 | cut -d, -f6)" '10.00'
+	check 'csv_rows 不传除数时按默认十进制（旧行为不变）' \
+		"$(printf "$crow\n" | csv_rows /dev/null | cut -d, -f6)" '10.49'
+	# 表头与值必须同一口径：写两遍 CSV，只看第 6 列的表头
+	C_SUUNIT=mib; C_SPDIV=1048576
+	write_outputs "$(printf '104.16.1.1\t200\t50.0\t60.0\t120.0\t400.0\tnone\twww.cloudflare.com')" 1 1 0 '{"none":1}'
+	check 'CSV 表头跟着 speed_unit（mib ⇒ MiB/s）' "$(head -n 1 "$CSV" | cut -d, -f6)" '下载速度(MiB/s)'
+	C_SUUNIT=mb; C_SPDIV=1000000
+	write_outputs "$(printf '104.16.1.1\t200\t50.0\t60.0\t120.0\t400.0\tnone\twww.cloudflare.com')" 1 1 0 '{"none":1}'
+	check 'CSV 表头跟着 speed_unit（mb ⇒ MB/s）' "$(head -n 1 "$CSV" | cut -d, -f6)" '下载速度(MB/s)'
+	# result.json 的三个新键 + dc_summary 数组（有汇总时按 dc 升序原样落 JSON）。
+	# dc_pick 写的是**模式**（all/auto/NRT），和页面里「当前」标记的口径一致：
+	# auto 时哪一行被选中由 dc_summary 的第一行表达（中位最快），不再另给一个码键。
+	printf 'NRT\t2\t150.0\t1.1.1.1\nLAX\t1\t275.0\t2.2.2.2\n' >"$RUN_DIR/dc.summary"
+	C_METRIC=tcp; C_MCOL=3; C_SUUNIT=mib; C_SPDIV=1048576; C_DCPICK=auto
+	write_outputs "$(printf '104.16.1.1\t200\t50.0\t60.0\t120.0\t400.0\tnone\twww.cloudflare.com')" 1 1 0 '{"none":1}'
+	check 'result.json：probe_metric 写生效值' "$(grep -cF '"probe_metric":"tcp"' "$RESULT")" '1'
+	check 'result.json：speed_unit 写生效值' "$(grep -cF '"speed_unit":"mib"' "$RESULT")" '1'
+	check 'result.json：dc_pick 写模式（auto，与页面「当前」标记同口径）' \
+		"$(grep -cF '"dc_pick":"auto"' "$RESULT")" '1'
+	check 'result.json：dc_summary 是数组且四个字段齐全' \
+		"$(grep -cF '"dc_summary":[{"dc":"NRT","count":2,"ttfb_med":150.0,"best_ip":"1.1.1.1"},{"dc":"LAX","count":1,"ttfb_med":275.0,"best_ip":"2.2.2.2"}]' "$RESULT")" '1'
+	check 'status.json 同样带 probe_metric（页面切表头文案用）' \
+		"$(grep -cF '"probe_metric":"tcp"' "$STATUS")" '1'
+	# 没有汇总时不能被写成半截数组（页面 JSON.parse 会整页失败）
+	: >"$RUN_DIR/dc.summary"
+	C_METRIC=http; C_MCOL=5; C_SUUNIT=mb; C_SPDIV=1000000; C_DCPICK=all
+	write_outputs "$(printf '104.16.1.1\t200\t50.0\t60.0\t120.0\t400.0\tnone\twww.cloudflare.com')" 1 1 0 '{"none":1}'
+	check 'result.json：没有汇总时 dc_summary 是空数组而不是半截' \
+		"$(grep -cF '"dc_summary":[]' "$RESULT")" '1'
+	rm -f "$dcs" "$dct" "$dqu" "$RUN_DIR/dc.summary"
 	rm -rf "$T"
 	if [ -n "$ST_SCRATCH" ]; then
 		rm -rf "$ST_SCRATCH"
