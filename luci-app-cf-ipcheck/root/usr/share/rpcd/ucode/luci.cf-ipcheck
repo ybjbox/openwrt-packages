@@ -59,6 +59,12 @@ const methods = {
 	},
 	check_sources: {
 		call: () => sh('check-sources')
+	},
+	// DNS 同步（可选功能）：把榜首写进 Cloudflare 的 A 记录。
+	// 单独成一个方法而不是复用 run：它的语义是「现在就写一次」，与「跑一轮」无关，
+	// 而且它不联网测速、只发两三次 API 请求，超时预算完全不同。
+	dns_sync: {
+		call: () => sh('dns-sync')
 	}
 };
 

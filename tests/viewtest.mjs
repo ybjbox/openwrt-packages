@@ -1335,7 +1335,10 @@ mapNode.querySelectorAll('.cbi-section-node')[1].appendChild(stray);
 const grps = t.regroupForm(mapNode);
 ok('重组返回容器', !!grps);
 const boxes = byData(grps, 'group');
-eq('分组数 = 4', boxes.length, 4);
+/* r96：新增「DNS 解析」组，分组数 4 → 5。
+ * 这条是刻意收紧的：加组必须同时更新这里，否则「字段被搬到别的组 / 新组没渲染」
+ * 这类问题会静默通过。 */
+eq('分组数 = 5', boxes.length, 5);
 let moved = 0;
 boxes.forEach(b => { moved += byClass(b, 'brow').length + b.querySelectorAll('.cbi-value').length; });
 eq('所有字段都被搬进分组', moved, allOptions.length);

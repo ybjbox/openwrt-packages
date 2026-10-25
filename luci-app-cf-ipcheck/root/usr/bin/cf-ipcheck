@@ -2523,6 +2523,39 @@ due_gap() {
 	printf '%s\n' "$left"
 }
 
+# ---------------- DNS 同步（可选，默认关）---------------------------------
+# 把榜首 IP 写进 Cloudflare 的指定 A 记录。为什么是独立脚本而不是写在这里：
+# HTTP + 令牌 + 记录幂等 是另一套关注点，和「测量」正交；塞进来会让这个 4000 行的
+# 测量脚本再多背两百行网络代码，而且它的失败绝不该影响本轮测量结论。
+# 与上传 Gist 同一种性质：对外副作用、失败只记日志。
+# CFIP_APPLY_DNS 只为止本地/CI 测试留的口子（真机上永远是默认路径）。
+APPLY_DNS="${CFIP_APPLY_DNS:-/usr/libexec/cf-ipcheck/apply-dns.sh}"
+
+dns_sync_hook() {
+	# $1 = 模式，三选一：
+	#   auto（默认，一轮跑完自动调用）—— 严格守 dns_sync 开关 + 本机去重
+	#   manual（页面「立即写一次」）    —— 绕开总开关，但**仍然**去重
+	#   force（ssh 手工排查）           —— 连去重都绕开，真去问一次 Cloudflare
+	# 为什么 manual 和 force 必须分开：人点按钮的意图是「现在就让它生效」，
+	# 不是说「请无视你已经同步过的事实再发一次请求」。
+	_mode="${1:-auto}"
+	if [ ! -x "$APPLY_DNS" ]; then
+		log "DNS 同步：找不到 $APPLY_DNS（包不完整？），跳过"
+		return 0
+	fi
+	_rc=0
+	case "$_mode" in
+		force)  ( "$APPLY_DNS" --force  >/dev/null 2>&1 ) || _rc=$? ;;
+		manual) ( "$APPLY_DNS" --manual >/dev/null 2>&1 ) || _rc=$? ;;
+		*)      ( "$APPLY_DNS"          >/dev/null 2>&1 ) || _rc=$? ;;
+	esac
+	# 0=已写或本来就是同一个 IP；2=配置不全/开关拦下（脚本自己已记日志）；
+	# 3=网络；4=API 拒；5=回读不一致。后三种才值得在这里再提一句。
+	[ "$_rc" = 0 ] || [ "$_rc" = 2 ] || log "DNS 同步未完成（退出码 $_rc），详见上面 dns 相关日志"
+	# 把退出码交回去：自动收尾那条路不看它，手工触发那条要把结果报给页面。
+	return "$_rc"
+}
+
 do_run() {
 	load_config
 	trim_log
@@ -2985,6 +3018,20 @@ do_run() {
 			progress_set upload 1 1
 		fi
 	fi
+	# DNS 同步（可选，默认关）：与上传同一种性质 —— 对外副作用、失败只记日志、
+	# 不影响本轮测量结论。出口被接管或本轮被叫停时跳过：前者这份榜首不真实，
+	# 后者这一轮根本没跑完，拿它去改解析就是在制造故障。
+	if [ "$(cfg_num dns_sync 0)" = 1 ]; then
+		if [ "$intercepted" = 1 ]; then
+			log '本轮出口不可信（被代理接管），跳过 DNS 同步'
+		elif [ -f "$STOP" ]; then
+			log '本轮被你叫停：跳过 DNS 同步'
+		else
+			# 自动收尾不看退出码：失败已经由脚本写进日志，这里绝不能因此
+			# 把整轮判成失败（测量本身是成功的）。
+			dns_sync_hook || true
+		fi
+	fi
 	log '本轮完成'
 	progress_clear
 	trim_log
@@ -3105,7 +3152,7 @@ do_diag() {
 		# 打成什么形状（真机上就是重复行 / 带下标 / 数组式这三种在打架）。
 		uci_list=$(printf '%s\n' "$( "$UCI_BIN" -q show "$CONF.@global[0].community_sources" 2>&1 | head -n 3 | tr '\n' '~' )" | cut -c1-260)
 	fi
-	printf '{"has_uci":%s,"uci":"%s","su":"%s","curl":"%s","jq":"%s","devnull_is_chardev":%s,"null_dev":"%s","sink_writable":%s,"run_dir_mode":"%s","sources":%s,"domains":"%s","port":"%s","budget":"%s","official":"%s","reuse":"%s","colo":"%s","colo_domain":"%s","canary":"%s","probe_user":"%s","speed":"%s","speed_count":"%s","speed_bytes":"%s","speed_domain":"%s","interval":"%s","upload":"%s","logkb":"%s","log_bytes":"%s","run_dir":"%s","etc_dir":"%s","uci_show":"%s","uci_get_probe_port":"%s","uci_get_rc":%s,"uci_list_raw":"%s"}\n' \
+	printf '{"has_uci":%s,"uci":"%s","su":"%s","curl":"%s","jq":"%s","devnull_is_chardev":%s,"null_dev":"%s","sink_writable":%s,"run_dir_mode":"%s","sources":%s,"domains":"%s","port":"%s","budget":"%s","official":"%s","reuse":"%s","colo":"%s","colo_domain":"%s","canary":"%s","probe_user":"%s","speed":"%s","speed_count":"%s","speed_bytes":"%s","speed_domain":"%s","interval":"%s","upload":"%s","logkb":"%s","log_bytes":"%s","run_dir":"%s","etc_dir":"%s","uci_show":"%s","uci_get_probe_port":"%s","uci_get_rc":%s,"uci_list_raw":"%s","dns_sync":%s,"apply_dns":"%s","apply_dns_ok":%s,"dns_record_set":%s}\n' \
 		"$HAS_UCI" "$(json_str "${UCI_BIN:-}")" "$(json_str "${SU_BIN:-}")" \
 		"$(json_str "${CURL_BIN:-}")" "$(json_str "${JQ_BIN:-}")" \
 		"$([ -c /dev/null ] && printf 1 || printf 0)" "$(json_str "$NULL_DEV")" \
@@ -3119,7 +3166,10 @@ do_diag() {
 		"$(json_str "$C_UPLOAD")" "$(json_str "$C_LOGKB")" \
 		"$(json_str "${LOGSZ:-0}")" \
 		"$(json_str "$RUN_DIR")" "$(json_str "$ETC_DIR")" \
-		"$(json_str "$uci_show")" "$(json_str "$uci_get")" "$uci_rc" "$(json_str "$uci_list")"
+		"$(json_str "$uci_show")" "$(json_str "$uci_get")" "$uci_rc" "$(json_str "$uci_list")" \
+		"$(cfg_num dns_sync 0)" "$(json_str "$APPLY_DNS")" \
+		"$([ -x "$APPLY_DNS" ] && printf 1 || printf 0)" \
+		"$([ -n "$(cfg dns_record '')" ] && printf 1 || printf 0)"
 }
 
 # ---------------- 离线自检（CI 用；不联网、不依赖 uci）--------------------
@@ -4281,6 +4331,7 @@ usage() {
   canary    只跑一次出口接管自检，输出 {"intercepted":0|1}
   check-sources  逐个源体检：HTTP 状态 / 提取到的 IPv4 数 / 落在 CF 官方段内的数量
   logs      输出引擎日志的最近部分（给页面看；最多约 60 KB，且总是从整行开始）
+  dns-sync  把当前榜首 IP 写进 Cloudflare DNS 的指定 A 记录（手工触发；等价 --force）
   colo IP   查询单个 IP 的落地机房代码（如 SIN/NRT/HKG）
   stop      请求当前这一轮尽快收尾
   daemon    常驻，按 interval_hours 循环
@@ -4313,6 +4364,20 @@ case "${1:-}" in
 	check-sources) log '收到页面指令：检测源可用性'
 	               check_sources ;;
 	logs)    load_config; trim_log; print_log ;;
+	# 手工触发一次 DNS 同步（页面「立即写一次」）。这里传 force=1：
+	# 人已经明确点了，就不该再被 dns_sync 开关拦回去。
+	# 输出一行 JSON 而不是人类可读文本：页面要能区分「写成功 / 本来就是它 /
+	# 配置不全 / 网络或 API 出错」，否则这颗按钮又是「点了没反应」那一类。
+	dns-sync)
+		load_config
+		_drc=0
+		dns_sync_hook manual || _drc=$?
+		# 脚本自己已经把原因写进日志了，这里把最后一行原样带回去 ——
+		# 页面就不用去猜退出码的含义，也不用再多一句「请去日志页看」的间接指引。
+		_dmsg=$(tail -n 1 "$LOG" 2>/dev/null | sed 's/^[0-9][0-9T:+-]* //')
+		printf '{"rc":%s,"ok":%s,"msg":"%s"}\n' \
+			"$_drc" "$([ "$_drc" = 0 ] && printf true || printf false)" "$(json_str "$_dmsg")"
+		;;
 	colo)    if ! valid_ip4 "${2:-}"; then
 				 echo '参数必须是一个纯 IPv4（不接受主机名，也不接受任何多余字符）'
 				 exit 2

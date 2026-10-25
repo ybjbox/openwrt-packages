@@ -17,7 +17,8 @@
             "ubus": {
                 "luci.cf-ipcheck": [
                     "run",
-                    "stop"
+                    "stop",
+                    "dns_sync"
                 ]
             },
             "uci": [

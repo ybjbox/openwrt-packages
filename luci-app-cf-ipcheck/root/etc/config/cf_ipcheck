@@ -171,3 +171,30 @@ config global 'global'
 	option gist_file 'cf-ip.txt'
 	option gist_token ''
 	option token_file '/etc/cf-ipcheck.token'
+
+	# ---- Cloudflare DNS 自动解析（可选，默认关）----
+	# 把每轮榜首 IP 写进某条 A 记录，让你自己的域名直接指向优选 IP。
+	# 注意它和「下发」不是一类东西：这条路径**不碰路由器上任何配置文件**，
+	# 只发两三次 Cloudflare API 请求；出事最多是解析不对，删掉记录就还原。
+	#
+	# 前提：proxied 必须是 false（灰云）。橙云会让 Cloudflare 返回它自己的 anycast
+	# 地址，客户端根本解析不到我们优选的那颗 IP —— 那样这个功能等于白做。
+	# 所以 dns_proxied 固定按 0 处理，就算写成 1 也只会在日志里留一句警告。
+	option dns_sync '0'
+
+	# zone 名（example.com）或 32 位 zone id 都行
+	option dns_zone ''
+
+	# 完整记录名，例如 cf.example.com；只支持 A 记录
+	option dns_record ''
+
+	# 仅作留档，实际一律按灰云写（理由见上）
+	option dns_proxied '0'
+
+	# 秒。60 便于故障切换；填 1 表示「自动」（Cloudflare 自己的默认值）
+	option dns_ttl '60'
+
+	# 令牌需要 Zone → DNS → Edit 权限。它与上面的 gist_token **不是同一个令牌**
+	# （gist 令牌只有 gist 权限），不要复用。两处都填时以 dns_token 为准。
+	option dns_token ''
+	option dns_token_file ''

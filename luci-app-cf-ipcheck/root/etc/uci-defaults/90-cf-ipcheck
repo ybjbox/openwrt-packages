@@ -36,5 +36,13 @@ cfip_default probe_metric http
 cfip_default dc_pick all
 cfip_default speed_unit mb
 
+# r96：Cloudflare DNS 自动解析（默认关）。
+# 只补「有非空默认值」的三项；zone / record / token 留空就真的不写 ——
+# 在 uci 里造一堆空键只会让 diag 更难读，而且空值和「没这一项」在
+# uci 里本来就同义（取回来都是 rc=1）。
+cfip_default dns_sync 0
+cfip_default dns_proxied 0
+cfip_default dns_ttl 60
+
 uci -q commit cf_ipcheck
 exit 0

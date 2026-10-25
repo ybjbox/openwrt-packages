@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r95';
+var VIEW_BUILD = 'r96';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -513,7 +513,12 @@ var RPC_METHODS = {
 	logs: rpc.declare({ object: RPC_OBJECT, method: 'logs' }),
 	'run-now': rpc.declare({ object: RPC_OBJECT, method: 'run' }),
 	stop: rpc.declare({ object: RPC_OBJECT, method: 'stop' }),
-	'check-sources': rpc.declare({ object: RPC_OBJECT, method: 'check_sources' })
+	'check-sources': rpc.declare({ object: RPC_OBJECT, method: 'check_sources' }),
+	/* DNS 同步（可选功能，§12）：把榜首写进 Cloudflare 的指定 A 记录。
+	 * 键名用引擎的子命令名（dns-sync），因为 runCmd 是按 args[0] 查这张表的；
+	 * ubus 那一侧的方法名是 dns_sync（red-line-12 要求三方同名同义）。
+	 * 这一版只声明，页面上的入口在下一批一起接（先让契约四方对齐）。 */
+	'dns-sync': rpc.declare({ object: RPC_OBJECT, method: 'dns_sync' })
 };
 
 var HUNG = { hung: true };
@@ -538,6 +543,12 @@ var CMD_LIMIT = {
 	 * 引擎那边已经把最坏耗时压进 30 秒（段表 4 秒 + 一批 8 秒），这里给 45 秒
 	 * 只是给这条连接留出抖动余量，不是指望它跑一分钟。 */
 	'check-sources': 45000,
+	/* DNS 同步：最多 4 个 HTTP 请求（zone / 查记录 / 写 / 回读），脚本里每个 6 秒上限，
+	 * 所以最坏 24 秒。这里给 30 秒，正好卡在 rpcd 的平台级上限（真机 option timeout 30）
+	 * 上 —— 再大也没有意义：rpcd 到点就把命令掐了并回一个响应。
+	 * 之所以不给 45 秒（和 check-sources 一样）：那会让页面以为能等更久，
+	 * 实际却被 rpcd 先掐断，症状是「没有回应」而不是一条明确的失败原因。 */
+	'dns-sync': 30000,
 	/* 读日志只是 tail 一个本地文件（真机实测最慢 0.48 秒），6 秒已经很宽裕。
 	 * 这里必须**小于** status 的上限：LuCI 的 rpc 层会把同一拍发出的调用并进一个
 	 * POST（真机抓到过：一个请求体里同时带 logs 与 status），响应要等两条都跑完
@@ -1734,7 +1745,7 @@ function cfgOption(name) {
 	return '';
 }
 
-function BoardTable(st, kids) {
+function BoardTable(st, kids, actions) {
 	/* r88：两条只读提示，跟着本轮状态出现、状态一变就消失（指纹里已带上这两个键，
 	 * 不用刷新页面）。放在读数带之前，先给结论再给数字。 */
 	if (st.speed_mode === 'degraded') {
@@ -1765,7 +1776,19 @@ function BoardTable(st, kids) {
 	 * 全景，再给「具体用哪一颗」。没有 dc_summary 时这块整个不出现（DcSummary 返回 null，
 	 * append 会跳过），不留空壳。 */
 	kids.push(DcSummary(st));
-	kids.push(Section(T('榜单')));
+	/* 「立即写一次 DNS」挂在小标题右侧，不占读数带那一排按钮的位置 ——
+	 * 它是一次性的维护动作，不是每次都要按的主流程；塞进读数带会让那一排
+	 * 在手机上更挤（现在已经有 4 颗）。
+	 * 为什么不受 dns_sync 开关限制：这个按钮的语义就是「现在按我说的写一次」，
+	 * 引擎侧那条手工路径带 --force，所以开关关着也能用（关的是「每轮自动写」）。 */
+	var btnDns = Button({
+		kind: 'lnk', label: T('立即写一次 DNS'),
+		title: T('把当前榜首 IP 立刻写进 Cloudflare 的 A 记录，不管「每轮自动同步」那个开关开没开。已经同步过的同一个 IP 会直接跳过，不会重复写。'),
+		disabled: !!(store.get().busy && store.get().busy.dns),
+		busy: !!(store.get().busy && store.get().busy.dns),
+		onClick: actions && actions.dns
+	});
+	kids.push(Section(T('榜单'), btnDns));
 	/* 口径与单位都跟着「这一轮结果」走，不跟着配置走：配置改了还没重跑时，
 	 * 表格要照旧解释手里这份数字，而不是给旧数字贴新标签。 */
 	kids.push(Leaderboard(st.items, { metric: st.probe_metric, unit: st.speed_unit }));
@@ -1828,7 +1851,7 @@ function BoardPane(st, actions) {
 		 * 抖动就把用户正在看的十行数字抹成白板 —— r32 就是这么干的，一次 status
 		 * 超时之后整页只剩「路由器没有回应」，非按 F5 不可。 */
 		if (st.items && st.items.length)
-			BoardTable(st, kids);
+			BoardTable(st, kids, actions);
 		return el('div', {}, kids);
 	}
 
@@ -1845,7 +1868,7 @@ function BoardPane(st, actions) {
 		/* 即便本轮失败，上一轮的榜单往往还在，照样展示出来（连列头说明一起，
 		 * 见 BoardTable：失败的那一刻最需要看得懂这些列） */
 		if (st.items && st.items.length)
-			BoardTable(st, kids);
+			BoardTable(st, kids, actions);
 		return el('div', {}, kids);
 	}
 
@@ -1863,7 +1886,7 @@ function BoardPane(st, actions) {
 		return el('div', {}, kids);
 	}
 
-	BoardTable(st, kids);
+	BoardTable(st, kids, actions);
 	return el('div', {}, kids);
 }
 /* ==========================================================================
@@ -2394,6 +2417,7 @@ var GROUPS = [
 	{ id: 'basic',  title: '基本设置',   hint: '开关、周期与日志' },
 	{ id: 'pool',   title: '候选池来源', hint: '候选从哪来；源清单在「源与检测」页编辑' },
 	{ id: 'probe',  title: '测速与判定', hint: '阈值与吞吐' },
+	{ id: 'dns',    title: 'DNS 解析',   hint: '把榜首写进 Cloudflare 的 A 记录' },
 	{ id: 'gist',   title: 'Gist 上传',  hint: '结果外发' }
 ];
 
@@ -2407,6 +2431,9 @@ var GROUP_OPTIONS = {
 	         'speed_confirm_bytes', 'speed_confirm_timeout', 'speed_weight',
 	         'speed_unit', 'speed_bytes', 'speed_timeout',
 	         'speed_domain', 'speed_path', 'colo_probe', 'colo_domain', 'canary_check', 'probe_user', 'annotate' ],
+	/* DNS 解析（r96）：6 个字段。dns_proxied 故意不在这里 —— 它固定按灰云写，
+	 * 摆到页面上只会让人以为自己能切橙云（切了功能就失效）。 */
+	dns:   [ 'dns_sync', 'dns_zone', 'dns_record', 'dns_ttl', 'dns_token', 'dns_token_file' ],
 	gist:  [ 'upload_gist', 'gist_id', 'gist_file', 'gist_token', 'token_file' ]
 };
 
@@ -3006,6 +3033,46 @@ function actCheck(btn) {
 	});
 }
 
+/* 手工写一次 DNS（r96）。这颗按钮的语义是「现在就要生效」，所以引擎侧那条手工路径
+ * 带 --force，不受「每轮自动同步」开关限制 —— 开关管的是自动，不管这一下。
+ *
+ * 为什么要解析引擎回的那行 JSON：脚本把失败原因写进日志了，引擎把**最后一行原样带回**。
+ * 不这么做，点了之后页面只能给一句「已发出」，等于又造一个「点了没反应」。
+ * 三个分支必须分开说：没回应（链路）/ 调不到（权限或包）/ 引擎回了但没成功（配置或 API）。 */
+function actDns(btn) {
+	setBusy(btn, true);
+	store.set({ busy: Object.assign({}, store.get().busy, { dns: true }) });
+	runCmd([ 'dns-sync' ]).then(function (out) {
+		setBusy(btn, false);
+		store.set({ busy: Object.assign({}, store.get().busy, { dns: false }) });
+		if (out === HUNG) {
+			flash(T('DNS 同步没有回应'),
+				T('%s 秒内没等到返回。路由器可能正在忙；稍后到「日志」页看最后一行确认结果。')
+					.format(Math.round(CMD_LIMIT['dns-sync'] / 1000)), 'warn');
+			return;
+		}
+		if (out === null) {
+			flash(T('无法请求 DNS 同步'), whyNoReply(T('同步命令没跑成'), 'dns_sync'), 'bad');
+			return;
+		}
+		var r = null;
+		try { r = JSON.parse(String(out)); } catch (e) { r = null; }
+		if (!r || r.rc == null) {
+			flash(T('DNS 同步已发出'), T('但没读到可解析的结果，请到「日志」页看最后一行。'), 'warn');
+			return;
+		}
+		var msg = r.msg ? String(r.msg) : '';
+		if (r.ok) {
+			flash(T('DNS 同步完成'), msg, 'ok');
+			return;
+		}
+		flash(T('DNS 同步未完成（退出码 %s）').format(String(r.rc)), msg, 'warn');
+	}, function () {
+		setBusy(btn, false);
+		store.set({ busy: Object.assign({}, store.get().busy, { dns: false }) });
+	});
+}
+
 /* 取日志。主动展示：进页面取一次，测速期间跟着轮询一起更新，
  * 不用人先点一下「读取日志」才看得到东西。 */
 function logsRefresh() {
@@ -3368,7 +3435,7 @@ function buildPage(mapnode) {
 		boardKey = key;
 		clear(boardPane);
 		boardPane.appendChild(BoardPane(state.status, {
-			run: actRun, stop: actStop, refresh: actRefresh, copy: actCopy, check: actCheck
+			run: actRun, stop: actStop, refresh: actRefresh, copy: actCopy, check: actCheck, dns: actDns
 		}));
 	}
 
@@ -3870,6 +3937,49 @@ return view.extend({
 		o.description = help('token_file',
 			_('两处都填时以 gist_token 为准。'),
 			_('不想把令牌写进 UCI 配置（因为它会随备份走并回显）时，把令牌单独写在一个文件里，这里填路径。文件权限建议 600。两个位置都填了的话，以 gist_token 为准。'));
+
+		/* ---- DNS 解析（r96，可选）----
+		 * 这一组只做一件事：把每轮榜首写进 Cloudflare 的一条 A 记录。
+		 * 它与「下发」不是一类东西 —— 不碰路由器上任何配置文件，只发两三次 API 请求，
+		 * 出事最多是解析不对、删记录就还原。
+		 * dns_proxied 故意不暴露：橙云会让 CF 返回它自己的 anycast 地址，客户端根本
+		 * 解析不到我们优选的那颗 IP，开关摆在这里只会让人误以为可以切。 */
+		var dns = m.section(form.TypedSection, 'global', _('DNS 解析'));
+		dns.anonymous = true;
+
+		o = dns.option(form.Flag, 'dns_sync', _('同步到 Cloudflare DNS'), _('每轮跑完把榜首 IP 写进 A 记录。'));
+		o.rmempty = false;
+		o.description = help('dns_sync',
+			_('每轮跑完把榜首 IP 写进 A 记录。'),
+			_('打开后，每轮正常跑完（出口没被代理接管、也没被你叫停）就把榜首 IP 写进下面指定的那条 A 记录。只在 IP 真的变了时才发写请求 —— 内容一样就直接跳过，免得每 6 小时刷一次记录 TTL。这条路径不修改路由器上任何配置文件。要立刻写一次，用「生成榜单」页的「立即写一次 DNS」按钮（不管这个开关开没开都会执行）。'));
+
+		o = dns.option(form.Value, 'dns_zone', _('Zone（域名或 ID）'), _('例如 example.com。'));
+		o.description = help('dns_zone',
+			_('例如 example.com。'),
+			_('要改的那条记录所在的 zone。填域名（example.com）会先去 API 查一次 zone id；填 32 位 zone id 就跳过那一步。注意 zone 是 example.com，不是记录名 cf.example.com。'));
+
+		o = dns.option(form.Value, 'dns_record', _('记录名'), _('完整域名，如 cf.example.com。'));
+		o.description = help('dns_record',
+			_('完整域名，如 cf.example.com。'),
+			_('要写的那条 A 记录的完整名字（含子域）。只支持 A 记录，且只管理这一条 —— 同 zone 里别的记录一概不动。记录不存在时会新建；已存在时会改它的内容。同名 A 记录理论上只能有一条，若查出多条，脚本会拒绝执行而不是猜哪条对。'));
+
+		o = dns.option(form.Value, 'dns_ttl', _('TTL（秒）'), _('建议 60，便于切换。'));
+		o.datatype = 'and(uinteger,min(1),max(86400))';
+		o.default = '60';
+		o.description = help('dns_ttl',
+			_('建议 60，便于切换。'),
+			_('记录的缓存时间。60 秒意味着切换后一分钟内客户端就能拿到新 IP；填 1 表示「自动」，用 Cloudflare 自己的默认值（通常 300 秒），切换会慢一些。下限 1、上限 86400（一天）。'));
+
+		o = dns.option(form.Value, 'dns_token', _('API 令牌'), _('需要 Zone → DNS → Edit 权限。'));
+		o.password = true;
+		o.description = help('dns_token',
+			_('需要 Zone → DNS → Edit 权限。'),
+			_('在 Cloudflare「我的个人资料 → API 令牌」里建一个自定义令牌，权限只需 Zone → DNS → Edit，范围限定到具体 zone。它和上面的 Gist 令牌不是同一个（那个只有 gist 权限，调不了 DNS 接口），不要复用。填在这里会以掩码回显，并随 sysupgrade 备份走；不想让它进配置文件就用下面的令牌文件路径。'));
+
+		o = dns.option(form.Value, 'dns_token_file', _('令牌文件路径（备选）'), _('两处都填时以令牌为准。'));
+		o.description = help('dns_token_file',
+			_('两处都填时以令牌为准。'),
+			_('把令牌单独写在一个文件里，这里填路径（建议权限 600），配置里就不留明文。两处都填时以 dns_token 为准。文件读不到时按「没填令牌」处理并只记一行日志 —— 不会拿空令牌去请求。'));
 
 		return m.render().then(function (mapnode) {
 			linkStyle();
