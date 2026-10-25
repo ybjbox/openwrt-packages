@@ -865,18 +865,55 @@ ok('r77 字节数说明里明说这一项可配置、并给了更大更稳的取
 	/这一项是可配置的/.test(src) && /50MB 建议 60 秒/.test(src), '缺可配置提示');
 ok('r77 字节数说明里写清 ≥100MB 会被 speed.cloudflare.com 拒（403）',
 	/≥100MB/.test(src) && /403/.test(src), '缺 100MB 上限提醒');
-/* r78：池收敛两个字段，文案必须说人话 —— 用户在页面上不该看到 1034/同池/边缘校验
- * 这种只有运维才懂的词。 */
-ok('r78 配置页有「只测你的域名认可的那几段」开关', /'pool_follow_domain'/.test(src));
-ok('r78 配置页有「手工指定候选网段」输入框', /'candidate_cidrs'/.test(src));
+/* r88：池收敛两个字段已经整块删除 —— 页面上不该再出现它们（连带 help 条目）。 */
+ok('r88 配置页不再有「只测域名认可网段」开关', !/'pool_follow_domain'/.test(src));
+ok('r88 配置页不再有「手工指定候选网段」输入框', !/'candidate_cidrs'/.test(src));
+
+/* r88：吞吐判定十个字段必须齐全，且都归在「测速与判定」分组里。 */
+const R88_FIELDS = ['speed_gate', 'speed_abs_min', 'speed_rel_min',
+	'speed_screen_count', 'speed_screen_bytes', 'speed_screen_timeout',
+	'speed_confirm_top', 'speed_confirm_bytes', 'speed_confirm_timeout', 'speed_weight'];
 {
-	const short = (src.match(/只让一部分 IP 服务你的域名，别的段会直接拒绝。/g) || []).length;
-	ok('r78 开关的短说明说人话（不出现 1034/同池/边缘校验）',
-		short >= 1 && !/只让一部分[^']*1034/.test(src) && !/同池/.test(src),
-		'short=' + short);
-	ok('r78 长说明给了可照抄的例子（104.21 / 172.67）',
-		/104\.21\.x\.x/.test(src) && /172\.67\.x\.x/.test(src));
-	ok('r78 长说明点明代价（候选会变少、会自动补）', /候选会变少/.test(src) && /随机补/.test(src));
+	const missing = R88_FIELDS.filter(n => src.indexOf("'" + n + "'") < 0);
+	ok('r88 吞吐判定十个字段都在视图里', missing.length === 0, missing.join(','));
+	ok('r88 新字段全部进了「测速与判定」分组',
+		R88_FIELDS.every(n => (t.GROUP_OPTIONS.probe || []).indexOf(n) >= 0));
+	/* 每条 help 的完整解释只在本条字段附近，切到 1400 字符足够覆盖「开关 + 长说明」。 */
+	const blockOf = name => {
+		const i = src.indexOf("help('" + name + "'");
+		return i < 0 ? '' : src.slice(i, i + 1400);
+	};
+	const gate = blockOf('speed_gate');
+	ok('r88 speed_gate 说明写全三步判定（连通性 / 稳定性 / 下载速度）',
+		/连通性/.test(gate) && /稳定性/.test(gate) && /下载速度/.test(gate), gate.slice(0, 48));
+	ok('r88 speed_gate 说明给出关掉后的旧行为',
+		/关掉这个开关/.test(gate) && /旧行为/.test(gate));
+	const weight = blockOf('speed_weight');
+	ok('r88 speed_weight 说明给出 0 与 100 两个端点语义',
+		/0 表示完全按延迟排/.test(weight) && /100 表示完全按下载速度排/.test(weight));
+	ok('r88 说明里不含内部术语（1034 / 同池 / 边缘校验）',
+		!/1034|同池|边缘校验/.test(src));
+	ok('r88 降级与旁路两条提示的分支都在视图里',
+		/speed_mode === 'degraded'/.test(src) && /st\.bypass === 'absent'/.test(src));
+}
+
+/* r88：两条提示随状态出现，状态变了就该消失（渲染层实证）。 */
+{
+	const degraded = t.BoardPane(Object.assign({}, done, { speed_mode: 'degraded' }), noActions);
+	has('r88 样本不足时榜单顶部有提示', degraded, '本轮测速样本不足');
+	has('r88 提示说明本轮只按连通性排序', degraded, '只按连通性排序');
+	hasNot('r88 状态正常时没有这条提示',
+		t.BoardPane(Object.assign({}, done, { speed_mode: 'ready' }), noActions), '本轮测速样本不足');
+
+	const bypassed = t.BoardPane(Object.assign({}, done, { bypass: 'absent' }), noActions);
+	has('r88 代理没放过探测流量时给出警示条', bypassed, '探测流量没有绕过代理');
+	has('r88 警示条说明已跳过测速与上传', bypassed, '已跳过测速与上传');
+	const bf = byClass(bypassed, 'flash');
+	ok('r88 警示条用警告色调（不是普通提示）', bf.length >= 1 && /\bwarn\b/.test(bf[0].attrs['class']), bf.length + '');
+	hasNot('r88 bypass 为 exempt 时不出现警示条',
+		t.BoardPane(Object.assign({}, done, { bypass: 'exempt' }), noActions), '探测流量没有绕过代理');
+	hasNot('r88 bypass 缺省时不出现警示条',
+		t.BoardPane(Object.assign({}, done), noActions), '探测流量没有绕过代理');
 }
 ok('r64 标签栏的指纹里也不再掺那个常量', !/usable \+ '\|' \+ GROUPS\.length/.test(src));
 

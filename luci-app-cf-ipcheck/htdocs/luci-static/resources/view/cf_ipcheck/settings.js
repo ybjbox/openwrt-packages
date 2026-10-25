@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r87';
+var VIEW_BUILD = 'r88';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -1356,6 +1356,21 @@ function RunProgress(st) {
  * r70 起拆两层：一句结论常驻页面，六列的完整定义（TCP/TLS/TTFB/总计/机房/MB/s）
  * 挂 ⓘ —— 那是 HelpMark，触屏/键盘点一下就地展开，不是只能悬浮的 <abbr>。 */
 function BoardTable(st, kids) {
+	/* r88：两条只读提示，跟着本轮状态出现、状态一变就消失（指纹里已带上这两个键，
+	 * 不用刷新页面）。放在读数带之前，先给结论再给数字。 */
+	if (st.speed_mode === 'degraded') {
+		kids.push(Flash({
+			title: T('本轮测速样本不足'),
+			text: T('下载速度测到的样本太少，本轮暂时只按连通性排序；下一轮样本够了会自动恢复。')
+		}));
+	}
+	if (st.bypass === 'absent') {
+		kids.push(Flash({
+			title: T('探测流量没有绕过代理'),
+			text: T('本机代理没有放过探测流量，本轮结果可能不准，已跳过测速与上传。请在本机代理里把探测域名放进直连名单，再重跑一轮。'),
+			tone: 'warn'
+		}));
+	}
 	kids.push(SummaryStrip(st));
 	kids.push(Section(T('榜单')));
 	kids.push(Leaderboard(st.items));
@@ -1989,10 +2004,13 @@ var GROUPS = [
 
 var GROUP_OPTIONS = {
 	basic: [ 'enabled', 'interval_hours', 'probe_domains', 'probe_port', 'log_max_kb' ],
-	pool:  [ 'use_official_ranges', 'reuse_last', 'neighbor_expand',
-	         'pool_follow_domain', 'candidate_cidrs' ],
+	pool:  [ 'use_official_ranges', 'reuse_last', 'neighbor_expand' ],
 	probe: [ 'candidate_budget', 'concurrency', 'probe_timeout', 'ttfb_limit', 'total_limit',
-	         'keep_count', 'verify_top', 'speed_probe', 'speed_count', 'speed_bytes', 'speed_timeout',
+	         'keep_count', 'verify_top', 'speed_probe', 'speed_count',
+	         'speed_gate', 'speed_abs_min', 'speed_rel_min', 'speed_screen_count',
+	         'speed_screen_bytes', 'speed_screen_timeout', 'speed_confirm_top',
+	         'speed_confirm_bytes', 'speed_confirm_timeout', 'speed_weight',
+	         'speed_bytes', 'speed_timeout',
 	         'speed_domain', 'speed_path', 'colo_probe', 'colo_domain', 'canary_check', 'probe_user', 'annotate' ],
 	gist:  [ 'upload_gist', 'gist_id', 'gist_file', 'gist_token', 'token_file' ]
 };
@@ -2855,6 +2873,8 @@ function boardKeyOf(st) {
 		/* SummaryStrip 读这几样，指纹里没有它们就等于允许面板停在旧数字上：
 		 * 改了「定时周期」后那格「完成于」的滞留告警永远不会刷新。 */
 		st.interval, st.started, st.pool, st.qualified, st.usable, st.domains,
+		/* r88：两条状态提示的开关也必须进指纹，否则状态翻回来时横幅会赖着不走。 */
+		st.speed_mode, st.bypass,
 		/* 滞留秒数按 10 秒一档进指纹：横幅能更新，又不会每拍都重建面板；
 		 * 认输之后 staleFor 是 null，指纹彻底稳定，「刷新」按钮不会被反复换掉。 */
 		Math.floor((st.staleFor || 0) / 10), st.gaveUp ? 1 : 0 ].join('|');
@@ -3180,28 +3200,9 @@ return view.extend({
 			_('对初榜前 5 颗探同段邻居。默认开。'),
 			_('打开后，引擎会对初榜前 5 颗 IP 各探测同一 /24 段内 ±4 的邻居。社区清单测的是"别人的线路"，你这条线上最快的 IP 可能就在某颗好 IP 隔壁、却不在任何清单里 —— 这一步就是去隔壁看看。代价是每轮多约 40 次探测（几十秒）。关掉就完全按社区清单测。'));
 
-		o = src.option(form.Flag, 'pool_follow_domain', _('只测你的域名认可的那几段'),
-			_('Cloudflare 只让一部分 IP 服务你的域名，别的段会直接拒绝。'));
-		o.rmempty = false;
-		o.default = '1';
-		o.description = help('pool_follow_domain',
-			_('Cloudflare 只让一部分 IP 服务你的域名，别的段会直接拒绝。'),
-			_('打开后，插件先查一次「探测域名」解析到哪几段（例如 104.21.x.x、172.67.x.x），然后只在这些段里挑候选 IP。'
-			  + ' 为什么要这样：Cloudflare 给每个域名只开放一部分 IP。实测有些域名只在自己那几段上正常返回内容，'
-			  + '换成别的 Cloudflare IP 会直接回一个「禁止访问」的错误页——这种 IP 写进榜单，客户端拿它连你的域名是连不上的。'
-			  + ' 代价：社区清单里的地址大多不在这几段，所以候选会变少，插件会在这些段里随机补一些，保证每轮仍有足够候选。'
-			  + ' 关掉就恢复旧做法（所有 Cloudflare IP 都测），但榜单里的 IP 可能对你的域名无效。'));
-
-		o = src.option(form.Value, 'candidate_cidrs', _('手工指定候选网段（一般留空）'),
-			_('留空就自动跟着探测域名走；填了只用你写的网段。'));
-		o.description = help('candidate_cidrs',
-			_('留空就自动跟着探测域名走；填了只用你写的网段。'),
-			_('填法：英文逗号分隔，例如 104.21.0.0/16,172.67.0.0/16。填了以后就不再自动推导，只在这些网段里挑候选 IP。'
-			  + ' 什么时候用：你明确知道该测哪几段、或想刻意避开某一段时。不确定就留空。'));
-
 		/* community_sources 不在这里声明 —— 它由 sourcesMap() 单开一张 Map，
 		 * 渲染进「源与检测」页的宿主（原因与真机取证见 6b 的注释）。
-		 * 这一节剩下的两个开关仍是候选池的一部分。 */
+		 * 这一节剩下的开关仍是候选池的一部分。 */
 
 		var thr = m.section(form.TypedSection, 'global', _('测速与判定'));
 		thr.anonymous = true;
@@ -3267,6 +3268,88 @@ return view.extend({
 		o.description = help('speed_count',
 			_('N × 单次字节数 = 每轮流量。'),
 			_('只对榜单前 N 个测吞吐。流量 = N × 单次下载字节数，按默认值算就是 10 × 10485760 字节 ≈ 104.86MB/轮。填 0 等于关掉吞吐测试（但仍保留那一列，显示为 —）。'));
+
+		/* r88：吞吐判定。三步顺序（连通性 → 稳定性 → 下载速度）只在 speed_gate
+		 * 的长说明里讲一次，其余字段各说各的那一格，避免同一段话抄六遍。 */
+		o = thr.option(form.Flag, 'speed_gate', _('用下载测速判定 IP 好坏'),
+			_('默认开；关掉就只按连通性排序。'));
+		o.rmempty = false;
+		o.default = '1';
+		o.description = help('speed_gate',
+			_('默认开；关掉就只按连通性排序。'),
+			_('打开后，每颗 IP 按三步判定：第一步看连通性 —— 能不能连上、加密握手（TLS）成不成功、第一个字节多久到；第二步看稳定性 —— 同一颗 IP 多测几次，丢包超过三分之一就不要；第三步才看下载速度 —— 低于绝对下限直接淘汰，低于本批中位数乘相对下限也淘汰；如果测速是因为超时被截断、但已经下了不少，按「真实只会更快」从宽处理，留到精测阶段再定。关掉这个开关，就回到只看连通性排序（旧行为）。'));
+
+		o = thr.option(form.Value, 'speed_abs_min', _('绝对下限（MB/s）'),
+			_('低于这个速度直接淘汰。'));
+		o.datatype = 'and(ufloat,min(0))';
+		o.default = '0.50';
+		o.description = help('speed_abs_min',
+			_('低于这个速度直接淘汰。'),
+			_('单位是十进制 MB/s：1 MB = 1000000 字节。0.5 MB/s 大概能流畅看 480p，1.5 左右够 1080p。低于这个值就没有必要再跟别的 IP 比了。'));
+
+		o = thr.option(form.Value, 'speed_rel_min', _('相对下限（%）'),
+			_('低于本批中位数的这个比例就淘汰。'));
+		o.datatype = 'and(uinteger,min(0),max(100))';
+		o.default = '25';
+		o.description = help('speed_rel_min',
+			_('低于本批中位数的这个比例就淘汰。'),
+			_('跟本批中位数比，而不是跟一个固定值比，是为了适应不同线路：百兆宽带和千兆宽带该留的 IP 本来就不一样。本批有效样本少于 5 个时，只按绝对下限判，免得少数几个样本把中位数带偏。'));
+
+		o = thr.option(form.Value, 'speed_screen_count', _('先测速的 IP 个数'),
+			_('只测前 N 个，控制流量与时间。'));
+		o.datatype = 'and(uinteger,min(1),max(100))';
+		o.default = '20';
+		o.description = help('speed_screen_count',
+			_('只测前 N 个，控制流量与时间。'),
+			_('只对排在前面的 N 个做初筛测速，后面的不再测，省流量也省时间。这个数必须大于「榜单保留条数」，否则被门槛淘汰之后没有替补，榜单会填不满。'));
+
+		o = thr.option(form.Value, 'speed_screen_bytes', _('初筛下载字节数'),
+			_('默认 4194304（4 MiB）。'));
+		o.datatype = 'and(uinteger,min(131072))';
+		o.default = '4194304';
+		o.description = help('speed_screen_bytes',
+			_('默认 4194304（4 MiB）。'),
+			_('初筛时每个 IP 下载这么多字节。默认配合 8 秒超时，等价于「8 秒内下完 4 MiB 至少需要 0.52 MB/s」；比这更慢的会被超时截断，不会一直干等。'));
+
+		o = thr.option(form.Value, 'speed_screen_timeout', _('初筛超时（秒）'),
+			_('默认 8 秒。'));
+		o.datatype = 'and(uinteger,min(1),max(120))';
+		o.default = '8';
+		o.description = help('speed_screen_timeout',
+			_('默认 8 秒。'),
+			_('初筛阶段单个 IP 最多等这么久。它和初筛字节数是一对：8 秒内下完 4 MiB 需要至少 0.52 MB/s，慢的会被自动截断，不会白等。'));
+
+		o = thr.option(form.Value, 'speed_confirm_top', _('复测前几名'),
+			_('给前 N 名用大文件复测。'));
+		o.datatype = 'and(uinteger,min(0),max(20))';
+		o.default = '3';
+		o.description = help('speed_confirm_top',
+			_('给前 N 名用大文件复测。'),
+			_('给排在前面的几个 IP 用更大的文件再测一次，避免小样本的偶然误差决定名次。填 0 就关闭复测。'));
+
+		o = thr.option(form.Value, 'speed_confirm_bytes', _('复测下载字节数'),
+			_('默认 10485760（10 MiB）。'));
+		o.datatype = 'and(uinteger,min(131072))';
+		o.default = '10485760';
+		o.description = help('speed_confirm_bytes',
+			_('默认 10485760（10 MiB）。'),
+			_('复测阶段每个 IP 下载这么多字节。文件越大越接近稳定速度，但流量与耗时也按倍数涨。'));
+
+		o = thr.option(form.Value, 'speed_confirm_timeout', _('复测超时（秒）'),
+			_('默认 25 秒。'));
+		o.datatype = 'and(uinteger,min(1),max(300))';
+		o.default = '25';
+		o.description = help('speed_confirm_timeout',
+			_('默认 25 秒。'),
+			_('复测阶段单个 IP 最多等这么久。10 MiB 的文件在慢线路上也要留足时间，所以比初筛宽松得多。'));
+
+		o = thr.option(form.Value, 'speed_weight', _('速度在排名里的权重'),
+			_('0 只看延迟，100 只看速度，默认 40。'));
+		o.datatype = 'and(uinteger,min(0),max(100))';
+		o.default = '40';
+		o.description = help('speed_weight',
+			_('0 只看延迟，100 只看速度，默认 40。'),
+			_('0 表示完全按延迟排，100 表示完全按下载速度排，40 是默认的折中。举例：延迟差不多时，10 MB/s 的 IP 会排在 0.2 MB/s 的前面。'));
 
 		o = thr.option(form.Value, 'speed_bytes', _('单次下载字节数'), _('默认 10485760 字节（10.49MB）。'));
 		o.datatype = 'and(uinteger,min(131072),max(104857600))';
