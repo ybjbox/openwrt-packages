@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r96';
+var VIEW_BUILD = 'r97';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -514,7 +514,7 @@ var RPC_METHODS = {
 	'run-now': rpc.declare({ object: RPC_OBJECT, method: 'run' }),
 	stop: rpc.declare({ object: RPC_OBJECT, method: 'stop' }),
 	'check-sources': rpc.declare({ object: RPC_OBJECT, method: 'check_sources' }),
-	/* DNS 同步（可选功能，§12）：把榜首写进 Cloudflare 的指定 A 记录。
+	/* DNS 同步（可选功能，§12）：把优选 IP 写进 Cloudflare 的记录名（可多个，每个可挂多条 A）。
 	 * 键名用引擎的子命令名（dns-sync），因为 runCmd 是按 args[0] 查这张表的；
 	 * ubus 那一侧的方法名是 dns_sync（red-line-12 要求三方同名同义）。
 	 * 这一版只声明，页面上的入口在下一批一起接（先让契约四方对齐）。 */
@@ -1783,7 +1783,7 @@ function BoardTable(st, kids, actions) {
 	 * 引擎侧那条手工路径带 --force，所以开关关着也能用（关的是「每轮自动写」）。 */
 	var btnDns = Button({
 		kind: 'lnk', label: T('立即写一次 DNS'),
-		title: T('把当前榜首 IP 立刻写进 Cloudflare 的 A 记录，不管「每轮自动同步」那个开关开没开。已经同步过的同一个 IP 会直接跳过，不会重复写。'),
+		title: T('把所有配好的记录名立刻同步一次，不管「每轮自动同步」那个开关开没开。已经没有差异的记录名直接跳过，不会重复写。'),
 		disabled: !!(store.get().busy && store.get().busy.dns),
 		busy: !!(store.get().busy && store.get().busy.dns),
 		onClick: actions && actions.dns
@@ -2417,7 +2417,7 @@ var GROUPS = [
 	{ id: 'basic',  title: '基本设置',   hint: '开关、周期与日志' },
 	{ id: 'pool',   title: '候选池来源', hint: '候选从哪来；源清单在「源与检测」页编辑' },
 	{ id: 'probe',  title: '测速与判定', hint: '阈值与吞吐' },
-	{ id: 'dns',    title: 'DNS 解析',   hint: '把榜首写进 Cloudflare 的 A 记录' },
+	{ id: 'dns',    title: 'DNS 解析',   hint: '把优选 IP 写进 Cloudflare 的 A 记录' },
 	{ id: 'gist',   title: 'Gist 上传',  hint: '结果外发' }
 ];
 
@@ -2431,9 +2431,11 @@ var GROUP_OPTIONS = {
 	         'speed_confirm_bytes', 'speed_confirm_timeout', 'speed_weight',
 	         'speed_unit', 'speed_bytes', 'speed_timeout',
 	         'speed_domain', 'speed_path', 'colo_probe', 'colo_domain', 'canary_check', 'probe_user', 'annotate' ],
-	/* DNS 解析（r96）：6 个字段。dns_proxied 故意不在这里 —— 它固定按灰云写，
-	 * 摆到页面上只会让人以为自己能切橙云（切了功能就失效）。 */
-	dns:   [ 'dns_sync', 'dns_zone', 'dns_record', 'dns_ttl', 'dns_token', 'dns_token_file' ],
+	/* DNS 解析（r96 起）：6 个字段。dns_proxied 故意不在这里 —— 它固定按灰云写，
+	 * 摆到页面上只会让人以为自己能切橙云（切了功能就失效）。
+	 * r97 把 dns_record（单条）换成 dns_targets（多记录名 + 每个可挂多个 IP）；
+	 * dns_record 这个 uci 键仍然保留，只为升级兼容，不在界面上出现。 */
+	dns:   [ 'dns_sync', 'dns_zone', 'dns_targets', 'dns_ttl', 'dns_token', 'dns_token_file' ],
 	gist:  [ 'upload_gist', 'gist_id', 'gist_file', 'gist_token', 'token_file' ]
 };
 
@@ -3947,21 +3949,46 @@ return view.extend({
 		var dns = m.section(form.TypedSection, 'global', _('DNS 解析'));
 		dns.anonymous = true;
 
-		o = dns.option(form.Flag, 'dns_sync', _('同步到 Cloudflare DNS'), _('每轮跑完把榜首 IP 写进 A 记录。'));
+		o = dns.option(form.Flag, 'dns_sync', _('同步到 Cloudflare DNS'), _('每轮跑完把优选 IP 写进这些 A 记录。'));
 		o.rmempty = false;
 		o.description = help('dns_sync',
-			_('每轮跑完把榜首 IP 写进 A 记录。'),
-			_('打开后，每轮正常跑完（出口没被代理接管、也没被你叫停）就把榜首 IP 写进下面指定的那条 A 记录。只在 IP 真的变了时才发写请求 —— 内容一样就直接跳过，免得每 6 小时刷一次记录 TTL。这条路径不修改路由器上任何配置文件。要立刻写一次，用「生成榜单」页的「立即写一次 DNS」按钮（不管这个开关开没开都会执行）。'));
+			_('每轮跑完把优选 IP 写进这些 A 记录。'),
+			_('打开后，每轮正常跑完（出口没被代理接管、也没被你叫停）就把榜单前几名写进下面清单里的每个记录名。只发真正有差异的写请求 —— 记录内容已经一致就直接跳过，免得每 6 小时白刷一次记录 TTL。这条路径不修改路由器上任何配置文件。要立刻同步一次，用「生成榜单」页的「立即写一次 DNS」按钮（不管这个开关开没开都会执行）。'));
 
 		o = dns.option(form.Value, 'dns_zone', _('Zone（域名或 ID）'), _('例如 example.com。'));
 		o.description = help('dns_zone',
 			_('例如 example.com。'),
 			_('要改的那条记录所在的 zone。填域名（example.com）会先去 API 查一次 zone id；填 32 位 zone id 就跳过那一步。注意 zone 是 example.com，不是记录名 cf.example.com。'));
 
-		o = dns.option(form.Value, 'dns_record', _('记录名'), _('完整域名，如 cf.example.com。'));
-		o.description = help('dns_record',
-			_('完整域名，如 cf.example.com。'),
-			_('要写的那条 A 记录的完整名字（含子域）。只支持 A 记录，且只管理这一条 —— 同 zone 里别的记录一概不动。记录不存在时会新建；已存在时会改它的内容。同名 A 记录理论上只能有一条，若查出多条，脚本会拒绝执行而不是猜哪条对。'));
+		/* 多行文本框。这里有个必须处理的坑：uci 的 option 值不能含换行
+		 * （换行会把 /etc/config 写成两行，直接坏掉），所以配置里存成
+		 * 「分号分隔的单行」，界面上读写时各转一次。不转的话用户一按保存就写出坏配置。 */
+		o = dns.option(form.TextValue, 'dns_targets', _('记录名清单'), _('一行一条：记录名 [数量] [zone]'));
+		o.rows = 5;
+		o.cfgvalue = function (section_id) {
+			/* super 不可用时退回空串而不是抛错：一个字段的取值异常不该把整页带白。
+			 * 正常情况下走 form.Value.cfgvalue（uci 里的分号单行）。 */
+			var v = (this.super ? this.super('cfgvalue', [ section_id ]) : '') || '';
+			return String(v).replace(/;[ \t]*/g, '\n');
+		};
+		o.write = function (section_id, formvalue) {
+			var lines = String(formvalue || '').split(/\r?\n/).map(function (s) {
+				return s.replace(/^[ \t]+|[ \t]+$/g, '');
+			}).filter(function (s) { return s.length > 0; });
+			if (this.super)
+				return this.super('write', [ section_id, lines.join('; ') ]);
+			return lines.join('; ');
+		};
+		o.description = help('dns_targets',
+			_('一行一条：记录名 [数量] [zone]'),
+			_('每行写一个要更新的记录名，格式是「完整记录名 数量 zone」，后两项可以省略。数量表示这个记录名下同时挂几条 A 记录，省略按 1 条算，最多 10 条 —— 同名多条 A 记录在 DNS 层就是轮流返回，客户端每次挑一颗，其中一颗连不上会自动落到别的，所以这既是分散也是粗粒度容灾。zone 省略时用上面的 Zone，两处都空就从记录名推导（cf.example.com 推成 example.com）；多个记录名分属不同域名时，在各自行尾写上自己的 zone。行首井号开头整行当注释。举例：cf.example.com 3 表示挂榜单前 3 名；www.example.com 1 表示只挂第 1 名。本工具只改自己建的记录（写入时带 cf-ipcheck 备注），你在面板上手工加的记录不会被碰，日志里会提示有几条没动。另外榜单可用 IP 少于你要的数量时，按实际能取到的写，并在日志里说明。'));
+		o.validate = function (section_id, value) {
+			var bad = String(value || '').split(/\r?\n/).filter(function (s) {
+				s = s.replace(/^[ \t]+|[ \t]+$/g, '');
+				return s.length > 0 && s.charAt(0) !== '#' && !/^[A-Za-z0-9*][A-Za-z0-9.*_-]*\.[A-Za-z0-9.-]+/.test(s);
+			});
+			return bad.length ? _('这几行不像记录名：') + ' ' + bad.join(' / ') : true;
+		};
 
 		o = dns.option(form.Value, 'dns_ttl', _('TTL（秒）'), _('建议 60，便于切换。'));
 		o.datatype = 'and(uinteger,min(1),max(86400))';

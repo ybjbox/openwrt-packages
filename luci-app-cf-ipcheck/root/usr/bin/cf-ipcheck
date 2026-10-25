@@ -2533,11 +2533,13 @@ APPLY_DNS="${CFIP_APPLY_DNS:-/usr/libexec/cf-ipcheck/apply-dns.sh}"
 
 dns_sync_hook() {
 	# $1 = 模式，三选一：
-	#   auto（默认，一轮跑完自动调用）—— 严格守 dns_sync 开关 + 本机去重
-	#   manual（页面「立即写一次」）    —— 绕开总开关，但**仍然**去重
-	#   force（ssh 手工排查）           —— 连去重都绕开，真去问一次 Cloudflare
+	#   auto（默认，一轮跑完自动调用）—— 严格守 dns_sync 开关
+	#   manual（页面「立即写一次」）    —— 绕开总开关
+	#   force（ssh 手工排查）           —— 连 zone id 缓存也绕开，真去重查一次
 	# 为什么 manual 和 force 必须分开：人点按钮的意图是「现在就让它生效」，
-	# 不是说「请无视你已经同步过的事实再发一次请求」。
+	# 不是说「请无视你已经查过的 zone id 再查一遍」。
+	# 注意「缓存」只省「按 zone 名查 id」这一次请求，**不省**「读现有记录」——
+	# 只有真读一次才能发现记录被面板手改过或被别的脚本动过。
 	_mode="${1:-auto}"
 	if [ ! -x "$APPLY_DNS" ]; then
 		log "DNS 同步：找不到 $APPLY_DNS（包不完整？），跳过"
@@ -3152,7 +3154,7 @@ do_diag() {
 		# 打成什么形状（真机上就是重复行 / 带下标 / 数组式这三种在打架）。
 		uci_list=$(printf '%s\n' "$( "$UCI_BIN" -q show "$CONF.@global[0].community_sources" 2>&1 | head -n 3 | tr '\n' '~' )" | cut -c1-260)
 	fi
-	printf '{"has_uci":%s,"uci":"%s","su":"%s","curl":"%s","jq":"%s","devnull_is_chardev":%s,"null_dev":"%s","sink_writable":%s,"run_dir_mode":"%s","sources":%s,"domains":"%s","port":"%s","budget":"%s","official":"%s","reuse":"%s","colo":"%s","colo_domain":"%s","canary":"%s","probe_user":"%s","speed":"%s","speed_count":"%s","speed_bytes":"%s","speed_domain":"%s","interval":"%s","upload":"%s","logkb":"%s","log_bytes":"%s","run_dir":"%s","etc_dir":"%s","uci_show":"%s","uci_get_probe_port":"%s","uci_get_rc":%s,"uci_list_raw":"%s","dns_sync":%s,"apply_dns":"%s","apply_dns_ok":%s,"dns_record_set":%s}\n' \
+	printf '{"has_uci":%s,"uci":"%s","su":"%s","curl":"%s","jq":"%s","devnull_is_chardev":%s,"null_dev":"%s","sink_writable":%s,"run_dir_mode":"%s","sources":%s,"domains":"%s","port":"%s","budget":"%s","official":"%s","reuse":"%s","colo":"%s","colo_domain":"%s","canary":"%s","probe_user":"%s","speed":"%s","speed_count":"%s","speed_bytes":"%s","speed_domain":"%s","interval":"%s","upload":"%s","logkb":"%s","log_bytes":"%s","run_dir":"%s","etc_dir":"%s","uci_show":"%s","uci_get_probe_port":"%s","uci_get_rc":%s,"uci_list_raw":"%s","dns_sync":%s,"apply_dns":"%s","apply_dns_ok":%s,"dns_targets_set":%s,"dns_targets":"%s"}\n' \
 		"$HAS_UCI" "$(json_str "${UCI_BIN:-}")" "$(json_str "${SU_BIN:-}")" \
 		"$(json_str "${CURL_BIN:-}")" "$(json_str "${JQ_BIN:-}")" \
 		"$([ -c /dev/null ] && printf 1 || printf 0)" "$(json_str "$NULL_DEV")" \
@@ -3169,7 +3171,8 @@ do_diag() {
 		"$(json_str "$uci_show")" "$(json_str "$uci_get")" "$uci_rc" "$(json_str "$uci_list")" \
 		"$(cfg_num dns_sync 0)" "$(json_str "$APPLY_DNS")" \
 		"$([ -x "$APPLY_DNS" ] && printf 1 || printf 0)" \
-		"$([ -n "$(cfg dns_record '')" ] && printf 1 || printf 0)"
+		"$([ -n "$(cfg dns_targets '')" ] || [ -n "$(cfg dns_record '')" ] && printf 1 || printf 0)" \
+		"$(json_str "$(cfg dns_targets '')")"
 }
 
 # ---------------- 离线自检（CI 用；不联网、不依赖 uci）--------------------
@@ -4331,7 +4334,8 @@ usage() {
   canary    只跑一次出口接管自检，输出 {"intercepted":0|1}
   check-sources  逐个源体检：HTTP 状态 / 提取到的 IPv4 数 / 落在 CF 官方段内的数量
   logs      输出引擎日志的最近部分（给页面看；最多约 60 KB，且总是从整行开始）
-  dns-sync  把当前榜首 IP 写进 Cloudflare DNS 的指定 A 记录（手工触发；等价 --force）
+  dns-sync  把当前优选 IP 写进 Cloudflare DNS 的目标记录（可多个记录名、每个可挂多条 A；
+            手工触发，绕开关但仍走缓存）
   colo IP   查询单个 IP 的落地机房代码（如 SIN/NRT/HKG）
   stop      请求当前这一轮尽快收尾
   daemon    常驻，按 interval_hours 循环
@@ -4364,8 +4368,9 @@ case "${1:-}" in
 	check-sources) log '收到页面指令：检测源可用性'
 	               check_sources ;;
 	logs)    load_config; trim_log; print_log ;;
-	# 手工触发一次 DNS 同步（页面「立即写一次」）。这里传 force=1：
-	# 人已经明确点了，就不该再被 dns_sync 开关拦回去。
+	# 手工触发一次 DNS 同步（页面「立即写一次」）。这里传 manual：
+	# 人已经明确点了，不该再被 dns_sync 开关拦回去；但仍然走 zone id 缓存 ——
+	# 点按钮的意图是「现在就让它生效」，不是「请无视已知信息再查一遍 zone」。
 	# 输出一行 JSON 而不是人类可读文本：页面要能区分「写成功 / 本来就是它 /
 	# 配置不全 / 网络或 API 出错」，否则这颗按钮又是「点了没反应」那一类。
 	dns-sync)
@@ -4373,7 +4378,8 @@ case "${1:-}" in
 		_drc=0
 		dns_sync_hook manual || _drc=$?
 		# 脚本自己已经把原因写进日志了，这里把最后一行原样带回去 ——
-		# 页面就不用去猜退出码的含义，也不用再多一句「请去日志页看」的间接指引。
+		# 多目标时脚本的最后一行的是一句总结（成功几个、失败几个），
+		# 页面因此不会「前面失败了却只看到最后一条成功」。
 		_dmsg=$(tail -n 1 "$LOG" 2>/dev/null | sed 's/^[0-9][0-9T:+-]* //')
 		printf '{"rc":%s,"ok":%s,"msg":"%s"}\n' \
 			"$_drc" "$([ "$_drc" = 0 ] && printf true || printf false)" "$(json_str "$_dmsg")"

@@ -182,10 +182,23 @@ config global 'global'
 	# 所以 dns_proxied 固定按 0 处理，就算写成 1 也只会在日志里留一句警告。
 	option dns_sync '0'
 
-	# zone 名（example.com）或 32 位 zone id 都行
+	# zone 名（example.com）或 32 位 zone id 都行。
+	# 多个记录名落在不同域名时，可以在下面每行末尾单独写自己的 zone。
 	option dns_zone ''
 
-	# 完整记录名，例如 cf.example.com；只支持 A 记录
+	# 要写哪些记录名。页面上是多行文本框，uci 里存成分号分隔的单行
+	# （option 的值不能含换行，换行会写坏配置文件）。
+	# 每行格式：<完整记录名> [数量] [zone]
+	#   · 数量：该记录名下挂几条 A 记录，省略为 1，最多 10
+	#     多条同名 A 记录在 DNS 层就是轮询 —— 客户端轮流取，其中一颗挂了会自动落到别的
+	#   · zone：省略则用上面的 dns_zone；两处都空则从记录名推导（cf.example.com → example.com）
+	#   · 井号开头是注释行；行尾井号之后也算注释
+	# 例：cf.example.com 3; www.example.com 1; api.example.net 2 other.net
+	option dns_targets ''
+
+	# 旧版单记录名，仅为升级兼容保留：
+	# dns_targets 有内容时它被忽略；都空时才回退用它（数量按 1 条算）。
+	# 升级时迁移脚本会把旧值搬进 dns_targets，所以一般不碰这一项。
 	option dns_record ''
 
 	# 仅作留档，实际一律按灰云写（理由见上）

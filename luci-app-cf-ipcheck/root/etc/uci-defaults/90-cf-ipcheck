@@ -44,5 +44,16 @@ cfip_default dns_sync 0
 cfip_default dns_proxied 0
 cfip_default dns_ttl 60
 
+# r97：单记录名 → 多目标清单。
+# 这是**数据迁移**，不只是补默认值：老用户配的 dns_zone + dns_record 必须搬进
+# dns_targets，否则升级后页面显示「记录名没了」——引擎虽然还留着回退读 dns_record，
+# 但页面上看不到、也改不了，等于配了个看不见的东西。
+# 只在 dns_targets 为空时才搬，绝不覆盖用户已经填的新格式。
+_dns_tg=$(uci -q get cf_ipcheck.@global[0].dns_targets)
+_dns_rec=$(uci -q get cf_ipcheck.@global[0].dns_record)
+if [ -z "$_dns_tg" ] && [ -n "$_dns_rec" ]; then
+	uci -q set "cf_ipcheck.@global[0].dns_targets=$_dns_rec 1"
+fi
+
 uci -q commit cf_ipcheck
 exit 0
