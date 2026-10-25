@@ -1033,7 +1033,13 @@ rank() {
 	awk -v ttfb="$C_TTFB" -v tot="$C_TOTAL" -v mcol="${C_MCOL:-5}" '
 		BEGIN { FS = "\t"; OFS = "\t" }
 		NF >= 7 && $7 == "none" && $6+0 > 0 && $6+0 <= tot && $(mcol)+0 <= ttfb {
-			printf "%015.3f\t%015.3f\t%s\n", $(mcol), $6, $0
+			# r92：2xx/3xx 排在 4xx/5xx 前面。403 那类错误页正文只有十几字节，
+			# TTFB 天然最低 —— 只按毫秒排，它们会长期霸占榜首，而这类 IP 往往
+			# 连测速都连不上（真机：榜首 403 的那批 20 颗粗筛全败，整轮降级）。
+			# 分组与次序编进同一个数字（tier*1e12 + 毫秒*1000），否则 sort -n
+			# 只比第一列、组内回退成字符串比较。
+			tier = ($2 ~ /^[23]/) ? 0 : 1
+			printf "%015.0f\t%015.3f\t%s\n", tier * 1000000000000 + $(mcol) * 1000, $6, $0
 		}' |
 		sort -n |
 		cut -f3- |
@@ -1045,7 +1051,13 @@ rank_all() {
 	awk -v ttfb="$C_TTFB" -v tot="$C_TOTAL" -v mcol="${C_MCOL:-5}" '
 		BEGIN { FS = "\t"; OFS = "\t" }
 		NF >= 7 && $7 == "none" && $6+0 > 0 && $6+0 <= tot && $(mcol)+0 <= ttfb {
-			printf "%015.3f\t%015.3f\t%s\n", $(mcol), $6, $0
+			# r92：2xx/3xx 排在 4xx/5xx 前面。403 那类错误页正文只有十几字节，
+			# TTFB 天然最低 —— 只按毫秒排，它们会长期霸占榜首，而这类 IP 往往
+			# 连测速都连不上（真机：榜首 403 的那批 20 颗粗筛全败，整轮降级）。
+			# 分组与次序编进同一个数字（tier*1e12 + 毫秒*1000），否则 sort -n
+			# 只比第一列、组内回退成字符串比较。
+			tier = ($2 ~ /^[23]/) ? 0 : 1
+			printf "%015.0f\t%015.3f\t%s\n", tier * 1000000000000 + $(mcol) * 1000, $6, $0
 		}' |
 		sort -n |
 		cut -f3-
@@ -4154,6 +4166,13 @@ selftest() {
 		"$(printf '%s\n' "$slowc" | rank | grep -c . || true)" '1'
 	C_MCOL=5
 
+	# r92：403 那类错误页 TTFB 天然最低，不能因为毫秒小就占榜首
+	trow4=$(printf '1.1.1.1\t403\t10\t5\t100.0\t120.0\tnone\td')
+	trow2=$(printf '2.2.2.2\t200\t10\t5\t300.0\t500.0\tnone\td')
+	check 'r92 排序：200 的 300ms 排在 403 的 100ms 之前' \
+		"$(printf '%s\n%s\n' "$trow4" "$trow2" | rank | cut -f1 | tr '\n' ' ')" '2.2.2.2 1.1.1.1 '
+	check 'r92 排序：同为 2xx 时仍按毫秒升序' \
+		"$(printf '3.3.3.3\t200\t10\t5\t200.0\t400.0\tnone\td\n%s\n' "$trow2" | rank | cut -f1 | tr '\n' ' ')" '3.3.3.3 2.2.2.2 '
 	# 速度单位：同一个 bps，两种口径给出的 CSV 第 6 列不同（10485760 B/s）。
 	crow='1.1.1.1\t200\t10\t5\t200.0\t300.0\tNRT\t10.49\twww.cloudflare.com\t0\t10485760'
 		# r91：名次归一（lat_rank）——并列取平均名次，单条恒为 1
