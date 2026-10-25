@@ -106,7 +106,9 @@ config global 'global'
 	# 默认 40：延迟仍然更重要，但慢到拉不动网页的那几个会被压下去。
 	option speed_weight '40'
 	# 下面三项是旧选项，留着是为了 sysupgrade 带回来的老配置能平滑升级：
-	# speed_count 在新选项 speed_screen_count 没配置时充当粗筛个数，
+	# speed_count 只在 speed_screen_count 没配置**且它大于 keep_count** 时才充当
+	# 粗筛个数（否则用新默认 20）—— 它自己的默认值 10 不算「用户配过」，
+	# 拿它顶掉新默认会让第 keep_count+1 名之后永远进不了榜。
 	# speed_bytes / speed_timeout 充当精测的字节数与超时。
 	option speed_count '10'
 	option speed_bytes '10485760'

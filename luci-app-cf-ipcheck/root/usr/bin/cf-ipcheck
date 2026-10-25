@@ -123,6 +123,13 @@ BYPASS=unknown
 # 吞吐在本轮扮演的角色：gate（参与判定）/ display（只展示）/ degraded（想判但没测出）。
 # 同样是给 result.json 用的，页面据此解释「为什么名次没变」。
 SPEED_MODE=display
+# 配置告警的缓冲（r89）。load_config 会被只读子命令反复调用：页面每 3 秒问一次
+# status、每次打开页面都会走 show/pool，而它里面的「配置值不合法，按 X 处理」
+# 这类提示原来是无条件 log 的 —— 页面开着不动，一天就能追加十几条同文，把真正
+# 属于某一轮的记录挤出 512KB 的日志。所以这类告警先攒在这个变量里，只在真正
+# 跑一轮（do_run）的开头统一 flush 一次；show/pool/diag 这些只读子命令一个字都不写。
+# set -u：这里必须先初始化，cfg_warn 会无条件读它。
+CFG_WARN=''
 
 mkdir -p "$RUN_DIR" "$ETC_DIR" 2>/dev/null || true
 # $RUN_DIR 必须让探测身份穿得过去：procd 起的进程 umask 常是 077，mkdir 出来就是
@@ -233,13 +240,41 @@ cfg_num() {
 	v=$(cfg "$1" "$2")
 	case "$v" in
 		''|*[!0-9]*)
-			log "配置项 $1 取到的值不是纯数字（<$(printf '%s' "$v" | cut -c1-48)>），按默认值 $2 处理"
+			cfg_warn "配置项 $1 取到的值不是纯数字（<$(printf '%s' "$v" | cut -c1-48)>），按默认值 $2 处理"
 			printf '%s' "$2"
 			;;
 		*)
 			printf '%s' "$v"
 			;;
 	esac
+}
+
+# 配置告警缓冲区（r89，见文件头 CFG_WARN 那段的来龙去脉）。
+# 只收「配置值本身不对劲」这一类：脏值、超范围、域名被整理、源不是 https……
+# 系统级故障（/dev/null 坏了、段表拉不到）仍然立刻 log —— 那些是真的出事了，
+# 而且不会因为页面被打开就重复。
+cfg_warn() { # $1=一句告警
+	[ -n "${1:-}" ] || return 0
+	if [ -z "$CFG_WARN" ]; then
+		CFG_WARN=$1
+	else
+		CFG_WARN="$CFG_WARN
+$1"
+	fi
+	return 0
+}
+
+# 把攒下的配置告警一次写进运行日志。只在 do_run 开头调一次：
+# 只读子命令（show/pool/diag/status）读配置但不落日志。
+cfg_warn_flush() {
+	[ -n "$CFG_WARN" ] || return 0
+	# 走管道而不是 for：for 的 word splitting 后还会做路径展开，
+	# 脏配置值里一个 * 就会变成文件名列表写进日志。
+	printf '%s\n' "$CFG_WARN" | while IFS= read -r w; do
+		[ -n "$w" ] && log "$w"
+	done
+	CFG_WARN=''
+	return 0
 }
 
 # cfg_range <option> <default> <min> <max>：数值项 + 范围夹取。
@@ -249,11 +284,11 @@ cfg_num() {
 cfg_range() {
 	v=$(cfg_num "$1" "$2")
 	if [ "$v" -lt "$3" ] 2>/dev/null; then
-		log "配置项 $1=$v 低于下限 $3，按 $3 处理"
+		cfg_warn "配置项 $1=$v 低于下限 $3，按 $3 处理"
 		v=$3
 	fi
 	if [ "$v" -gt "$4" ] 2>/dev/null; then
-		log "配置项 $1=$v 超过上限 $4，按 $4 处理"
+		cfg_warn "配置项 $1=$v 超过上限 $4，按 $4 处理"
 		v=$4
 	fi
 	printf '%s' "$v"
@@ -322,15 +357,45 @@ cfg_list() {
 	[ -n "${v:-}" ] && printf '%s\n' "$v" | tr ',' '\n'
 }
 
+# 粗筛个数该用哪个来源（r89，纯函数，供 selftest 驱动）：
+# $1=speed_screen_count 的原值 $2=speed_count 的原值 $3=keep_count
+# stdout: new | old | default
+#
+# 这个判断单独抽出来是因为它在真机上出过一次「功能名不副实」：
+# 升级（apk 走 conffiles 保住旧配置）后 10 个新键全部缺失，r88 于是退回旧的
+# speed_count，而它在老配置里是 10 —— 正好等于 keep_count，粗筛只覆盖榜单本身，
+# 第 11 名之后永远没有机会，「多测一圈让快的逆袭」等于没生效。
+# 现在的规则：新选项有值就用它；否则默认 20（与界面 default 一致）；
+# 旧选项只有**显式**大于 keep_count 时才采纳 —— 那是用户真在调参，而 10 是旧
+# 默认值、不是显式意图，两者不能混为一谈。
+screen_src() {
+	case "${1:-}" in
+		'') ;;                       # 新选项缺失 → 继续看旧值
+		*)  printf 'new'; return 0 ;; # 有值就用（脏值也归它，交给 cfg_range 告警）
+	esac
+	case "${2:-}" in
+		''|*[!0-9]*) printf 'default'; return 0 ;;
+	esac
+	if [ "$2" -gt "${3:-0}" ] 2>/dev/null; then
+		printf 'old'
+	else
+		printf 'default'
+	fi
+	return 0
+}
+
 load_config() {
+	# 每次读配置都从空的告警缓冲开始：daemon 每片都会重读一次，不清就会把同一批
+	# 告警攒 N 份，一轮 flush 出 N 行同文。
+	CFG_WARN=''
 	# 域名列表先按字符集校验再用：非法条目丢掉并记日志（见 normalize_hosts）。
 	dom_raw=$(cfg probe_domains 'www.cloudflare.com')
 	C_DOMAINS=$(normalize_hosts "$dom_raw")
 	if [ -z "$C_DOMAINS" ]; then
-		log "探测域名一项都不合法（<$(printf '%s' "$dom_raw" | cut -c1-48)>），退回 www.cloudflare.com"
+		cfg_warn "探测域名一项都不合法（<$(printf '%s' "$dom_raw" | cut -c1-48)>），退回 www.cloudflare.com"
 		C_DOMAINS=www.cloudflare.com
 	elif [ "$C_DOMAINS" != "$(printf '%s' "$dom_raw" | tr -d ' \t')" ]; then
-		log "探测域名已整理：<$(printf '%s' "$dom_raw" | cut -c1-48)> 里丢掉了非法或重复的条目，实际用 $C_DOMAINS"
+		cfg_warn "探测域名已整理：<$(printf '%s' "$dom_raw" | cut -c1-48)> 里丢掉了非法或重复的条目，实际用 $C_DOMAINS"
 	fi
 	C_PORT=$(cfg_range probe_port 443 1 65535)
 	C_BUDGET=$(cfg_range candidate_budget 256 8 4096)
@@ -358,7 +423,9 @@ load_config() {
 	C_SPEED_REL=$(cfg_range speed_rel_min 25 0 100)
 	C_SPEED_W=$(cfg_range speed_weight 40 0 100)
 	C_SCREENBYTES=$(cfg_range speed_screen_bytes 4194304 131072 104857600)
-	C_SCREENTO=$(cfg_range speed_screen_timeout 8 3 120)
+	# 超时的下限跟界面 datatype 对齐（界面 min 1）：页面接受 1 秒而引擎夹到 3 秒，
+	# 就是又一处「填了却不生效」。上限 120 两边一致。
+	C_SCREENTO=$(cfg_range speed_screen_timeout 8 1 120)
 	C_CONFIRMN=$(cfg_range speed_confirm_top 3 0 20)
 	# 绝对下限是唯一带小数的配置项：cfg_range 只认纯整数，所以走 cfg + awk 校验。
 	# 非法值退回 0.50 —— 在 set -u 的脚本里把坏串喂给 $(( )) 会直接把进程打死。
@@ -371,19 +438,35 @@ load_config() {
 		  printf "%.2f", v }')
 	case "${C_ABSMIN:-BAD}" in
 		BAD)
-			log "配置项 speed_abs_min 取到的值不是小数（<$(printf '%s' "$abs_raw" | cut -c1-24)>），按默认值 0.50 处理"
+			cfg_warn "配置项 speed_abs_min 取到的值不是小数（<$(printf '%s' "$abs_raw" | cut -c1-24)>），按默认值 0.50 处理"
 			C_ABSMIN=0.50
 			;;
 	esac
 	C_ABSBYTES=$(printf '%s\n' "$C_ABSMIN" | awk '{ printf "%d", ($1 + 0) * 1000000 }')
-	# 粗筛个数：新选项没配就用旧的 speed_count 兜底（sysupgrade 带回来的老配置里
-	# 只有 speed_count）。旧的 0 = 以前那套「整段不测」，这里原样保留成 0。
+	# 粗筛个数的取值来源（r89，纯函数，供 selftest 驱动）：
+	#   new      = 用 speed_screen_count（有值就用它，含脏值，交给 cfg_range 去告警）
+	#   old      = 用旧的 speed_count，且**只有**显式配成大于 keep_count 才走到这里
+	#   default  = 默认 20
+	# 为什么旧值要加「大于 keep_count」这个条件：旧选项在老配置里带着默认值 10，
+	# 而 apk 升级走 conffiles 保住旧文件时，10 个新键全部缺失 —— 若直接把 10 当
+	# 用户意图，粗筛个数正好等于 keep_count，第 11 名之后永远进不来。10 是旧默认，
+	# 不是显式配置；只有比 keep_count 大才算「用户真的想让测速覆盖到榜外」。
 	screen_raw=$(cfg speed_screen_count '')
-	if [ -n "$screen_raw" ]; then
-		C_SCREENN=$(cfg_range speed_screen_count 20 1 100)
-	else
-		C_SCREENN=$(cfg_range speed_count 20 0 100)
-	fi
+	legacy_screen=$(cfg speed_count '')
+	case "$(screen_src "$screen_raw" "$legacy_screen" "$C_KEEP")" in
+		new)
+			C_SCREENN=$(cfg_range speed_screen_count 20 1 100)
+			C_SCREENSRC='配置的 speed_screen_count'
+			;;
+		old)
+			C_SCREENN=$(cfg_range speed_count 20 1 100)
+			C_SCREENSRC='配置的旧选项 speed_count'
+			;;
+		*)
+			C_SCREENN=20
+			C_SCREENSRC='默认值 20（speed_screen_count 未配置）'
+			;;
+	esac
 	# 精测参数：新选项没配就沿用旧的 speed_bytes / speed_timeout，
 	# 老部署上已经调过的字节数与超时不会被这次升级悄悄改掉。
 	confb_raw=$(cfg speed_confirm_bytes '')
@@ -394,14 +477,15 @@ load_config() {
 	fi
 	conft_raw=$(cfg speed_confirm_timeout '')
 	if [ -n "$conft_raw" ]; then
-		C_CONFTO=$(cfg_range speed_confirm_timeout 25 5 120)
+		C_CONFTO=$(cfg_range speed_confirm_timeout 25 1 300)
 	else
 		C_CONFTO=$C_SPEEDTO
 	fi
 	# 粗筛个数不比 keep_count 大时，"榜单外还有机会"这条就名存实亡了 —— 说一声，
-	# 免得有人以为开了判定却发现名次一点没变。
+	# 免得有人以为开了判定却发现名次一点没变。文案要指明这是**配置值**（以及它
+	# 从哪来），否则用户看到 10 会以为是引擎的默认，改配置也不知道改哪一项。
 	if [ "$C_SPEED" = 1 ] && [ "$C_SCREENN" -gt 0 ] 2>/dev/null && [ "$C_SCREENN" -le "$C_KEEP" ] 2>/dev/null; then
-		log "粗筛个数 $C_SCREENN 不大于 keep_count $C_KEEP：第 $C_KEEP 名之后的没有机会进榜，想留机会就把 speed_screen_count 调大"
+		cfg_warn "粗筛个数是 $C_SCREENN（来自$C_SCREENSRC），不大于 keep_count $C_KEEP：第 $C_KEEP 名之后的没有机会进榜。请在配置里把 speed_screen_count 调到大于 $C_KEEP（默认 20）"
 	fi
 	C_SPEEDDOM=$(one_host "$(cfg speed_domain 'speed.cloudflare.com')" speed.cloudflare.com)
 	# 吞吐请求的路径模板（r77）。默认 `/__down?bytes={bytes}`（speed.cloudflare.com
@@ -413,7 +497,7 @@ load_config() {
 	case "$C_SPEEDPATH" in
 		/*) ;;
 		*)
-			log "吞吐路径必须以 / 开头（现在是「$C_SPEEDPATH」），本轮退回默认路径"
+			cfg_warn "吞吐路径必须以 / 开头（现在是「$C_SPEEDPATH」），本轮退回默认路径"
 			C_SPEEDPATH='/__down?bytes={bytes}'
 			;;
 	esac
@@ -451,7 +535,7 @@ load_config() {
 	n_raw=$(printf '%s\n' "$src_raw" | grep -c . || true)
 	n_ok=$(printf '%s\n' "$SOURCES" | grep -c . || true)
 	if [ "${n_raw:-0}" != "${n_ok:-0}" ]; then
-		log "社区源里有 $((n_raw - n_ok)) 条不是 https 地址，本轮已忽略"
+		cfg_warn "社区源里有 $((n_raw - n_ok)) 条不是 https 地址，本轮已忽略"
 	fi
 	# /dev/null 坏了（变成普通文件、或落在很小的 tmpfs）会让大响应的探测集体报 rc=23，
 	# 现象是“域名越正常越测不通”，所以要吭一声。
@@ -1609,6 +1693,46 @@ speed_resort() {
 	mv -f "$RUN_DIR/qual.new" "$1"
 }
 
+# 门槛补足（r89）：入选数不足 keep_count 时，从被门槛刷掉的行里按「最接近门槛」
+# （bps 降序）取几颗补上，让榜单不至于太空。
+# $1=qual.pre（过门槛前的完整表） $2=gate.drop（bps\tip） $3=当前 ranked 文本
+# $4=keep_count $5=below_gate 名单文件（追加）
+# stdout = 补足后的 ranked 文本（没有补足时原样输出 $3）
+#
+# 为什么单独抽成函数：r88 把这段写在 do_run 里，判断条件用的是「测速合格数」
+# 而不是「最终入选数」，于是 147 个达标的榜单也被判成"需要补足"；补进来的行
+# 又在截断之前被排到队尾、随后被 head 截掉，日志说补了 1 个、result.json 里
+# below_gate 是 0、items 里也没有它。三处各说一套，在真机上被抓到。
+# 现在：判定看最终入选数，补的行直接拼在 ranked 末尾（一定进榜），
+# 调用方用 below_gate 名单的新增行数当"补了几个"，所以日志=JSON=榜单。
+speed_refill() {
+	sr_pre=${1:-}
+	sr_drop=${2:-}
+	sr_rk=${3:-}
+	sr_keep=${4:-0}
+	sr_bg=${5:-}
+	sr_now=$(printf '%s\n' "$sr_rk" | grep -c . || true)
+	sr_now=${sr_now:-0}
+	if [ "$sr_now" -ge "$sr_keep" ] 2>/dev/null || [ ! -s "$sr_drop" ] || [ ! -f "$sr_pre" ]; then
+		printf '%s\n' "$sr_rk" | grep . || true
+		return 0
+	fi
+	sr_want=$((sr_keep - sr_now))
+	awk -F'\t' '$1 + 0 > 0' "$sr_drop" | sort -nr | head -n "$sr_want" | cut -f2 \
+		>"$RUN_DIR/refill.ips"
+	sr_n=$(grep -c . "$RUN_DIR/refill.ips" || true)
+	sr_n=${sr_n:-0}
+	if [ "$sr_n" = 0 ]; then
+		printf '%s\n' "$sr_rk" | grep . || true
+		return 0
+	fi
+	sr_rows=$(awk -F'\t' 'NR == FNR { k[$1] = 1; next } ($1 in k)' \
+		"$RUN_DIR/refill.ips" "$sr_pre")
+	printf '%s\n%s\n' "$sr_rk" "$sr_rows" | grep . || true
+	cat "$RUN_DIR/refill.ips" >>"$sr_bg"
+	return 0
+}
+
 # cfst 兼容 CSV 行（r71）：$1 = vfields.tsv 路径，stdin = colored.tsv（11 字段）。
 # 七列与 XIU2/CloudflareSpeedTest 的 result.csv 同规格——edgetunnel 的 ADDCSV 直接
 # 消费（按 DLS  Mbps 阈值过滤），社区生态里这是事实标准格式。已发送/已接收反映多样本
@@ -1616,7 +1740,9 @@ speed_resort() {
 # edgetunnel 的 DLS 会把 0.00 滤掉，不会把未测当成快）。
 # 第 6 列（r88）换成 **MiB/s**（bps ÷ 1048576），对齐 CFST 自己的口径 —— 页面和
 # result.json 仍是十进制 MB/s（Ryan 定的），两处口径不同是各自的消费方决定的。
-# 换算取第 10 列的 bps 真值而不是格式化过的第 8 列：11.81 这种两位小数乘回去会丢精度。
+# 换算取第 11 列的 bps 真值而不是格式化过的第 8 列：11.81 这种两位小数乘回去会丢精度。
+# r89 起表头也写 MiB/s —— 值早就是 MiB，标签却写 MB/s，同一个 IP 页面 15.55、
+# CSV 14.83，两处口径不同可以、标签写错不行。列序见 write_outputs（bps 在最后）。
 csv_rows() {
 	# 用 FILENAME == vf 判首文件而不是 NR == FNR：vfields.tsv 可能是空文件
 	# （verify_top=0 时就是空的），NR == FNR 在首文件为空时会把第二文件的第一行
@@ -1630,7 +1756,7 @@ csv_rows() {
 		recv = n - int(l * n + 0.5)
 		if (recv < 0) recv = 0
 		sp = "0.00"
-		if (NF >= 10 && $10 != "" && $10 + 0 > 0) sp = sprintf("%.2f", ($10 + 0) / 1048576)
+		if (NF >= 11 && $11 != "" && $11 + 0 > 0) sp = sprintf("%.2f", ($11 + 0) / 1048576)
 		printf "%s,%d,%d,%.2f,%s,%s,%s\n", $1, n, recv, l, $5, sp, $7
 	}' "${1:-/dev/null}" -
 }
@@ -1647,10 +1773,16 @@ write_outputs() {
 	# best-ip.txt 与 result.json 都从 colored.tsv 生成，避免两个输出内容不一致
 	# （页面上的「落地机房」列读的就是 result.json 的 colo 字段）。
 	#
-	# colored.tsv 的 11 列（r88）：
+	# colored.tsv 的 11 列（r89 调整过顺序）：
 	#   1 ip 2 code 3 connect 4 tls 5 ttfb 6 total 7 colo
 	#   8 吞吐（十进制 MB/s，'-' = 未测出） 9 胜出时用的域名
-	#   10 bps 真值（整数，空 = 未测出） 11 below_gate 标记（1 = 只进 result.json）
+	#   10 below_gate 标记（1 = 只进 result.json） 11 bps 真值（整数，空 = 未测出）
+	#
+	# 为什么 bps 放在最后一列而不是第 10 列：`read` 的 IFS 是制表符，而 POSIX 把
+	# 制表符算「IFS 空白」—— 连续两个制表符会被当成**一个**分隔符。未测出时 bps 是
+	# 空串，写成 "...\tdom\t\t1"，read 11 个变量就会把那个 1 塞进 bps、bg 变成空，
+	# 于是补足行的标记丢失、漏进 best-ip.txt（r89 离线验证时抓到的）。
+	# 把可能为空的 bps 放在最后一列，读不到的字段自然是空，其余列不会错位。
 	#
 	# 吞吐**不再在这里现场测**：测速已经在 do_run 里做完了（粗筛 → 门槛 → 重排 →
 	# 精测），这里只负责回填。老流程是在这里才对前 speed_count 个现场测，那时名次
@@ -1692,8 +1824,9 @@ write_outputs() {
 		fi
 		bg=0
 		grep -qxF "$ip" "$bg_file" 2>/dev/null && bg=1
+		# 列序见函数开头：bg 在第 10、bps 在最后（可能为空，必须垫底）
 		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-			"$ip" "$code" "$c" "$tls" "$ttfb" "$tot" "$colo" "$spd" "$dom" "$bsp" "$bg" >>"$colored"
+			"$ip" "$code" "$c" "$tls" "$ttfb" "$tot" "$colo" "$spd" "$dom" "$bg" "$bsp" >>"$colored"
 		ck=$((ck + 1))
 		progress_set colo $ck $cptotal
 	done <"$RUN_DIR/ranked.tsv"
@@ -1707,13 +1840,13 @@ write_outputs() {
 		[ "$spd_bad" -lt 0 ] 2>/dev/null && spd_bad=0
 		log "吞吐实测 ${spd_all:-0} 次（粗筛 + 精测），其中 ${spd_ok:-0} 次拿到有效吞吐、$spd_bad 次没测出；单位十进制 MB/s"
 	fi
-	bg_n=$(grep -c . "$bg_file" 2>/dev/null || true)
-	bg_n=${bg_n:-0}
-	# JSON 顶层那个计数只数**进了结果**的行（补足名单里可能还有排在 keep 之外的）。
-	bg_in=$(awk -F'\t' '$11 == 1' "$colored" | grep -c . || true)
+	# r89：这一行只认「进了结果的」。补足名单与榜单是同一批（r89 起补足发生在
+	# 截断之后、补的行直接进 ranked），所以这里的数字必然等于 JSON 的 below_gate
+	# 字段，也等于 result.json items 里带 below_gate:1 的条数 —— 三处一个数。
+	bg_in=$(awk -F'\t' '$10 == 1' "$colored" | grep -c . || true)
 	bg_in=${bg_in:-0}
-	if [ "$bg_n" -gt 0 ]; then
-		log "吞吐门槛：有 $bg_n 个 IP 没达标，按「最接近门槛」补进了结果详情，但不写进 best-ip.txt"
+	if [ "$bg_in" -gt 0 ]; then
+		log "吞吐门槛：有 $bg_in 个 IP 没达标，按「最接近门槛」补进了结果详情（只进 result.json，不进 best-ip.txt 与 CSV）"
 	fi
 	# r75：有 IP 回的不是那个文件（错误页/挑战页）时按未测出处理。这行是给人看的
 	# 解释 —— 否则页面上一片 '-' 会被当成「引擎坏了」，而实情是服务端没给文件。
@@ -1728,7 +1861,7 @@ write_outputs() {
 
 	: >"$tmp"
 	bn=0
-	while IFS="$(printf '\t')" read -r ip code c tls ttfb tot colo spd dom bsp bg; do
+	while IFS="$(printf '\t')" read -r ip code c tls ttfb tot colo spd dom bg bsp; do
 		[ -n "$ip" ] || continue
 		# below_gate 的行只写进 result.json：它是「比门槛差一点、但榜单太空所以拉来
 		# 凑数」的，推到客户端只会让设备连上一颗明显慢的 IP。
@@ -1772,14 +1905,14 @@ write_outputs() {
 		NF >= 11 {
 			if (n++) printf ","
 			sp = ($8 == "" || $8 == "-") ? "null" : $8
-			bp = ($10 == "") ? "null" : $10
-			mi = ($10 == "") ? "null" : sprintf("%.2f", ($10 + 0) / 1048576)
+			bp = ($11 == "") ? "null" : $11
+			mi = ($11 == "") ? "null" : sprintf("%.2f", ($11 + 0) / 1048576)
 			l = ($1 in loss) ? loss[$1] : "null"
 			j = ($1 in jit) ? jit[$1] : "null"
 			nt = ($1 in net && net[$1] != "") ? net[$1] : "null"
 			ry = ($1 in ray) ? ray[$1] : "null"
 			printf "{\"ip\":\"%s\",\"code\":%s,\"connect_ms\":%s,\"tls_ms\":%s,\"ttfb_ms\":%s,\"total_ms\":%s,\"colo\":\"%s\",\"speed_mbytes\":%s,\"speed_bps\":%s,\"speed_mib\":%s,\"below_gate\":%s,\"domain\":\"%s\",\"loss\":%s,\"jitter_ms\":%s,\"net_ttfb_ms\":%s,\"ray_ok\":%s}",
-				$1, $2, $3, $4, $5, $6, $7, sp, bp, mi, $11, $9, l, j, nt, ry
+				$1, $2, $3, $4, $5, $6, $7, sp, bp, mi, $10, $9, l, j, nt, ry
 		}' "$RUN_DIR/vfields.tsv" "$colored"
 		printf ']}\n'
 	} >"$RUN_DIR/result.tmp" && mv "$RUN_DIR/result.tmp" "$RESULT"
@@ -1802,9 +1935,12 @@ write_outputs() {
 	# 同样先写临时再 rename——半截 CSV 会被 edgetunnel 当成缺列直接拒。
 	# below_gate 的行同样不进 CSV：它和 best-ip.txt 一样是给客户端用的清单，
 	# 只把「补足用」的 IP 留在 result.json 里给人看。
+	# 表头写 MiB/s（r89 修）：值一直是 bps÷1048576（对齐 CFST 的 result.csv，
+	# edgetunnel 的 DLS 阈值按那个口径设），但 r88 的表头还写着 MB/s，同一个 IP
+	# 页面 15.55、CSV 14.83 —— 两处口径不同可以，标签写错不行。
 	{
-		printf 'IP 地址,已发送,已接收,丢包率,平均延迟,下载速度(MB/s),地区码\n'
-		awk -F'\t' '$11 != 1' "$colored" | csv_rows "$RUN_DIR/vfields.tsv"
+		printf 'IP 地址,已发送,已接收,丢包率,平均延迟,下载速度(MiB/s),地区码\n'
+		awk -F'\t' '$10 != 1' "$colored" | csv_rows "$RUN_DIR/vfields.tsv"
 	} >"$RUN_DIR/best-ip.csv.tmp" && mv "$RUN_DIR/best-ip.csv.tmp" "$CSV" || rm -f "$RUN_DIR/best-ip.csv.tmp"
 }
 
@@ -2025,6 +2161,10 @@ do_run() {
 		log '已有实例在运行，跳过本轮'
 		return 0
 	fi
+	# 配置告警统一在这里落地（r89）：load_config 读到的脏值/超范围/被整理过的域名
+	# 先攒在 CFG_WARN 里，只读子命令一个字都不写日志。放在锁之后、真正开跑之前，
+	# 这样既不会因为「已有实例在跑，跳过本轮」白写一次，也不会散落在轮次中间。
+	cfg_warn_flush
 	rm -f "$STOP"
 	STARTED=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 	# 起轮时刻另存一行 epoch：daemon 的周期守门用它算"到点没有"。
@@ -2282,21 +2422,12 @@ do_run() {
 					printf "%.2f %.2f", $1 / 1000000, g / 1000000
 				}')
 			log "吞吐门槛：合格 $spd_pass / 测了 $spd_meas（参考 $(printf '%s' "$gfmt" | cut -d' ' -f1) MB/s，门槛 $(printf '%s' "$gfmt" | cut -d' ' -f2) MB/s）"
-			# 合格数不够 keep_count 时按「最接近门槛」补齐：它们只是差一点，比完全
-			# 没测过的可靠。补进来的标记成 below_gate —— 只进 result.json，不进
-			# best-ip.txt（把明显慢的 IP 推给客户端没有任何好处）。
-			if [ "$spd_pass" -lt "$C_KEEP" ] && [ -s "$RUN_DIR/gate.drop" ]; then
-				need=$((C_KEEP - spd_pass))
-				awk -F'\t' '$1 + 0 > 0' "$RUN_DIR/gate.drop" | sort -nr | head -n "$need" | \
-					cut -f2 >"$RUN_DIR/refill.ips"
-				refill_n=$(grep -c . "$RUN_DIR/refill.ips" || true)
-				refill_n=${refill_n:-0}
-				if [ "$refill_n" -gt 0 ]; then
-					awk -F'\t' 'NR == FNR { keep[$1] = 1; next } ($1 in keep)' \
-						"$RUN_DIR/refill.ips" "$RUN_DIR/qual.pre" >>"$qual"
-					cat "$RUN_DIR/refill.ips" >>"$RUN_DIR/below_gate.lst"
-					log "吞吐门槛：合格只有 $spd_pass 个，按最接近门槛补 $refill_n 个到 $C_KEEP 个（补的这几个只进结果详情，不进 best-ip.txt）"
-				fi
+			# 被门槛刷掉的条数说清楚。「补足」不在这里做：r88 把它放在截断之前，
+			# 补进来的行被重排压到队尾、又被 head -n keep 截掉，于是日志说补了 1 个、
+			# result.json 里 below_gate 是 0（真机上就这么对不上）。现在只在**最终
+			# 入选数不足 keep_count** 时补，而且补进来的行一定进 ranked（见下面）。
+			if [ "$spd_meas" -gt "$spd_pass" ] 2>/dev/null; then
+				log "吞吐门槛：剔除 $((spd_meas - spd_pass)) 个（低于门槛，不进榜）"
 			fi
 			# 加权重排：分数降序 → ttfb 升序 → total 升序，正常行永远排在补足行前面
 			speed_resort "$qual" "$speed_tsv" "$RUN_DIR/below_gate.lst"
@@ -2327,12 +2458,25 @@ do_run() {
 			fi
 		fi
 	fi
-	bg_n=$(grep -c . "$RUN_DIR/below_gate.lst" 2>/dev/null || true)
-	bg_n=${bg_n:-0}
-
 	qualified=$(grep -c . "$qual" || true)
 	ranked=$(head -n "$C_KEEP" "$qual")
+	# 补足（r89 修正）：只有**真正入选数**不足 keep_count 时才补，而且补进来的行
+	# 直接拼进 ranked —— 这一步在截断之后，所以"日志说补了几个"必然等于"结果里
+	# 有几个 below_gate"。具体判定与拼接都在 speed_refill 里（有回归用例）。
+	# 为什么还要限定 qualified>0：全被门槛刷掉时按既定口径走「无结果」分支，
+	# 不能靠补足把一张全是不合格项的榜单端出去。
+	if [ "$qualified" -gt 0 ]; then
+		ranked=$(speed_refill "$RUN_DIR/qual.pre" "$RUN_DIR/gate.drop" "$ranked" \
+			"$C_KEEP" "$RUN_DIR/below_gate.lst")
+	fi
+	# below_gate.lst 在本轮测速段开头就被清空过，所以这里就是「本轮补了几个」，
+	# 与 result.json 的 below_gate 计数、items 里带 below_gate:1 的条数是同一个集合。
+	bg_n=$(grep -c . "$RUN_DIR/below_gate.lst" 2>/dev/null || true)
+	bg_n=${bg_n:-0}
 	kept=$(printf '%s\n' "$ranked" | grep -c . || true)
+	if [ "$bg_n" -gt 0 ] 2>/dev/null; then
+		log "吞吐门槛：过门槛的只有 $qualified 个，按最接近门槛补 $bg_n 个到 $C_KEEP 个名额（补的这几个只进结果详情，不进 best-ip.txt 与 CSV）"
+	fi
 	counts=$(counts_json <"$agg")
 	progress_set rank 1 1
 	log "达标 $qualified / $pool_n（榜单保留 $kept，其中按门槛补足 $bg_n 个）；分类 $counts"
@@ -2604,6 +2748,38 @@ selftest() {
 	export CFIP_SPEED_BYTES_X='2097152'
 	check '范围内的值原样通过' "$(cfg_range speed_bytes_x 10485760 131072 104857600)" '2097152'
 	unset CFIP_SPEED_BYTES_X
+	# r89：配置告警先攒在缓冲里，只有 do_run 开头 flush 一次。页面每 3 秒问一次
+	# status、每次打开页面都走 show/pool，那些「按 X 处理」的提示若无条件落盘，
+	# 真机上一天能追加十几条同文，把某一轮的记录挤出 512KB 的日志。
+	old_log=$LOG
+	LOG=$RUN_DIR/cfgwarn.log
+	: >"$LOG"
+	CFG_WARN=''
+	cfg_warn '配置项 demo 取到的值不是纯数字'
+	cfg_warn '配置项 demo2=999 超过上限 100'
+	check '配置告警先攒在缓冲里，不立刻写日志' "$([ -s "$LOG" ] && echo wrote || echo buffered)" 'buffered'
+	cfg_warn_flush
+	check 'flush 时攒下的告警全部落地' "$(grep -c '配置项 demo' "$LOG" || true)" '2'
+	cfg_warn_flush
+	check '再次 flush 不重复写（缓冲已清空）' "$(grep -c '配置项 demo' "$LOG" || true)" '2'
+	LOG=$old_log
+	rm -f "$RUN_DIR/cfgwarn.log"
+	CFG_WARN=''
+	# 端到端那条：只读子命令跑完，日志文件里不该因为配置脏而多出一行。
+	# 用独立的临时运行目录，别去碰 selftest 自己的 LOG。
+	ro=$ST_SCRATCH/ro
+	rm -rf "$ro"
+	mkdir -p "$ro" 2>/dev/null
+	CFIP_RUN_DIR=$ro CFIP_ETC_DIR=$ro/etc CFIP_SPEED_ABS_MIN='abc' \
+		CFIP_SPEED_SCREEN_COUNT='7' CFIP_KEEP_COUNT='10' \
+		sh "$0" diag >/dev/null 2>&1
+	if [ -c /dev/null ]; then
+		check '只读子命令（diag）不往运行日志追加配置告警' \
+			"$([ -s "$ro/cf-ipcheck.log" ] && echo wrote || echo clean)" 'clean'
+	else
+		printf '[SKIP] 本机 /dev/null 不是字符设备，diag 那条系统告警会写日志，跳过\n'
+	fi
+	rm -rf "$ro"
 	# 探测域名：只按逗号切，整条校验字符集。"a. com" 必须整条丢掉 —— 按空格切会
 	# 得到 "a." 和 "com" 两个"看着合法"的假域名，白烧一轮还像线路故障。
 	got=$(normalize_hosts 'a.com, https://b.com ,c.d')
@@ -3046,6 +3222,45 @@ selftest() {
 	got=$(sh "$0" _speedscore 1500 300000 3000 100 2>/dev/null)
 	check '加权分：weight=100 时 0.3MB/s 落在 0.30 档' "$got" '30'
 
+	# r89：粗筛个数的来源。真机回归点是「升级后新选项缺失、旧 speed_count 恰好
+	# 等于 keep_count」，那时必须用默认 20 而不是 10，否则第 11 名永远进不来。
+	got=$(sh "$0" _screensrc '' '10' '10' 2>/dev/null)
+	check '粗筛来源：新选项缺失、旧值等于 keep_count ⇒ 用默认（不是旧默认 10）' "$got" 'default'
+	got=$(sh "$0" _screensrc '' '10' '5' 2>/dev/null)
+	check '粗筛来源：旧值比 keep_count 大一点就采纳（显式配置被尊重）' "$got" 'old'
+	got=$(sh "$0" _screensrc '' '' '10' 2>/dev/null)
+	check '粗筛来源：两个选项都没有 ⇒ 默认' "$got" 'default'
+	got=$(sh "$0" _screensrc '20' '30' '10' 2>/dev/null)
+	check '粗筛来源：新选项有值时，旧选项再大也不顶替' "$got" 'new'
+	got=$(sh "$0" _screensrc 'abc' '30' '10' 2>/dev/null)
+	check '粗筛来源：新选项是脏值时仍归它（交给 cfg_range 告警并夹取）' "$got" 'new'
+
+	# r89：门槛补足的判定。真机事故是「147 个达标也触发补足」，补的行还被截断
+	# 踢掉，于是日志说补了 1 个、result.json 里 below_gate 是 0、items 里也没有。
+	# 现在要求：①入选数够就一行不补；②不够才补，且补的行一定出现在返回值里。
+	rf=$RUN_DIR/rf
+	rm -rf "$rf"
+	mkdir -p "$rf" 2>/dev/null
+	awk 'BEGIN{for(i=1;i<=8;i++) printf "1.1.1.%d\t200\t10.0\t10.0\t%d00.0\t%d50.0\tnone\twww.example.com\n", i, i, i}' \
+		>"$rf/pre"
+	# 被门槛刷掉的三颗：两颗有 bps（能补），一颗 bps=0（没测出，不该拿来充数）
+	printf '500000\t1.1.1.6\n300000\t1.1.1.7\n0\t1.1.1.8\n' >"$rf/drop"
+	rk=$(awk 'BEGIN{for(i=1;i<=10;i++) printf "9.9.9.%d\t200\t10.0\t10.0\t100.0\t150.0\tnone\tx\n", i}')
+	: >"$rf/bg"
+	got=$(speed_refill "$rf/pre" "$rf/drop" "$rk" 10 "$rf/bg" | grep -c .)
+	check '补足：入选数已够 keep_count 时一行都不补' "$got" '10'
+	check '补足：够数时名单也是空的（日志=JSON=榜单）' "$(grep -c . "$rf/bg" || true)" '0'
+	rk=$(awk 'BEGIN{for(i=1;i<=3;i++) printf "9.9.9.%d\t200\t10.0\t10.0\t100.0\t150.0\tnone\tx\n", i}')
+	: >"$rf/bg"
+	out=$(speed_refill "$rf/pre" "$rf/drop" "$rk" 10 "$rf/bg")
+	check '补足：不足 keep_count 时只补有实测吞吐的那两颗（3+2）' \
+		"$(printf '%s\n' "$out" | grep -c .)" '5'
+	check '补足：按 bps 降序取最接近门槛的' \
+		"$(printf '%s\n' "$out" | sed -n '4,5p' | cut -f1 | tr '\n' ' ')" '1.1.1.6 1.1.1.7 '
+	check '补足：名单里正好是补进来的那两颗（与返回值同一集合）' \
+		"$(cut -f1 "$rf/bg" | tr '\n' ' ')" '1.1.1.6 1.1.1.7 '
+	rm -rf "$rf"
+
 	# 运行锁的存活判定。回归点：只判断文件存在会把被 OOM 打断的轮次
 	# 永久当成“还在跑”，服务静默停摆。
 	maxp=$(cat /proc/sys/kernel/pid_max 2>/dev/null || echo 32768)
@@ -3353,13 +3568,13 @@ selftest() {
 	check '净速率：size=0（没下到东西）时也退回原值' "$got" '700000'
 
 	# CSV 行：七列格式、未测速度 0.00、未验证 1/1、空边表不吃首行。
-	# r88：第 6 列从「十进制 MB/s（第 8 列）」改成「MiB/s（第 10 列的 bps 真值）」
+	# r88：第 6 列从「十进制 MB/s（第 8 列）」改成「MiB/s（第 11 列的 bps 真值）」
 	# —— CFST 的 result.csv 就是 MiB 口径，edgetunnel 按它设 DLS 阈值。
 	# 所以 10485760 B/s 在这里写成 10.00（而页面/JSON 的同一颗是 10.49 MB/s）。
 	vf=$T/vf.tsv
 	: >"$vf"
 	printf '1.1.1.1\t200.0\t300.0\t0.33\t150.0\t3\t150.0\t1\n' >"$vf"
-	printf '1.1.1.1\t200\t10\t5\t200.0\t300.0\tNRT\t10.49\twww.cloudflare.com\t10485760\t0\n2.2.2.2\t200\t10\t5\t150.0\t250.0\tSIN\t-\twww.cloudflare.com\t\t0\n' >"$T/cl.tsv"
+	printf '1.1.1.1\t200\t10\t5\t200.0\t300.0\tNRT\t10.49\twww.cloudflare.com\t0\t10485760\n2.2.2.2\t200\t10\t5\t150.0\t250.0\tSIN\t-\twww.cloudflare.com\t0\t\n' >"$T/cl.tsv"
 	got=$(sh "$0" _csvrows "$vf" <"$T/cl.tsv" | head -1)
 	check 'CSV 行：已验证 IP 用真实样本数与丢包（3,2,0.33），速度按 MiB 口径' "$got" '1.1.1.1,3,2,0.33,200.0,10.00,NRT'
 	got=$(sh "$0" _csvrows "$vf" <"$T/cl.tsv" | tail -1)
@@ -3497,6 +3712,8 @@ case "${1:-}" in
 	_speedref) speed_ref ;;
 	_speedgate) speed_gate "${2:-0}" "${3:-}" "${4:-0}" "${5:-0}" "${6:-0}" "${7:-0}" ;;
 	_speedscore) speed_score "${2:-0}" "${3:-}" "${4:-3000}" "${5:-0}" ;;
+	# r89：粗筛个数的取值来源（new/old/default）。
+	_screensrc) screen_src "${2:-}" "${3:-}" "${4:-0}" ;;
 	_gistgap) gist_gap "${2:-0}" "${3:-0}" ;;
 	_gistmsg) gist_api_msg "${2:-}" ;;
 	_gistwhy) gist_why_rc "${2:-0}" ;;
