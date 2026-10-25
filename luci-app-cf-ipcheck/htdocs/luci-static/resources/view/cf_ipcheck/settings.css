@@ -574,3 +574,39 @@
   .cfp .cell-k{font-size:13px}
   .cfp .cell-sub{font-size:12px}
 }
+
+/* ---------- r90：数据中心汇总 ----------
+ * 这张表是「一个机房一行」，和榜单「一颗 IP 一行」不是一回事，所以给它自己一套
+ * 栅格，不沿用 .brow 那 10 条轨道（列数与权重都对不上）。
+ * 第一列写 minmax(6.4em,max-content)：带「当前」小块的机房码比三个字母宽不少，
+ * 写死 em 会把那块裁掉；auto 让它按最宽那行收，四列依然对齐。
+ * 列头沿用 .brow.head 那套小号大写（同一档字号/字重/字距），只是换了类名。 */
+.cfp .dcsum{margin-bottom:var(--s4)}
+.cfp .dcrow{display:grid;align-items:center;
+  grid-template-columns:minmax(6.4em,max-content) 4.6em 7.4em minmax(8em,1fr);
+  border-bottom:1px solid var(--rule-soft);min-width:0}
+.cfp .dcrow:last-child{border-bottom:0}
+.cfp .dcrow.head{background:var(--panel-2);border-bottom:1px solid var(--rule)}
+.cfp .dc{padding:var(--s2) var(--s3);font-size:var(--t-sm);white-space:nowrap;min-width:0}
+.cfp .dc.r{text-align:right}
+.cfp .dcrow.head .dc{font-size:var(--t-xs);font-weight:700;letter-spacing:.04em;
+  text-transform:uppercase;color:var(--ink-3)}
+.cfp .dc-code{font-weight:600}
+.cfp .dc-ip{display:block;overflow:hidden;text-overflow:ellipsis}
+/* 「当前」= 榜首那颗 1 的同一种记号：实心强调色小块。放在机房码右边，不动列宽。 */
+.cfp .dc-tag{display:inline-block;margin-left:.5em;padding:.02em .4em;border-radius:2px;
+  background:var(--accent-btn);color:var(--accent-fg);font-size:var(--t-xs);font-weight:700;
+  line-height:1.5;vertical-align:.06em}
+/* 那一行淡淡染一层（6%，与榜首整行同档）：一眼能扫到，又不跟榜单抢强调 */
+.cfp .dcrow.cur{background:color-mix(in oklab, var(--accent) 6%, var(--panel))}
+.cfp .dc-more{padding:var(--s1) var(--s2) var(--s1) var(--s3);
+  border-top:1px solid var(--rule-soft)}
+.cfp .dc-note{font-size:var(--t-xs);color:var(--ink-3);white-space:nowrap}
+/* 420px：四列仍然全留（数据中心/条数/中位/最快 IP 缺一列这张表就没用了），
+ * 靠收内衬与列宽让出空间。合计 5.6+3.4+5.2 = 14.2em ≈ 178px，
+ * 剩下的全给 IP（15 个字符在 13.5px 等宽下约 121px），不出横滚。 */
+@media (max-width:620px){
+  .cfp .dcrow{grid-template-columns:minmax(5.6em,max-content) 3.4em 5.2em minmax(0,1fr)}
+  .cfp .dc{padding:var(--s2)}
+  .cfp .dc-tag{margin-left:.35em;padding:.02em .3em}
+}

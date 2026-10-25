@@ -30,7 +30,7 @@ const hook = "\nglobalThis.__cf_t = {\n" +
 	"\ttone: tone, stateWord: stateWord, why: why, whyMore: whyMore,\n" +
 	"\tnum: num, ms: ms, mbps: mbps, ago: ago, clock: clock,\n" +
 	"\tstale: stale, scheduleLine: scheduleLine, DASH: DASH,\n" +
-	"\tLeaderboard: Leaderboard, COLS: COLS, domainKinds: domainKinds,\n" +
+	"\tLeaderboard: Leaderboard, DcSummary: DcSummary, COLS: COLS, domainKinds: domainKinds,\n" +
 	"\tRunProgress: RunProgress, STAGES: STAGES, SRC_COLS: SRC_COLS,\n" +
 	"\tSummaryStrip: SummaryStrip, BoardPane: BoardPane,\n" +
 	"\tSourceMatrix: SourceMatrix, SourcesPane: SourcesPane, srcMessage: srcMessage, srcMore: srcMore,\n" +
@@ -381,7 +381,15 @@ const rpcStub = {
 const viewStub = { extend: o => o };
 function MapStub() { this.sections = []; }
 MapStub.prototype.section = function () {
-	const sec = { options: [], option: function (T, name) { const o = { name: name, __opt: true }; this.options.push(o); return o; } };
+	const sec = { options: [], option: function (T, name, label) {
+		/* form.js 的 option() 交回来的是带 .value(k, v) 的对象（ListValue 靠它加选项），
+		 * 桩里照抄这个口 —— 否则视图里 o.value(...) 会被测成"调了个不存在的方法"，
+		 * 而真机上它是成立的一步。 */
+		const o = { name: name, __opt: true, __label: label, __values: [],
+			value: function (k, v) { this.__values.push([k, v]); return this; } };
+		this.options.push(o);
+		return o;
+	} };
 	this.sections.push(sec);
 	return sec;
 };
@@ -391,6 +399,7 @@ const formStub = {
 	TypedSection: 'TypedSection',
 	Flag: 'Flag',
 	Value: 'Value',
+	ListValue: 'ListValue',
 	DynamicList: 'DynamicList'
 };
 
@@ -783,6 +792,147 @@ pane = t.BoardPane(t.parseStatus('{"state":"never_run","items":[]}'), noActions)
 has('从未跑过给首轮引导', pane, '还没有测过');
 pane = t.BoardPane(t.parseStatus('{"state":"done","items":[]}'), noActions);
 has('跑完但空榜单时指向配置页', pane, '测速与判定');
+
+/* ================================================================== *
+ * 6b. r90：数据中心汇总 / 判定口径 / 速度单位
+ * ------------------------------------------------------------------
+ * 三件事都不允许"看源码猜"：汇总表的行数与折行、口径改动只有列头翻还是连值一起翻、
+ * 单位切换取的是哪一列 —— 全在渲染树上量。默认值是配置项自己的事，那几项照 r88 的
+ * 做法按声明块断（源码里 o.default 就在字段旁边）。
+ * ================================================================== */
+{
+	/* 引擎给的顺序就是展示顺序（已按中位耗时升序），页面不再排一次 */
+	const dc = (code, count, med, ip) => ({ dc: code, count: count, ttfb_med: med, best_ip: ip });
+	const dcSum3 = [ dc('NRT', 42, 312, '104.21.0.7'), dc('SIN', 30, 180, '172.64.0.9'),
+		dc('LAX', 12, 95, '104.16.9.9') ];
+
+	/* --- 1) 四列表头 --- */
+	const ds = t.DcSummary({ dc_summary: dcSum3, dc_pick: 'all' });
+	const dcHeads = byClass(byClass(ds, 'head')[0], 'dc').map(c => textOf(c));
+	eq('r90 机房汇总渲染出四列表头', dcHeads.join(','), '数据中心,条数,中位 TTFB,最快 IP');
+	ok('r90 行用自己那套类（dcrow），没有套用榜单的 10 列 brow',
+		byClass(ds, 'dcrow').length === 4 && byClass(ds, 'brow').length === 0);
+
+	/* --- 2) 3 行：全显示，没有「其余」 --- */
+	eq('r90 只有 3 个机房时三行都摆出来', byClass(ds, 'data').length, 3);
+	hasNot('r90 不超过 6 行时不出现「其余」那一句', ds, '其余');
+	has('r90 条数与中位耗时按引擎给的值显示', ds, '42');
+
+	/* --- 3) 7 行：只摆 6 行 + 一行「其余」，可展开 --- */
+	const seven = [ 'NRT', 'SIN', 'LAX', 'HKG', 'ICN', 'FRA', 'LHR' ]
+		.map((c, i) => dc(c, 10 + i, 100 + i * 10, '104.16.0.' + (i + 1)));
+	const big = t.DcSummary({ dc_summary: seven, dc_pick: 'all' });
+	eq('r90 7 个机房时只渲染前 6 行', byClass(big, 'data').length, 6);
+	has('r90 多出来的那句写清「其余 1 个数据中心（共 7 个）」', big, '其余 1 个数据中心（共 7 个）');
+	const moreBtn = byTag(big, 'button')[0];
+	ok('r90 展开入口是一颗真按钮（回车/空格天生可点，不用自己接 keydown）',
+		!!moreBtn && moreBtn.tagName === 'BUTTON' && moreBtn.attrs['aria-expanded'] === 'false');
+	moreBtn.dispatch('click');
+	eq('r90 点开后 7 行都在', byClass(big, 'data').length, 7);
+	has('r90 点开后那颗按钮改说「只看前 6 个」', big, '只看前 6 个');
+	byTag(big, 'button')[0].dispatch('click');
+	eq('r90 再点一下收回前 6 行', byClass(big, 'data').length, 6);
+
+	/* --- 4) 当前生效的机房有「当前」标记 --- */
+	const dsCur = t.DcSummary({ dc_summary: dcSum3, dc_pick: 'SIN' });
+	eq('r90 dc_pick 是具体机房码时只有那一行带标记', byClass(dsCur, 'dc-tag').length, 1);
+	eq('r90 标记写的字就是「当前」', textOf(byClass(dsCur, 'dc-tag')[0]), '当前');
+	ok('r90 标记落在 SIN 那一行（不是第一行）',
+		textOf(byClass(dsCur, 'cur')[0]).includes('SIN'), textOf(byClass(dsCur, 'cur')[0]));
+	eq('r90 dc_pick=all 时一个「当前」都不出现',
+		byClass(t.DcSummary({ dc_summary: dcSum3, dc_pick: 'all' }), 'dc-tag').length, 0);
+	has('r90 dc_pick=auto 时表头旁说明自动选了最快的一个',
+		t.DcSummary({ dc_summary: dcSum3, dc_pick: 'auto' }), '自动选了中位最快的一个');
+
+	/* --- 5) 没有 dc_summary：整块不渲染，不留空壳 --- */
+	eq('r90 缺 dc_summary 时整块返回 null', t.DcSummary({ items: [] }), null);
+	eq('r90 dc_summary 是空数组时同样不渲染', t.DcSummary({ dc_summary: [] }), null);
+	eq('r90 榜单面板里不会留一个空的汇总壳', byClass(t.BoardPane(done, noActions), 'dcsum').length, 0);
+	/* 位置：读数带之后、榜单表格之前 */
+	const paneDc = t.BoardPane(Object.assign({}, done, { dc_summary: dcSum3, dc_pick: 'all' }), noActions);
+	const seq = all(paneDc);
+	const iStrip = seq.indexOf(byClass(paneDc, 'strip')[0]);
+	const iDc = seq.indexOf(byClass(paneDc, 'dcsum')[0]);
+	const iBoard = seq.indexOf(byClass(paneDc, 'board').filter(n => !/\bdcsum\b/.test(n.attrs['class']))[0]);
+	ok('r90 汇总表夹在读数带与榜单表格之间', iStrip >= 0 && iDc > iStrip && iBoard > iDc,
+		[ iStrip, iDc, iBoard ].join('/'));
+
+	/* --- 6) 三个新字段的位置与默认值 --- */
+	const newFields = [ 'probe_metric', 'dc_pick', 'speed_unit' ];
+	const notInProbe = newFields.filter(n => (t.GROUP_OPTIONS.probe || []).indexOf(n) < 0);
+	ok('r90 三个新字段都归在「测速与判定」分组', notInProbe.length === 0, notInProbe.join(','));
+	const optBlock = name => {
+		const m = new RegExp("thr\\.option\\(form\\.\\w+, '" + name + "'").exec(src);
+		return m ? src.slice(m.index, m.index + 800) : '';
+	};
+	ok('r90 probe_metric 默认 http', /o\.default = 'http'/.test(optBlock('probe_metric')));
+	ok('r90 dc_pick 默认 all', /o\.default = 'all'/.test(optBlock('dc_pick')));
+	ok('r90 speed_unit 默认 mb', /o\.default = 'mb'/.test(optBlock('speed_unit')));
+	ok('r90 三个字段都挂了 help()（长解释不常驻页面）',
+		newFields.every(n => src.indexOf("help('" + n + "'") > 0));
+	ok('r90 probe_metric 两个取值都在、文案没写成内部术语',
+		/'http', _\('按 HTTP 首字节时间'\)/.test(optBlock('probe_metric')) &&
+		/'tcp', _\('按 TCP 建连时间'\)/.test(optBlock('probe_metric')) &&
+		!/1034|同池|边缘校验/.test(optBlock('probe_metric')));
+	ok('r90 probe_metric 长说明写明两种结果不能互相比较',
+		/两种方式量的不是同一件事，结果不能互相比较/.test(src) && /低 30%~50%/.test(src));
+	ok('r90 speed_unit 长说明写明页面固定 MB/s、只影响 CSV',
+		/这一项只影响 CSV/.test(src) || /只决定导出的 CSV/.test(src), 'csv');
+	ok('r90 dc_pick 长说明给出 all / auto / 三位机房码三条路',
+		/all（默认）/.test(src) && /auto/.test(src) && /三位机房码/.test(src));
+
+	/* --- 7) 口径=tcp：列头翻成 TCP，值取建连时间 --- */
+	/* 引擎真形状（r90）：探针一次请求把四列都量回来，切口径只换「排哪一列」，
+	 * 所以建连时间仍在原来的 connect_ms 上，不是新拆出来的键。 */
+	const tcpIt = [ { ip: '1.1.1.1', code: 200, connect_ms: 12.3, tls_ms: 40, ttfb_ms: 300, total_ms: 320, colo: 'NRT' } ];
+	const tcpLb = t.Leaderboard(tcpIt, { metric: 'tcp' });
+	const tcpHeads = byClass(byClass(tcpLb, 'head')[0], 'bc').map(n => textOf(n));
+	eq('r90 口径=tcp 时原来的 TTFB 列改标成 TCP（表里两个 TCP、没有 TTFB）',
+		tcpHeads.filter(h => h === 'TCP').length, 2);
+	ok('r90 同时那个位置不再叫 TTFB', tcpHeads.indexOf('TTFB') < 0, tcpHeads.join(','));
+	has('r90 该列的值换成建连时间（12.3）', tcpLb, '12.3');
+	const tcpRow = byClass(tcpLb, 'data')[0];
+	eq('r90 排序列与左边 TCP 列同值（同一次探测，只是换了排序依据）',
+		textOf(byClass(tcpRow, 'c-key-ttfb')[0]), textOf(byClass(tcpRow, 'c-key-tcp')[0]));
+	ok('r90 items 一个建连字段都没有时列头保持 TTFB（不编数、也不报错）',
+		textOf(byClass(t.Leaderboard([ { ip: '1.1.1.1', ttfb_ms: 300 } ], { metric: 'tcp' }), 'head')[0]).includes('TTFB'));
+	ok('r90 不传 opts 时行为完全不变（老调用点不用改）',
+		textOf(byClass(t.Leaderboard(done.items), 'head')[0]).includes('TTFB'));
+
+	/* --- 8) 单位=mib：列头 MiB/s，值取另一列 --- */
+	const mibIt = [ { ip: '1.1.1.1', code: 200, ttfb_ms: 100, total_ms: 150, colo: 'NRT',
+		speed_mbytes: 10, speed_mib: 9.54 } ];
+	const mibLb = t.Leaderboard(mibIt, { unit: 'mib' });
+	has('r90 结果写的是 MiB 时列头出现 MiB/s', mibLb, 'MiB/s');
+	ok('r90 这时不再有 MB/s 的列头（含 MiB/s 那一格要排除）',
+		byClass(byClass(mibLb, 'head')[0], 'bc').map(n => textOf(n)).indexOf('MB/s') < 0);
+	has('r90 MiB 取的是另一列（9.54，不是 10.00）', mibLb, '9.54');
+	const mbLb = t.Leaderboard(mibIt);
+	has('r90 结果没写单位时仍按 MB/s（默认口径不变）', mbLb, '10.00');
+	ok('r90 默认口径下列头还是 MB/s', textOf(byClass(mbLb, 'head')[0]).includes('MB/s'));
+
+	/* --- 9) 口径与当前设置不一致：只在真的不一致时提示 --- */
+	const miniMap = makeNode('div');
+	const mrow = makeNode('div');
+	mrow.attrs['class'] = 'cbi-value';
+	const mlab = makeNode('label');
+	mlab.attrs['for'] = 'widget.cf_ipcheck.probe_metric';
+	const msel = makeNode('select');
+	msel.attrs['value'] = 'tcp';
+	mrow.appendChild(mlab);
+	mrow.appendChild(msel);
+	miniMap.appendChild(mrow);
+	const prevMap = t.P.mapnode;
+	t.P.mapnode = miniMap;
+	has('r90 结果口径与当前设置不一致时给出轻提示',
+		t.BoardPane(Object.assign({}, done, { probe_metric: 'http' }), noActions),
+		'当前结果是用 HTTP 口径测的，与你现在的设置不同');
+	hasNot('r90 两边一致时不提示',
+		t.BoardPane(Object.assign({}, done, { probe_metric: 'tcp' }), noActions), '与你现在的设置不同');
+	t.P.mapnode = prevMap;
+	hasNot('r90 读不到当前设置时不瞎猜（表单还没渲染的情况）',
+		t.BoardPane(Object.assign({}, done, { probe_metric: 'http' }), noActions), '与你现在的设置不同');
+}
 
 /* ================================================================== *
  * 7. 源检测：段内占比是判定源是否还可用的关键

@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r89';
+var VIEW_BUILD = 'r90';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -330,6 +330,29 @@ function mbps(v) {
 	if (v === null || v === undefined || !isFinite(Number(v)) || Number(v) <= 0)
 		return DASH;
 	return Number(v).toFixed(2);
+}
+
+/* 按候选字段名依次取值（r90）。为什么按名字取、不写死一个字段：引擎这一版才把
+ * 「判定口径」与「MiB」两件事写进结果，早一轮的 result.json 里这些键根本不存在；
+ * 写死名字会在旧数据上取到 undefined，把整列抹成 —。取不到返回 null，
+ * 由调用方决定退回什么（榜单退回原来的 ttfb/默认单位，不编数）。 */
+function fieldNum(rec, keys) {
+	if (!rec)
+		return null;
+	for (var i = 0; i < keys.length; i++) {
+		var v = rec[keys[i]];
+		if (v === null || v === undefined || v === '')
+			continue;
+		if (isFinite(Number(v)))
+			return Number(v);
+	}
+	return null;
+}
+
+/* 吞吐取哪一列：页面默认口径是十进制 MB/s；只有结果里显式写了 mib 才切到 MiB。
+ * 反过来（有 speed_mib 就用 MiB）是错的 —— 引擎以后可能两个键都写。 */
+function speedOf(rec, unit) {
+	return fieldNum(rec, unit === 'mib' ? [ 'speed_mib' ] : [ 'speed_mbytes' ]);
 }
 
 function pad2(n) {
@@ -1053,6 +1076,30 @@ var COLS = [
 ];
 var COL_DOMAIN = { key: 'domain', h: '胜出域名', cls: 'l', get: function (it) { return it.domain || DASH; } };
 
+/* r90：判定口径是 TCP 时，TTFB 那一列改摆建连时间。
+ * 名字按「引擎真写的那一个」排在前：r90 的探针一次请求就把四列都量回来了，切口径
+ * 只改排序与判门槛，所以建连时间仍在 items 里那颗 connect_ms 上（不是新键）。
+ * 其余几个留着兜底 —— 万一以后引擎把建连单独拆出来，这里不用跟着改。
+ * 一个都取不到就保持 TTFB：宁可不换列头，也不编一列数字。 */
+var CONN_KEYS = [ 'connect', 'connect_ms', 'tcp', 'tcp_ms' ];
+
+function connMs(it) {
+	return fieldNum(it, CONN_KEYS);
+}
+
+function hasConn(items) {
+	for (var i = 0; i < (items || []).length; i++) {
+		if (connMs(items[i]) != null)
+			return true;
+	}
+	return false;
+}
+
+/* 口径的写法：这两种在页面上就叫 HTTP / TCP，别把引擎的小写码直接摆给用户 */
+function metricWord(v) {
+	return String(v) === 'tcp' ? 'TCP' : 'HTTP';
+}
+
 /* 有几种不同的「胜出域名」？只有多于一种时那一列才值得占地方 */
 function domainKinds(items) {
 	var seen = {};
@@ -1077,7 +1124,7 @@ function boardHead(cols) {
 }
 
 /* 数据行。第一名左侧加一道强调竖条；吞吐列带一条相对最小值/最大值的迷你横条。 */
-function boardRow(it, i, cols, maxSpeed) {
+function boardRow(it, i, cols, maxSpeed, unit) {
 	/* r71 行内旁注：丢包与抖动。不新增列（.brow 是定列网格，多一个子元素就会
 	 * 顶出隐式列把整表带歪），挂在 IP 单元格的副行——只有真有问题时才出现
 	 * （丢包>0 或抖动>100ms），平时不占视觉，也不会把行顶高。
@@ -1115,15 +1162,17 @@ function boardRow(it, i, cols, maxSpeed) {
 		 * null（没验过或没有该头）不显示——页面要能区分「没验」和「没有这一项」。 */
 		if (c.key === 'ttfb') {
 			var ttfbNode = el('span', { class: 'n', text: c.get(it, i) });
-			var nt = it.net_ttfb_ms;
+			var nt = c.noNet ? null : it.net_ttfb_ms;
 			if (nt != null && isFinite(Number(nt)))
 				return el('div', { class: 'bc ' + c.cls + keyCls, role: 'cell' },
 					[ttfbNode, el('span', { class: 'ttfb-net', text: '净 ' + ms(nt) })]);
 			return el('div', { class: 'bc ' + c.cls + keyCls, role: 'cell' }, ttfbNode);
 		}
-		/* 吞吐：数字 + 迷你条（条宽 = 相对本轮最大值，一眼看出快慢悬殊） */
+		/* 吞吐：数字 + 迷你条（条宽 = 相对本轮最大值，一眼看出快慢悬殊）。
+		 * r90：数值跟着本轮结果的单位走（MiB 时取另一列），迷你条与数字用同一个值，
+		 * 否则条和数字会一个按 MB/s 一个按 MiB/s 各说一套。 */
 		if (c.key === 'spd') {
-			var v = it.speed_mbytes;
+			var v = speedOf(it, unit);
 			var txt = mbps(v);
 			if (v > 0 && maxSpeed > 0) {
 				var pct = Math.max(4, Math.round(100 * Number(v) / maxSpeed));
@@ -1151,27 +1200,142 @@ function boardRow(it, i, cols, maxSpeed) {
 	}, cells);
 }
 
-function Leaderboard(items) {
+/* opts（r90，都可省）：{ metric: 'http'|'tcp', unit: 'mb'|'mib' }
+ *   metric=tcp 且这一轮的 items 真的带了建连样本 → TTFB 那一列改标 TCP、
+ *     摆建连时间；否则一律保持 TTFB（老结果 / 引擎没写这两个键）。
+ *   unit=mib → 吞吐列头换 MiB/s，数值取 MiB 那一列；默认仍是 MB/s。
+ * 两个开关都只读「本轮结果里的值」，不读配置：配置改了但还没重跑时，
+ * 表格必须照旧解释手里这份数字，而不是按新设置给旧数字贴新标签。 */
+function Leaderboard(items, opts) {
 	if (!items || !items.length)
 		return null;
 
-	var cols = COLS.slice();
+	opts = opts || {};
+	var unit = opts.unit === 'mib' ? 'mib' : 'mb';
+	var useConn = opts.metric === 'tcp' && hasConn(items);
+
+	var cols = COLS.map(function (c) {
+		if (c.key === 'ttfb' && useConn)
+			/* noNet：净延迟是「首字节里剥掉边缘处理」的那个数，挂在 TCP 表头下面
+			 * 会把两个概念混成一句，所以换口径时这条副行一起撤掉。 */
+			return { key: 'ttfb', h: 'TCP', cls: 'r', noNet: true,
+				get: function (it) { return ms(connMs(it)); } };
+		if (c.key === 'spd' && unit === 'mib')
+			return { key: 'spd', h: 'MiB/s', cls: 'r', get: function (it) { return mbps(speedOf(it, unit)); } };
+		return c;
+	});
 	if (domainKinds(items) > 1)
 		cols.push(COL_DOMAIN);
 
 	var maxSpeed = 0;
 	for (var i = 0; i < items.length; i++) {
-		var s = Number(items[i] && items[i].speed_mbytes);
-		if (isFinite(s) && s > maxSpeed)
+		var s = speedOf(items[i], unit);
+		if (s != null && s > maxSpeed)
 			maxSpeed = s;
 	}
 
 	var rows = [ boardHead(cols) ];
 	for (var j = 0; j < items.length; j++)
-		rows.push(boardRow(items[j], j, cols, maxSpeed));
+		rows.push(boardRow(items[j], j, cols, maxSpeed, unit));
 
 	return el('div', { class: 'board' + (cols.length > COLS.length ? ' multi' : ''), role: 'table' }, [
 		el('div', { class: 'board-scroll' }, rows)
+	]);
+}
+
+/* ==========================================================================
+ * 9b. 数据中心汇总（r90）
+ * ==========================================================================
+ * 引擎给的 dc_summary 已经按中位耗时排好序，这里只负责摆：一个机房一行。
+ * 这张表回答「这些 IP 落在哪几个机房、哪个机房整体更快」，榜单回答「用哪一颗」
+ * —— 两件事，所以它不参与排序，也不动榜单任何一列。
+ * 超过 6 个机房时先只摆前 6 个：它是背景信息，不该比榜单还长。展开状态放模块级，
+ * 否则每拍重画都会把用户刚点开的那张表收回去（和日志「完整时刻」同一个道理）。
+ * dc_summary 为空或缺失时整块不渲染 —— 不留一个空壳占版面。
+ */
+var DC_SHOW = 6;
+var dcOpen = false;
+
+function DcSummary(st) {
+	var src = st && st.dc_summary;
+	if (!src || !src.length)
+		return null;
+
+	var list = [];
+	for (var i = 0; i < src.length; i++) {
+		if (src[i] && typeof src[i] === 'object')
+			list.push(src[i]);
+	}
+	if (!list.length)
+		return null;
+
+	/* dc_pick 只有「具体机房码」才算「当前」；all / auto 是两种策略，不是某个机房 */
+	var cur = st.dc_pick && st.dc_pick !== 'all' && st.dc_pick !== 'auto' ? String(st.dc_pick) : null;
+	/* 列头恒写 TTFB：引擎的 dc_summary 不论判定口径是什么，中位数都按首字节时间算
+	 * （tcp 只换排序与门槛那一列），写 TCP 会把这列数字说成另一件事。 */
+	var midHead = T('中位 TTFB');
+
+	var head = el('div', { class: 'dcrow head', role: 'row' }, [
+		el('div', { class: 'dc l', role: 'columnheader', text: T('数据中心') }),
+		el('div', { class: 'dc r', role: 'columnheader', text: T('条数') }),
+		el('div', { class: 'dc r', role: 'columnheader', text: midHead }),
+		el('div', { class: 'dc l', role: 'columnheader', text: T('最快 IP') })
+	]);
+	var body = el('div', { class: 'dcbody' });
+
+	function dcRow(r) {
+		var code = r.dc ? String(r.dc) : DASH;
+		var on = !!cur && code === cur;
+		var ip = r.best_ip ? String(r.best_ip) : null;
+		return el('div', { class: 'dcrow data' + (on ? ' cur' : ''), role: 'row' }, [
+			el('div', { class: 'dc l', role: 'cell' }, [
+				el('span', { class: 'dc-code n', text: code }),
+				/* 「当前」用实心小块，和榜首那颗 1 同一种记号：不动列宽、一眼能认 */
+				on ? el('span', { class: 'dc-tag', text: T('当前') }) : null
+			]),
+			el('div', { class: 'dc r', role: 'cell' }, el('span', { class: 'n', text: num(r.count) })),
+			el('div', { class: 'dc r', role: 'cell' }, el('span', { class: 'n', text: ms(r.ttfb_med) })),
+			el('div', { class: 'dc l', role: 'cell' },
+				el('span', { class: 'n dc-ip', text: ip || DASH, title: ip }))
+		]);
+	}
+
+	/* 重画这一块只换 body：展开/收起不碰 store，也不会连带重建别的东西 */
+	function paint() {
+		clear(body);
+		var rows = dcOpen ? list : list.slice(0, DC_SHOW);
+		for (var k = 0; k < rows.length; k++)
+			body.appendChild(dcRow(rows[k]));
+		var rest = list.length - DC_SHOW;
+		if (rest > 0) {
+			/* 用真的 <button>：回车/空格天生可点，不用自己接 keydown */
+			body.appendChild(el('div', { class: 'dc-more' },
+				el('button', {
+					class: 'lnk',
+					type: 'button',
+					aria: { expanded: dcOpen ? 'true' : 'false' },
+					on: {
+						click: function (ev) {
+							if (ev && ev.preventDefault)
+								ev.preventDefault();
+							dcOpen = !dcOpen;
+							paint();
+						}
+					}
+				}, el('span', {
+					text: dcOpen
+						? T('只看前 %s 个').format(DC_SHOW)
+						: T('其余 %s 个数据中心（共 %s 个）').format(rest, list.length)
+				})))
+			);
+		}
+	}
+	paint();
+
+	return el('div', {}, [
+		Section(T('数据中心汇总'),
+			st.dc_pick === 'auto' ? el('span', { class: 'dc-note', text: T('自动选了中位最快的一个') }) : null),
+		el('div', { class: 'board dcsum', role: 'table' }, [ head, body ])
 	]);
 }
 
@@ -1355,6 +1519,32 @@ function RunProgress(st) {
  * （本插件实测过 556 处 title 在手机上读不到），而这些是每轮都要看的列头，结论写成明文。
  * r70 起拆两层：一句结论常驻页面，六列的完整定义（TCP/TLS/TTFB/总计/机房/MB/s）
  * 挂 ⓘ —— 那是 HelpMark，触屏/键盘点一下就地展开，不是只能悬浮的 <abbr>。 */
+
+/* 读一项配置现在填的是什么（只读，不写）。为什么不能只看结果里的值：
+ * 「这一轮是用什么口径测的」和「你现在设置的是哪个口径」是两个问题，只有把两边
+ * 摆在一起，才看得出「改了设置但还没重跑」。配置值不在我们的 store 里，只有
+ * form.js 渲染出来的那一行知道 —— 认法和 regroupForm 一样：label[for] 末段是选项名。
+ * 找不到（表单还没渲染、或这一项不在这张 Map 上）就返回空串，调用方当作「不知道」。 */
+function cfgOption(name) {
+	var root = P.mapnode;
+	if (!root || !root.querySelectorAll)
+		return '';
+	try {
+		var rows = root.querySelectorAll('.cbi-value');
+		for (var i = 0; i < rows.length; i++) {
+			var lab = rows[i].querySelector ? rows[i].querySelector('label[for]') : null;
+			if (!lab)
+				continue;
+			if (String(lab.htmlFor || '').split('.').pop() !== name)
+				continue;
+			var ctl = rows[i].querySelector('select') || rows[i].querySelector('input');
+			if (ctl && typeof ctl.value === 'string' && ctl.value)
+				return ctl.value;
+		}
+	} catch (e) {}
+	return '';
+}
+
 function BoardTable(st, kids) {
 	/* r88：两条只读提示，跟着本轮状态出现、状态一变就消失（指纹里已带上这两个键，
 	 * 不用刷新页面）。放在读数带之前，先给结论再给数字。 */
@@ -1371,11 +1561,27 @@ function BoardTable(st, kids) {
 			tone: 'warn'
 		}));
 	}
+	/* r90：结果的口径与当前设置不一致时给一条轻提示 —— 只解释，不改任何数字。
+	 * 结果里的 probe_metric 是「这一轮是怎么测的」，cfgOption 是「你现在选的是哪个」；
+	 * 两边都拿得到且不同才说。拿不到就不猜：宁可少一句，也不喊错。 */
+	var cfgMetric = cfgOption('probe_metric');
+	if (cfgMetric && st.probe_metric && cfgMetric !== st.probe_metric) {
+		kids.push(Flash({
+			title: T('当前结果是用 %s 口径测的，与你现在的设置不同').format(metricWord(st.probe_metric)),
+			text: T('按现在的设置跑完下一轮，数字才会和设置对上；在那之前，榜上这些时间仍按旧口径读，不能和新口径混着比。')
+		}));
+	}
 	kids.push(SummaryStrip(st));
+	/* r90：数据中心汇总摆在读数带下方、榜单上方 —— 先给「这批 IP 落在哪几个机房」的
+	 * 全景，再给「具体用哪一颗」。没有 dc_summary 时这块整个不出现（DcSummary 返回 null，
+	 * append 会跳过），不留空壳。 */
+	kids.push(DcSummary(st));
 	kids.push(Section(T('榜单')));
-	kids.push(Leaderboard(st.items));
+	/* 口径与单位都跟着「这一轮结果」走，不跟着配置走：配置改了还没重跑时，
+	 * 表格要照旧解释手里这份数字，而不是给旧数字贴新标签。 */
+	kids.push(Leaderboard(st.items, { metric: st.probe_metric, unit: st.speed_unit }));
 	kids.push(el('p', { class: 'note' }, [
-		T('按 TTFB 升序排列，同值再看总耗时；四个时间列都是毫秒。TTFB（首字节耗时）是主排序依据；机房列是 Cloudflare 节点城市三字码；MB/s 为十进制、只作参考不参与排序，未测或失败显示 %s。').format(DASH),
+		T('按 TTFB 升序排列，同值再看总耗时；四个时间列都是毫秒。TTFB（首字节耗时）是主排序依据；机房列是 Cloudflare 节点城市三字码；吞吐列只作参考不参与排序（默认 MB/s 为十进制），未测或失败显示 %s。').format(DASH),
 		HelpMark(T('四个时间列从浅到深：TCP=能否连上这个 IP；TLS=在它上面能否完成加密握手；TTFB（首字节耗时）=握手加上传请求到收到第一个字节；总计=整段响应收完，含下载内容，会随文件大小变化。排序看的是 TTFB，因为它与内容大小无关。机房=这个 IP 实际把你带到的 Cloudflare 节点城市三字码（如 SIN 新加坡、NRT 东京）。MB/s 为十进制（1 MB = 1000 KB），只对前若干个 IP 实测、仅作参考不参与排序，未测或失败显示 %s。').format(DASH))
 	]));
 	return kids;
@@ -2005,12 +2211,12 @@ var GROUPS = [
 var GROUP_OPTIONS = {
 	basic: [ 'enabled', 'interval_hours', 'probe_domains', 'probe_port', 'log_max_kb' ],
 	pool:  [ 'use_official_ranges', 'reuse_last', 'neighbor_expand' ],
-	probe: [ 'candidate_budget', 'concurrency', 'probe_timeout', 'ttfb_limit', 'total_limit',
-	         'keep_count', 'verify_top', 'speed_probe', 'speed_count',
+	probe: [ 'candidate_budget', 'concurrency', 'probe_timeout', 'probe_metric', 'ttfb_limit', 'total_limit',
+	         'keep_count', 'verify_top', 'dc_pick', 'speed_probe', 'speed_count',
 	         'speed_gate', 'speed_abs_min', 'speed_rel_min', 'speed_screen_count',
 	         'speed_screen_bytes', 'speed_screen_timeout', 'speed_confirm_top',
 	         'speed_confirm_bytes', 'speed_confirm_timeout', 'speed_weight',
-	         'speed_bytes', 'speed_timeout',
+	         'speed_unit', 'speed_bytes', 'speed_timeout',
 	         'speed_domain', 'speed_path', 'colo_probe', 'colo_domain', 'canary_check', 'probe_user', 'annotate' ],
 	gist:  [ 'upload_gist', 'gist_id', 'gist_file', 'gist_token', 'token_file' ]
 };
@@ -2875,6 +3081,9 @@ function boardKeyOf(st) {
 		st.interval, st.started, st.pool, st.qualified, st.usable, st.domains,
 		/* r88：两条状态提示的开关也必须进指纹，否则状态翻回来时横幅会赖着不走。 */
 		st.speed_mode, st.bypass,
+		/* r90：汇总表、口径提示、两张表的列头都读这几项 —— 不进指纹的话，
+		 * 换一个机房或换一次单位，画面上不会有任何反应（要按 F5 才变）。 */
+		JSON.stringify(st.dc_summary), st.dc_pick, st.probe_metric, st.speed_unit,
 		/* 滞留秒数按 10 秒一档进指纹：横幅能更新，又不会每拍都重建面板；
 		 * 认输之后 staleFor 是 null，指纹彻底稳定，「刷新」按钮不会被反复换掉。 */
 		Math.floor((st.staleFor || 0) / 10), st.gaveUp ? 1 : 0 ].join('|');
@@ -3228,6 +3437,18 @@ return view.extend({
 			_('连接与整请求共用。'),
 			_('同时作为 TCP 连接超时与整个请求的超时。设得太短会把网络抖动误判成不达标；设得太长则一轮里只要有几个坏 IP，整体耗时就明显拉长。'));
 
+		/* r90：判定口径。两种算法的量纲不同，所以它不是"精度开关"，而是"换了一套尺子"——
+		 * 长说明必须把「不能互相比较」写在最前面，否则改完之后新旧两轮的数字会被当成
+		 * 变化趋势看。 */
+		o = thr.option(form.ListValue, 'probe_metric', _('按哪个时间判定'),
+			_('默认按 HTTP 首字节时间。'));
+		o.default = 'http';
+		o.value('http', _('按 HTTP 首字节时间'));
+		o.value('tcp', _('按 TCP 建连时间'));
+		o.description = help('probe_metric',
+			_('默认按 HTTP 首字节时间。'),
+			_('两种方式量的不是同一件事，结果不能互相比较 —— 换过之后，整张榜会重排一次，别拿新旧两轮的数字比快慢。按 HTTP 首字节（默认）：量到服务器把第一个字节送回来，含着建连、加密握手和服务器反应，最接近打开网页的感受。按 TCP 建连：只量到连接建立成功，数值会比前者低 30%~50%，看着好看但说明不了服务器有多快，适合只想把连不上的 IP 筛掉的时候用。选 TCP 时，榜单和机房汇总里那一列会改标成 TCP，免得新旧口径的数字混在一起。'));
+
 		o = thr.option(form.Value, 'ttfb_limit', _('TTFB 上限（毫秒）'), _('首字节超了就淘汰。'));
 		o.datatype = 'and(uinteger,min(100),max(600000))';
 		o.default = '3000';
@@ -3255,6 +3476,15 @@ return view.extend({
 		o.description = help('verify_top',
 			_('初榜前 N 个各测 3 次取中位数。'),
 			_('对初榜前 N 个 IP 各再串行探测 2 次（连同首次共 3 个样本），用中位数参与最终排名，顺带得到丢包率与抖动。家宽上单次采样的抖动有 ±50~100 毫秒，比榜单相邻名次的差距还大 —— 不验证的话"谁排第一"基本是运气，每次轮次的第一名都可能换人。填 0 关闭（回到单次采样）。'));
+
+		/* r90：按机房收窄榜单。填 all / auto 或三位机房码 —— 用文本框而不是下拉，
+		 * 是因为机房码有几百个、而且会新增，写死一张表就成了"每加一个机房改一次页面"。 */
+		o = thr.option(form.Value, 'dc_pick', _('只留某个机房'), _('默认 all：全部机房都留在榜上。'));
+		o.default = 'all';
+		o.placeholder = 'all';
+		o.description = help('dc_pick',
+			_('默认 all：全部机房都留在榜上。'),
+			_('all（默认）：不按机房过滤，各机房的 IP 一起排，机房汇总照常列出每一个。auto：自动只留中位最快的那一个机房 —— 看中位而不是最快的单颗，是因为一颗 IP 快可能只是碰巧，一个机房的整体水平更稳。也可以直接填三位机房码（如 NRT 东京、SIN 新加坡、LAX 洛杉矶），只留这个机房的 IP。为什么有人这么做：跨机房差距大时（去东京 40 毫秒、去新加坡 120 毫秒），两个机房的 IP 混在一张榜里，客户端切到慢的那个就会明显卡一下；只用同一个机房的十几颗，切换时才不会有落差。填了机房码但这轮没有该机房的 IP，榜单会是空的 —— 先看榜单上方的汇总表里有哪些机房，再改。'));
 
 		o = thr.option(form.Flag, 'speed_probe', _('进榜后再测下载速度'), _('串行拉大文件测 MB/s。'));
 		o.rmempty = false;
@@ -3350,6 +3580,17 @@ return view.extend({
 		o.description = help('speed_weight',
 			_('0 只看延迟，100 只看速度，默认 40。'),
 			_('0 表示完全按延迟排，100 表示完全按下载速度排，40 是默认的折中。举例：延迟差不多时，10 MB/s 的 IP 会排在 0.2 MB/s 的前面。'));
+
+		/* r90：导出单位。页面与日志固定 MB/s，这一项只改 CSV 的列头与数值 ——
+		 * 少写清这一句，用户会以为改了它页面上的数字也会跟着变。 */
+		o = thr.option(form.ListValue, 'speed_unit', _('导出时的速度单位'),
+			_('页面与日志永远是 MB/s，这一项只影响 CSV。'));
+		o.default = 'mb';
+		o.value('mb', _('MB/s（1 MB = 1000000 字节）'));
+		o.value('mib', _('MiB/s（1 MiB = 1048576 字节）'));
+		o.description = help('speed_unit',
+			_('页面与日志永远是 MB/s，这一项只影响 CSV。'),
+			_('页面和日志里一律写 MB/s（十进制，1 MB = 1000000 字节），不跟着这一项变；这一项只决定导出的 CSV 里那一列的表头和数值口径。MB/s 是十进制（1 MB = 1000000 字节），MiB/s 是二进制（1 MiB = 1048576 字节），同一个速度按 MiB/s 写出来会小约 4.9%。默认 MB/s；下游工具如果按 CFST 那套口径读，选 MiB/s 就不用它自己再换算。'));
 
 		o = thr.option(form.Value, 'speed_bytes', _('单次下载字节数'), _('默认 10485760 字节（10.49MB）。'));
 		o.datatype = 'and(uinteger,min(131072),max(104857600))';
