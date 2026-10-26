@@ -643,3 +643,21 @@
   .cfp .dcitem{grid-template-columns:minmax(0,1fr) 4.6em 5.2em;padding-left:1.8em}
   .cfp .dcitems .dc-more{padding-left:1.8em}
 }
+
+/* 保存条上的「会打断当前这一轮」提示（r98 P0）。
+ *
+ * 这段 DOM 落在 .cbi-page-actions 里 —— 那是 LuCI 框架渲染的页脚，不在 .cfp 容器内，
+ * 所以拿不到 .cfp.is-light 那套明暗令牌覆盖。颜色一律走 currentColor 继承，
+ * 明暗主题都成立，也不用在这里再判断一次主题。
+ *
+ * 左边那条竖线是唯一的强调：它让这句话在一排按钮里被读成「注记」而不是「又一个按钮」。 */
+.cfp-save-hint{
+  display:inline-block;
+  align-self:center;
+  margin-right:var(--s3);
+  padding-left:var(--s2);
+  border-left:2px solid currentColor;
+  font-size:var(--t-xs);
+  line-height:1.5;
+  opacity:.9;
+}

@@ -773,6 +773,9 @@ pane = t.BoardPane(t.parseStatus('{"state":"error","reason":"interrupted","items
 has('error 态说明本轮中止', pane, '本轮没有跑完');
 has('error 态解释原因', pane, '运行锁已被回收');
 has('error 态仍给重跑按钮', pane, '立即测速');
+/* r98 P0：空态那颗降为 ghost —— 一屏只留读数带那一颗 primary（UX-028）。
+ * 断言用 primary 计数而不是按钮文字：文字还在，只是不该再抢主位。 */
+eq('error 空态不再有 primary 按钮', byClass(pane, 'primary').length, 0);
 
 /* 本轮失败但上一轮榜单还在 → 照样展示 */
 const errWithItems = t.parseStatus(JSON.stringify({ state: 'error', reason: 'net', items: done.items }));
@@ -790,6 +793,10 @@ hasNot('空榜单不画列头说明', t.BoardPane(t.parseStatus('{"state":"done"
 
 pane = t.BoardPane(t.parseStatus('{"state":"never_run","items":[]}'), noActions);
 has('从未跑过给首轮引导', pane, '还没有测过');
+eq('从未跑过的空态也没有 primary 按钮', byClass(pane, 'primary').length, 0);
+/* r98 P0-5：默认 enabled=0，手动跑完这一轮之后它不会再自己跑 —— 这句话必须写在
+ * 首轮引导里，否则用户会以为"点一次就一直在跑"。 */
+has('首轮引导说清"只在手动点时跑"', pane, '只在手动点的时候跑');
 pane = t.BoardPane(t.parseStatus('{"state":"done","items":[]}'), noActions);
 has('跑完但空榜单时指向配置页', pane, '测速与判定');
 
@@ -1108,6 +1115,10 @@ has('拉不到的源标「拉不到」', sm, '拉不到');
 let sp = t.SourcesPane(null, { check: noop });
 has('未检测时说明这一页干嘛', sp, '还没有检测过');
 has('按钮叫「检测源可用性」（与面板上那颗同名；不许叫保存并检测 —— 检测不写配置）', sp, '检测源可用性');
+/* r98 P0：空态原来还有一颗 primary，与同一屏上方「逐源检测」标题右侧那颗同名重复。
+ * 现在只留标题那颗，空态改成指路（点名按钮在哪），两头都钉住。 */
+eq('未检测的空态不再有 primary 按钮', byClass(sp, 'primary').length, 0);
+has('空态把"按钮在哪"说清楚', sp, '点上面「逐源检测」右边的按钮就开始');
 ok('这一页不再出现"保存并检测"这种做不到的承诺', !textOf(sp).includes('保存并检测'));
 has('文案把提交路径说清（保存并应用才生效）', sp, '保存并应用');
 sp = t.SourcesPane({ state: 'checking' }, { check: noop });

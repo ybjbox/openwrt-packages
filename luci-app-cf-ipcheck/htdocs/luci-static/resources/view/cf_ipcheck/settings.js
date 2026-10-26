@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r97';
+var VIEW_BUILD = 'r98';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -1860,8 +1860,11 @@ function BoardPane(st, actions) {
 			title: T('本轮没有跑完'),
 			detail: why(st.reason),
 			more: whyMore(st.reason),
+			/* r98 P0：空态这颗降为 ghost。读数带顶部那颗「立即测速」才是主操作，
+			 * 同一屏两颗 primary 会让人不知道该点哪个（UX-028）。这里保留按钮
+			 * 而不是删掉，是因为用户读完这段原因后视线就在这儿，不该逼他回顶部。 */
 			action: Button({
-				kind: 'primary', label: T('立即测速'), icon: 'play',
+				kind: 'ghost', label: T('立即测速'), icon: 'play',
 				onClick: actions.run
 			})
 		}));
@@ -1876,10 +1879,10 @@ function BoardPane(st, actions) {
 		kids.push(EmptyBox({
 			title: st.state === 'never_run' ? T('还没有测过') : T('这一轮没有产生榜单'),
 			detail: st.state === 'never_run'
-				? T('点「立即测速」跑第一轮。引擎会先拉社区源、把上一轮进榜的那几条 IP 并回候选池，再用带真实 SNI 的 HTTPS 逐个实测。')
+				? T('点「立即测速」跑第一轮。引擎会先拉社区源、把上一轮进榜的那几条 IP 并回候选池，再用带真实 SNI 的 HTTPS 逐个实测。它只在手动点的时候跑 —— 想让它自己定期跑，到「配置」页打开「启用定时实测」。')
 				: T('候选池里的 IP 都没有同时过 TTFB 与总耗时两道门槛。放宽阈值（配置 → 测速与判定），或先到「源与检测」看看候选池为什么这么小。'),
 			action: Button({
-				kind: 'primary', label: T('立即测速'), icon: 'play',
+				kind: 'ghost', label: T('立即测速'), icon: 'play',
 				onClick: actions.run
 			})
 		}));
@@ -1997,14 +2000,13 @@ function SourcesPane(src, actions) {
 				.format(pend.length, pend.slice(0, 3).join('、') + (pend.length > 3 ? ' …' : ''))));
 
 	if (!src) {
-		/* 还没点过检测：说清这一页是干嘛的，并给按钮 */
+		/* 还没点过检测：说清这一页是干嘛的。
+		 * r98 P0：这里原来还有一颗 primary「检测源可用性」，而同一屏上方的
+		 * 「逐源检测」标题右侧本来就挂着一颗同名按钮 —— 两颗并排只会让人
+		 * 犹豫点哪个。标题那颗在这一屏始终可见，所以这里只留说明、不再放按钮。 */
 		kids.push(EmptyBox({
 			title: T('还没有检测过'),
-			detail: T('「检测源可用性」逐条实拉配置里那份社区源清单，列出 HTTP 状态、提取到的 IPv4 数量，以及其中落在 Cloudflare 官方网段内的比例。段内占比掉到 90% 以下，通常说明这个源换了内容。'),
-			action: Button({
-				kind: 'primary', label: T('检测源可用性'), icon: 'probe',
-				onClick: actions.check
-			})
+			detail: T('「检测源可用性」逐条实拉配置里那份社区源清单，列出 HTTP 状态、提取到的 IPv4 数量，以及其中落在 Cloudflare 官方网段内的比例。段内占比掉到 90% 以下，通常说明这个源换了内容。点上面「逐源检测」右边的按钮就开始。')
 		}));
 		return el('div', {}, kids);
 	}
@@ -2019,11 +2021,12 @@ function SourcesPane(src, actions) {
 	}
 
 	if (src.state !== 'ok') {
+		/* r98 P0：这里原来还有一颗同名按钮，与上面「逐源检测」标题右侧那颗重复。
+		 * 去掉按钮不移除可达性 —— 标题那颗就在同一屏，文案里的「再点一次」指的正是它。 */
 		kids.push(EmptyBox({
 			title: T('检测没有结果'),
 			detail: srcMessage(src),
-			more: srcMore(src),
-			action: Button({ label: T('检测源可用性'), icon: 'probe', onClick: actions.check })
+			more: srcMore(src)
 		}));
 		return el('div', {}, kids);
 	}
@@ -3261,6 +3264,37 @@ function toggleSaveFooter(on) {
 	} catch (e) {}
 }
 
+/* 保存条上的一句实话（r98 P0）。
+ *
+ * 为什么需要：init.d 的 reload_service 是 stop+start，「保存并应用」会重载服务 ——
+ * 正在跑的那一轮当场被打断，榜单停在半截。而页面上原来那句话只说「应用不会顺手
+ * 起一轮」，只说了一半。结果是：用户改一个数字，丢了一整轮流量（真机约 105MB），
+ * 却不知道为什么。这一句就是把那半个事实补上。
+ *
+ * 只在「表单页（配置/源）+ 确实在跑」时出现，切走或跑完立刻撤掉。
+ * 这段 DOM 落在 .cbi-page-actions 里 —— 那是 LuCI 框架渲染的页脚，不归本视图所有，
+ * 所以只在没有时插一次、有就复用，绝不整体重写那个容器。 */
+function syncSaveHint(state) {
+	try {
+		var acts = document.querySelector ? document.querySelector('.cbi-page-actions') : null;
+		if (!acts)
+			return;
+		var running = !!(state && state.status && state.status.state === 'running');
+		var onForm = !!(state && (state.tab === 'config' || state.tab === 'sources'));
+		var hint = acts.querySelector ? acts.querySelector('.cfp-save-hint') : null;
+		if (!running || !onForm) {
+			if (hint && hint.parentNode)
+				hint.parentNode.removeChild(hint);
+			return;
+		}
+		if (!hint && acts.insertBefore) {
+			hint = el('span', { class: 'cfp-save-hint',
+				text: T('正在跑一轮：保存并应用会重载服务，这一轮会被打断') });
+			acts.insertBefore(hint, acts.firstChild);
+		}
+	} catch (e) {}
+}
+
 function goto(id, persist) {
 	/* 目标面板必须存在，否则保持当前不动（防止拼装时序里点到还没建好的面板） */
 	var valid = false;
@@ -3574,6 +3608,9 @@ function buildPage(mapnode) {
 		drawBoard(state);
 		drawSources(state);
 		drawLogs(state);
+		/* 页脚那句「保存会打断这一轮」跟着状态走（只在表单页 + 在跑时出现）。
+		 * 放最后：它改的是框架的页脚，与上面几块无关，出错也不该影响重画。 */
+		syncSaveHint(state);
 	});
 
 	P.built = true;
@@ -3953,7 +3990,7 @@ return view.extend({
 		o.rmempty = false;
 		o.description = help('dns_sync',
 			_('每轮跑完把优选 IP 写进这些 A 记录。'),
-			_('打开后，每轮正常跑完（出口没被代理接管、也没被你叫停）就把榜单前几名写进下面清单里的每个记录名。只发真正有差异的写请求 —— 记录内容已经一致就直接跳过，免得每 6 小时白刷一次记录 TTL。这条路径不修改路由器上任何配置文件。要立刻同步一次，用「生成榜单」页的「立即写一次 DNS」按钮（不管这个开关开没开都会执行）。'));
+			_('打开后，每轮正常跑完（出口没被代理接管、也没被你叫停）就把榜单前几名写进下面清单里的每个记录名。只发真正有差异的写请求 —— 记录内容已经一致就直接跳过，免得每 6 小时白刷一次记录 TTL。这条路径不修改路由器上任何配置文件。想立刻同步一次：先点页面底部的「保存并应用」（没保存时引擎读不到这些配置），再切到「榜单」页点「立即写一次 DNS」—— 那颗按钮不管这个开关开没开都会执行。'));
 
 		o = dns.option(form.Value, 'dns_zone', _('Zone（域名或 ID）'), _('例如 example.com。'));
 		o.description = help('dns_zone',
