@@ -32,7 +32,7 @@ const hook = "\nglobalThis.__cf_t = {\n" +
 	"\tstale: stale, scheduleLine: scheduleLine, DASH: DASH,\n" +
 	"\tLeaderboard: Leaderboard, DcSummary: DcSummary, COLS: COLS, domainKinds: domainKinds,\n" +
 	"\tRunProgress: RunProgress, STAGES: STAGES, SRC_COLS: SRC_COLS,\n" +
-	"\tSummaryStrip: SummaryStrip, BoardPane: BoardPane,\n" +
+	"\tSummaryStrip: SummaryStrip, BoardPane: BoardPane, AutoOffHint: AutoOffHint,\n" +
 	"\tSourceMatrix: SourceMatrix, SourcesPane: SourcesPane, srcMessage: srcMessage, srcMore: srcMore,\n" +
 	"\tparseLog: parseLog, LogsPane: LogsPane, LogBlock: LogBlock, logTone: logTone,\n" +
 	"\tlogStamp: logStamp, logAnchor: logAnchor, logAnchorTop: logAnchorTop,\n" +
@@ -800,6 +800,22 @@ has('首轮引导说清"只在手动点时跑"', pane, '只在手动点的时候
 pane = t.BoardPane(t.parseStatus('{"state":"done","items":[]}'), noActions);
 has('跑完但空榜单时指向配置页', pane, '测速与判定');
 
+/* r98 P1-5：跑过一轮但没开「定时实测」—— 全插件最容易被误解的状态。
+ * 用户手动跑一次看到十行结果，很自然会以为它此后一直在跑；而 enabled 默认 0。
+ * 四条边界都要钉住：关着要提示、开着不提示、没结果不提示、跑着不提示。 */
+const doneManual = t.parseStatus(JSON.stringify({ state: 'done', enabled: 0, interval: 6, items: done.items }));
+const offHint = t.AutoOffHint(doneManual, { goto: noop });
+ok('有结果但没开定时实测时给提示', !!offHint);
+has('提示说清"不会再自己跑"', offHint, '不会再自己跑');
+has('提示带上周期数字', offHint, '6 小时');
+has('提示给一个去配置页的入口', offHint, '去配置');
+eq('开了定时实测就不再提示',
+	t.AutoOffHint(t.parseStatus(JSON.stringify({ state: 'done', enabled: 1, items: done.items })), { goto: noop }), null);
+eq('没有结果时不提示（那一半交给空态文案）',
+	t.AutoOffHint(t.parseStatus(JSON.stringify({ state: 'never_run', enabled: 0, items: [] })), { goto: noop }), null);
+eq('正在跑的时候不提示',
+	t.AutoOffHint(t.parseStatus(JSON.stringify({ state: 'running', enabled: 0, items: done.items })), { goto: noop }), null);
+
 /* ================================================================== *
  * 6b. r90：数据中心汇总 / 判定口径 / 速度单位
  * ------------------------------------------------------------------
@@ -1191,8 +1207,9 @@ const R88_FIELDS = ['speed_gate', 'speed_abs_min', 'speed_rel_min',
 {
 	const missing = R88_FIELDS.filter(n => src.indexOf("'" + n + "'") < 0);
 	ok('r88 吞吐判定十个字段都在视图里', missing.length === 0, missing.join(','));
-	ok('r88 新字段全部进了「测速与判定」分组',
-		R88_FIELDS.every(n => (t.GROUP_OPTIONS.probe || []).indexOf(n) >= 0));
+	ok('r88 新字段全部进了「测速与判定」或「测速高级项」分组',
+		R88_FIELDS.every(n => (t.GROUP_OPTIONS.probe || []).indexOf(n) >= 0 ||
+		                      (t.GROUP_OPTIONS.probeAdv || []).indexOf(n) >= 0));
 	/* 每条 help 的完整解释只在本条字段附近，切到 1400 字符足够覆盖「开关 + 长说明」。 */
 	const blockOf = name => {
 		const i = src.indexOf("help('" + name + "'");
@@ -1346,10 +1363,14 @@ mapNode.querySelectorAll('.cbi-section-node')[1].appendChild(stray);
 const grps = t.regroupForm(mapNode);
 ok('重组返回容器', !!grps);
 const boxes = byData(grps, 'group');
-/* r96：新增「DNS 解析」组，分组数 4 → 5。
+/* r96：新增「DNS 解析」组，4 → 5；r98 P1-1：拆出「测速高级项」，5 → 6。
  * 这条是刻意收紧的：加组必须同时更新这里，否则「字段被搬到别的组 / 新组没渲染」
  * 这类问题会静默通过。 */
-eq('分组数 = 5', boxes.length, 5);
+eq('分组数 = 6', boxes.length, 6);
+/* 拆分不能丢字段 —— 常驻与高级加起来必须还是原来那 31 个。
+ * 只断言"总数"是不够的：还要钉住常驻确实收敛了，否则等于没拆。 */
+eq('「测速与判定」常驻字段收敛到 10', t.GROUP_OPTIONS.probe.length, 10);
+eq('拆分不丢字段：常驻 + 高级 = 31', t.GROUP_OPTIONS.probe.length + t.GROUP_OPTIONS.probeAdv.length, 31);
 let moved = 0;
 boxes.forEach(b => { moved += byClass(b, 'brow').length + b.querySelectorAll('.cbi-value').length; });
 eq('所有字段都被搬进分组', moved, allOptions.length);
@@ -1357,9 +1378,12 @@ has('未归类字段进兜底组', grps, '未归类字段');
 eq('分组头可聚焦', byClass(boxes[0], 'grp-h')[0].attrs.tabindex, '0');
 eq('分组头 role=button', byClass(boxes[0], 'grp-h')[0].attrs.role, 'button');
 eq('展开状态进 aria-expanded', byClass(boxes[0], 'grp-h')[0].attrs['aria-expanded'], 'true');
-/* 「测速与判定」字段最多，默认收起 */
-const probe = boxes.find(b => b.attrs['data-group'] === 'probe');
-ok('「测速与判定」默认收起', !/\bopen\b/.test(probe.attrs['class']));
+/* r98 P1-1：默认收起的那组现在叫「测速高级项」（21 项机制细节）；
+ * 「测速与判定」拆完只剩 10 项，默认展开 —— 拆组的全部意义就在这一条。 */
+const probeAdv = boxes.find(b => b.attrs['data-group'] === 'probeAdv');
+ok('「测速高级项」默认收起', !/\bopen\b/.test(probeAdv.attrs['class']));
+ok('「测速与判定」默认展开（拆完只剩 10 项，收起就没意义了）',
+	/\bopen\b/.test(boxes.find(b => b.attrs['data-group'] === 'probe').attrs['class']));
 ok('「基本设置」默认展开', /\bopen\b/.test(boxes[0].attrs['class']));
 
 /* 折叠：点一下翻 class + aria（并写 localStorage，无 storage 时静默） */

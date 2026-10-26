@@ -1799,6 +1799,37 @@ function BoardTable(st, kids, actions) {
 	return kids;
 }
 
+/* r98 P1-5：跑过一轮、但没开「定时实测」—— 这是本插件最容易被误解的状态。
+ *
+ * 为什么值得一条常驻提示：用户手动点一次「立即测速」，看到十行结果，很自然会
+ * 以为它此后一直在跑；而 enabled 默认是 0，下一轮什么都不会发生，直到他自己
+ * 再点一次。这件事在页面上没有任何地方说（空态那句只管"还没有结果"的人）。
+ *
+ * 为什么只用一条、而不是三步清单卡：首轮跑之前 status 里 pool 恒为 0，
+ * 那时候判断"候选源够不够"是错的（源可能配好了，只是没跑过）。所以这里只判
+ * 一件确定的事：有结果 + enabled 不是 1。没有结果的那一半交给空态文案，
+ * 两个提示不重复说同一句话。
+ *
+ * 判据全部来自现有 status（items / enabled / interval），不新增任何契约。 */
+function AutoOffHint(st, actions) {
+	if (!st || st.state === 'running')
+		return null;
+	if (!(st.items && st.items.length))
+		return null;
+	if (String(st.enabled) === '1')
+		return null;
+	var hours = st.interval || 6;
+	return el('p', { class: 'note' }, [
+		T('这一轮是你手动跑的。要让它以后自己在后台每 %s 小时跑一轮，到「配置」页打开「启用定时实测」；不打开的话，它不会再自己跑。').format(hours),
+		(actions && actions.goto)
+			? el('button', {
+				class: 'lnk', type: 'button',
+				on: { click: function (ev) { ev.preventDefault(); actions.goto('config'); } }
+			}, [ el('span', { text: T('去配置') }) ])
+			: null
+	]);
+}
+
 function BoardPane(st, actions) {
 	var kids = [];
 
@@ -2419,7 +2450,11 @@ function watchHash() {
 var GROUPS = [
 	{ id: 'basic',  title: '基本设置',   hint: '开关、周期与日志' },
 	{ id: 'pool',   title: '候选池来源', hint: '候选从哪来；源清单在「源与检测」页编辑' },
-	{ id: 'probe',  title: '测速与判定', hint: '阈值与吞吐' },
+	/* r98 P1-1：原来「测速与判定」一个组装了 31 个字段（占全部配置的 62%）。
+	 * 一屏 31 个数字的结果是所有人都不改、全用默认 —— 等于这些旋钮白给。
+	 * 现在按「你会不会改」重新切：门槛与口径留在这一组，机制细节挪到下一组并默认收起。 */
+	{ id: 'probe',  title: '测速与判定', hint: '什么算达标、留几条、按哪个时间看' },
+	{ id: 'probeAdv', title: '测速高级项', hint: '一般不用改；默认值适配绝大多数线路' },
 	{ id: 'dns',    title: 'DNS 解析',   hint: '把优选 IP 写进 Cloudflare 的 A 记录' },
 	{ id: 'gist',   title: 'Gist 上传',  hint: '结果外发' }
 ];
@@ -2427,13 +2462,22 @@ var GROUPS = [
 var GROUP_OPTIONS = {
 	basic: [ 'enabled', 'interval_hours', 'probe_domains', 'probe_port', 'log_max_kb' ],
 	pool:  [ 'use_official_ranges', 'reuse_last', 'neighbor_expand' ],
-	probe: [ 'candidate_budget', 'concurrency', 'probe_timeout', 'probe_metric', 'ttfb_limit', 'total_limit',
-	         'keep_count', 'verify_top', 'dc_pick', 'speed_probe', 'speed_count',
-	         'speed_gate', 'speed_abs_min', 'speed_rel_min', 'speed_screen_count',
-	         'speed_screen_bytes', 'speed_screen_timeout', 'speed_confirm_top',
-	         'speed_confirm_bytes', 'speed_confirm_timeout', 'speed_weight',
-	         'speed_unit', 'speed_bytes', 'speed_timeout',
-	         'speed_domain', 'speed_path', 'colo_probe', 'colo_domain', 'canary_check', 'probe_user', 'annotate' ],
+	/* 常驻 10 项 = 门槛 3 + 读数口径 3 + 吞吐判定 4。
+	 * 挑的标准只有一条：这几项改了会立刻改变「你看到什么结果」；
+	 * 其余 21 项改的是「怎么测」，属于调线路的人才需要的，
+	 * 摆在一屏里只会淹没上面这 10 个。 */
+	probe: [ 'ttfb_limit', 'total_limit', 'keep_count',
+	         'probe_metric', 'dc_pick', 'speed_unit',
+	         'speed_gate', 'speed_abs_min', 'speed_rel_min', 'speed_weight' ],
+	/* 机制细节：候选预算、并发、各类超时与字节数、初筛/复测分档、机房探测、探测身份、注释模板。
+	 * 默认收起。改这些需要先知道引擎每轮怎么走，否则调了也看不出差别。 */
+	probeAdv: [ 'candidate_budget', 'concurrency', 'probe_timeout', 'verify_top',
+	            'speed_probe', 'speed_count',
+	            'speed_screen_count', 'speed_screen_bytes', 'speed_screen_timeout',
+	            'speed_confirm_top', 'speed_confirm_bytes', 'speed_confirm_timeout',
+	            'speed_bytes', 'speed_timeout',
+	            'speed_domain', 'speed_path',
+	            'colo_probe', 'colo_domain', 'canary_check', 'probe_user', 'annotate' ],
 	/* DNS 解析（r96 起）：6 个字段。dns_proxied 故意不在这里 —— 它固定按灰云写，
 	 * 摆到页面上只会让人以为自己能切橙云（切了功能就失效）。
 	 * r97 把 dns_record（单条）换成 dns_targets（多记录名 + 每个可挂多个 IP）；
@@ -2497,8 +2541,9 @@ function regroupForm(mapnode) {
 			if (saved != null)
 				open = saved === '1';
 		} catch (e) {}
-		/* 「测速与判定」字段最多，默认收起；其余默认展开 */
-		if (g.def.id === 'probe' && (function () {
+		/* r98 P1-1：「测速高级项」默认收起（21 项机制细节），其余默认展开。
+		 * 判据仍是「从没手动开合过」——用户自己点开过就尊重他的选择。 */
+		if (g.def.id === 'probeAdv' && (function () {
 			try { return window.localStorage.getItem(openKey) == null; } catch (e2) { return true; }
 		})())
 			open = false;
@@ -3470,6 +3515,11 @@ function buildPage(mapnode) {
 			return;
 		boardKey = key;
 		clear(boardPane);
+		/* 引导提示在榜单表之前：它不是结论的一部分，而是「你还差做什么」。
+		 * 传 goto 让它能一键跳到配置页（goto 是本函数外的闭包，见 buildPage）。 */
+		var autoOff = AutoOffHint(state.status, { goto: goto });
+		if (autoOff)
+			boardPane.appendChild(autoOff);
 		boardPane.appendChild(BoardPane(state.status, {
 			run: actRun, stop: actStop, refresh: actRefresh, copy: actCopy, check: actCheck, dns: actDns
 		}));
