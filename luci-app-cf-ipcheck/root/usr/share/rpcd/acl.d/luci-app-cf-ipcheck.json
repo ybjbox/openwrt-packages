@@ -6,7 +6,10 @@
                 "luci.cf-ipcheck": [
                     "status",
                     "logs",
-                    "check_sources"
+                    "check_sources",
+                    "csv",
+                    "diag",
+                    "pool"
                 ]
             },
             "uci": [

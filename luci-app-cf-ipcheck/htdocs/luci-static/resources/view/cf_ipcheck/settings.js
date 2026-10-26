@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r98';
+var VIEW_BUILD = 'r99';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -518,7 +518,13 @@ var RPC_METHODS = {
 	 * 键名用引擎的子命令名（dns-sync），因为 runCmd 是按 args[0] 查这张表的；
 	 * ubus 那一侧的方法名是 dns_sync（red-line-12 要求三方同名同义）。
 	 * 这一版只声明，页面上的入口在下一批一起接（先让契约四方对齐）。 */
-	'dns-sync': rpc.declare({ object: RPC_OBJECT, method: 'dns_sync' })
+	'dns-sync': rpc.declare({ object: RPC_OBJECT, method: 'dns_sync' }),
+	/* 三个只读出口（r98 P1-2/3/4）：引擎里本来就有这几个子命令，之前只能 ssh 用。
+	 * red-line-12 要求 ucode 的每个方法在视图里都要有对应声明，所以这三行
+	 * 不是「可选的功能」，而是契约的另一半。 */
+	csv:  rpc.declare({ object: RPC_OBJECT, method: 'csv' }),
+	diag: rpc.declare({ object: RPC_OBJECT, method: 'diag' }),
+	pool: rpc.declare({ object: RPC_OBJECT, method: 'pool' })
 };
 
 var HUNG = { hung: true };
@@ -549,6 +555,13 @@ var CMD_LIMIT = {
 	 * 之所以不给 45 秒（和 check-sources 一样）：那会让页面以为能等更久，
 	 * 实际却被 rpcd 先掐断，症状是「没有回应」而不是一条明确的失败原因。 */
 	'dns-sync': 30000,
+	/* csv / diag：都是纯读本地文件（cat 一份 CSV、读一遍配置快照），
+	 * 真机都在 0.5 秒以内，8 秒上限与 status 同档。 */
+	csv: 8000,
+	diag: 8000,
+	/* pool：联网把源拉一遍、不测速，耗时与逐源检测同量级，所以同给 45 秒。
+	 * 它比 status/diag 慢得多，所以不能给 8 秒 —— 否则每次点都像「没回应」。 */
+	pool: 45000,
 	/* 读日志只是 tail 一个本地文件（真机实测最慢 0.48 秒），6 秒已经很宽裕。
 	 * 这里必须**小于** status 的上限：LuCI 的 rpc 层会把同一拍发出的调用并进一个
 	 * POST（真机抓到过：一个请求体里同时带 logs 与 status），响应要等两条都跑完
@@ -742,6 +755,9 @@ var store = createStore({
 	status: { state: 'never_run', items: [] },
 	sources: null,
 	logs: null,
+	/* r98 P1-3/4：两个只读诊断结果。null = 还没取过。 */
+	pool: null,
+	diag: null,
 	tab: 'board',
 	busy: {},
 	flash: null,
@@ -1921,6 +1937,15 @@ function BoardPane(st, actions) {
 	}
 
 	BoardTable(st, kids, actions);
+	/* r98 P1-2：CSV 的本地出口。放在结果表下面而不是读数带里 ——
+	 * 读数带已经有四颗按钮，再加第五颗在手机上会很挤；而 CSV 是「拿数据走」，
+	 * 不是「操作这个页面」，放在结果下面更贴切。 */
+	kids.push(el('div', { class: 'note' }, [
+		el('span', { text: T('要把结果喂给别的工具？导出七列 CFST 口径的 CSV。') }),
+		actions.csv ? Button({ kind: 'lnk', label: T('下载 CSV'),
+			title: T('下载 cf-ip.csv —— 与 Gist 上传的那一份是同一个文件。'),
+			onClick: actions.csv }) : null
+	]));
 	return el('div', {}, kids);
 }
 /* ==========================================================================
@@ -2008,7 +2033,7 @@ function pendingSourceEdits(src) {
 	return edited.filter(function (u) { return !checked[u]; });
 }
 
-function SourcesPane(src, actions) {
+function SourcesPane(src, actions, pool) {
 	var kids = [];
 
 	kids.push(Section(T('逐源检测'), Button({
@@ -2068,6 +2093,29 @@ function SourcesPane(src, actions) {
 		T('「CF 段内」= 这个源提取出的 IPv4 里有多少落在 Cloudflare 官方网段内，是判定一个源还能不能用的关键：占比高说明它还在提供真正的 CF anycast，掉到 90% 以下通常意味着开始夹带别人自己的中转 / VPS 地址。'),
 		HelpMark(T('CF anycast 指同一个 IP 在全球多个节点同时广播，你连到的自然是最近的那个。HTTP 列写「拉不到」表示这条压根没取到（连不上、被拒、超时都算，引擎内部一律记 000，那不是源返回的状态码），这一条会被跳过并记进日志。'))
 	]));
+
+	/* r98 P1-4：候选池预览。榜单空着的时候，这里能分清两件完全不同的事 ——
+	 * 源没拉到东西，还是拉到了但全被门槛刷掉了。之前这个只能在 ssh 跑
+	 * cf-ipcheck pool 看，而那正是排障时最想先确认的事。 */
+	kids.push(Section(T('候选池'), Button({
+		label: T('预览候选池'), icon: 'probe',
+		title: T('联网把源重新拉一遍、不测速，看看这一轮到底有多少候选 IP 可用。'),
+		disabled: !!(store.get().busy && store.get().busy.pool),
+		busy: !!(store.get().busy && store.get().busy.pool),
+		onClick: actions.pool
+	})));
+	if (pool && pool.ips) {
+		if (!pool.ips.length) {
+			kids.push(el('p', { class: 'note warn' },
+				T('一个候选 IP 都没拉到 —— 源可能都拉不动了，或「Cloudflare 官方网段」那一半被关着。')));
+		} else {
+			kids.push(el('p', { class: 'note' }, [
+				T('这一轮共有 %s 个候选 IP。').format(String(pool.ips.length)),
+				el('span', { class: 'cfp-poolips', text: pool.ips.slice(0, 12).join('  ') }),
+				pool.ips.length > 12 ? el('span', { text: T(' ……（只列前 12 个）') }) : null
+			]));
+		}
+	}
 
 	return el('div', {}, kids);
 }
@@ -2236,7 +2284,7 @@ function logAnchorTop(box, anchor) {
 	return null;
 }
 
-function LogsPane(lg, actions, auto) {
+function LogsPane(lg, actions, auto, diag) {
 	var kids = [];
 	var busy = store.get().busy && store.get().busy.logs;
 	var autoOn = auto !== false;	/* 缺省按"开"处理，老调用（两参）照旧 */
@@ -2300,6 +2348,30 @@ function LogsPane(lg, actions, auto) {
 		/* r76：手动取一次的固定入口。自动刷新开着时点它只是"不等那 4 秒"。 */
 		Button({ kind: 'lnk', label: T('立即刷新'), title: T('马上取一次最新日志。'), onClick: actions.refresh })
 	]));
+
+	/* r98 P1-3：诊断摘要。之前这些只能 ssh 跑 cf-ipcheck diag 然后抄数字 ——
+	 * 而「配置到底生效没有」正是最常见的问题。只列真正能解释它的那几项，
+	 * 不把整份 diag 搬上来：diag 里还有几十个键（uci 原文、路径列表），
+	 * 那些是给 ssh 用的。 */
+	kids.push(Section(T('诊断摘要'), Button({
+		label: T('取诊断'), icon: 'probe',
+		title: T('让引擎把它实际读到的配置与找到的可执行文件路径报出来。'),
+		disabled: !!(store.get().busy && store.get().busy.diag),
+		busy: !!(store.get().busy && store.get().busy.diag),
+		onClick: actions.diag
+	})));
+	if (diag && diag.data) {
+		var d = diag.data;
+		var bits = [];
+		bits.push(T('uci：%s').format(d.has_uci ? T('可用') : T('不可用（配置读不到）')));
+		bits.push(T('读配置 rc=%s').format(String(d.uci_get_rc)));
+		bits.push(T('curl：%s').format(d.curl ? String(d.curl) : T('没找到')));
+		bits.push(T('jq：%s').format(d.jq ? String(d.jq) : T('没找到')));
+		bits.push(T('探测：%s:%s（预算 %s）').format(String(d.domains || '-'), String(d.port || '-'), String(d.budget || '-')));
+		bits.push(T('目录：%s · %s').format(String(d.run_dir || '-'), String(d.etc_dir || '-')));
+		bits.push(T('DNS 同步：%s，helper %s').format(d.dns_sync ? T('开') : T('关'), d.apply_dns_ok ? T('可执行') : T('不可执行')));
+		kids.push(el('p', { class: 'note' }, [ el('span', { text: bits.join(' · ') }) ]));
+	}
 	return el('div', {}, kids);
 }
 
@@ -3152,6 +3224,121 @@ function logsRefresh() {
 	});
 }
 
+/* ---- 三个只读出口的动作（r98 P1-2/3/4）----
+
+ * CSV：引擎一直在生成（/etc/cf-ipcheck/best-ip.csv），但此前唯一的出口是 Gist ——
+ * 没开 Gist 的人根本拿不到它，而配置里偏偏有一项只影响 CSV 的口径。
+ * 这里给一条本地出口：读出来、在浏览器里存成文件。
+ * 注意引擎在没有结果时也会输出一句话（"尚无结果…"），那不是 CSV ——
+ * 必须先认出来，否则会下载到一个装着那句话的 .csv。 */
+function saveTextFile(name, text) {
+	try {
+		if (typeof Blob === 'undefined' || typeof URL === 'undefined' || !document.body)
+			return false;
+		var blob = new Blob([text], { type: 'text/csv;charset=utf-8' });
+		var url = URL.createObjectURL(blob);
+		var a = el('a', { href: url, download: name });
+		document.body.appendChild(a);
+		a.click();
+		document.body.removeChild(a);
+		URL.revokeObjectURL(url);
+		return true;
+	} catch (e) { return false; }
+}
+
+function actCsv(btn) {
+	setBusy(btn, true);
+	runCmd([ 'csv' ]).then(function (out) {
+		setBusy(btn, false);
+		if (out === HUNG) {
+			flash(T('取 CSV 没有回应'),
+				T('%s 秒内没等到返回。稍后再试一次。').format(Math.round(CMD_LIMIT.csv / 1000)), 'warn');
+			return;
+		}
+		if (out === null) {
+			flash(T('取不到 CSV'), whyNoReply(T('取 CSV 的命令没跑成'), 'csv'), 'bad');
+			return;
+		}
+		var text = String(out);
+		if (!text || text.indexOf('尚无结果') >= 0) {
+			flash(T('还没有可下载的 CSV'), T('先跑一轮测速，榜单出来之后才会有 CSV。'), 'warn');
+			return;
+		}
+		if (!saveTextFile('cf-ip.csv', text)) {
+			flash(T('CSV 取到了，但浏览器不让下载'),
+				T('换个浏览器再试；或者把 Gist 上传打开，那边也会带上同一份 CSV。'), 'warn');
+			return;
+		}
+		flash(T('CSV 已下载'), T('cf-ip.csv —— 七列 CFST 口径，给下游工具直接消费。'), 'ok');
+	}, function () {
+		setBusy(btn, false);
+	});
+}
+
+/* 候选池预览：引擎的 pool 子命令会联网把源拉一遍、但不测速。
+ * 它回答的是「源到底拉到了什么」——榜单上一条都没有时，这里能分清是
+ * 源没拉到东西，还是拉到了但全被门槛刷掉了。 */
+function actPool(btn) {
+	setBusy(btn, true);
+	store.set({ busy: Object.assign({}, store.get().busy, { pool: true }) });
+	runCmd([ 'pool' ]).then(function (out) {
+		setBusy(btn, false);
+		store.set({ busy: Object.assign({}, store.get().busy, { pool: false }) });
+		if (out === HUNG) {
+			flash(T('取候选池没有回应'),
+				T('%s 秒内没等到返回。拉源要联网，比别的命令慢；稍后再试一次。')
+					.format(Math.round(CMD_LIMIT.pool / 1000)), 'warn');
+			return;
+		}
+		if (out === null) {
+			flash(T('取不到候选池'), whyNoReply(T('取候选池的命令没跑成'), 'pool'), 'bad');
+			return;
+		}
+		var ips = [];
+		String(out).split('\n').forEach(function (line) {
+			var ip = line.replace(/^\s+|\s+$/g, '');
+			if (ip)
+				ips.push(ip);
+		});
+		store.set({ pool: { state: 'ok', ips: ips } });
+		if (!ips.length)
+			flash(T('候选池是空的'), T('一个 IP 都没拉到：源可能都拉不动了，或官方网段那一半被关着。'), 'warn');
+	}, function () {
+		setBusy(btn, false);
+		store.set({ busy: Object.assign({}, store.get().busy, { pool: false }) });
+	});
+}
+
+/* 诊断摘要：引擎的 diag 子命令打印它「实际读到」的配置与找到的可执行文件路径。
+ * 页面有了它，「配置没生效」这类问题就不用再 ssh 跑一遍 diag 抄数字了。 */
+function actDiag(btn) {
+	setBusy(btn, true);
+	store.set({ busy: Object.assign({}, store.get().busy, { diag: true }) });
+	runCmd([ 'diag' ]).then(function (out) {
+		setBusy(btn, false);
+		store.set({ busy: Object.assign({}, store.get().busy, { diag: false }) });
+		if (out === HUNG) {
+			flash(T('取诊断没有回应'),
+				T('%s 秒内没等到返回。稍后再试一次。').format(Math.round(CMD_LIMIT.diag / 1000)), 'warn');
+			return;
+		}
+		if (out === null) {
+			flash(T('取不到诊断'), whyNoReply(T('取诊断的命令没跑成'), 'diag'), 'bad');
+			return;
+		}
+		var o = null;
+		try { o = JSON.parse(String(out)); } catch (e) { o = null; }
+		if (!o) {
+			flash(T('诊断结果读不懂'), T('引擎回的不是一份 JSON。页面上半部分有一行原文片段，可直接对照。'), 'warn');
+			return;
+		}
+		store.set({ diag: { state: 'ok', data: o } });
+	}, function () {
+		setBusy(btn, false);
+		store.set({ busy: Object.assign({}, store.get().busy, { diag: false }) });
+	});
+}
+
 function actLogs(btn) {
 	/* 和源检测同一个道理：结果画在「日志」页里，从别的页点进来要先送过去，
 	 * 不然画在一个看不见的面板上，又是一次「点了没反应」。 */
@@ -3521,7 +3708,8 @@ function buildPage(mapnode) {
 		if (autoOff)
 			boardPane.appendChild(autoOff);
 		boardPane.appendChild(BoardPane(state.status, {
-			run: actRun, stop: actStop, refresh: actRefresh, copy: actCopy, check: actCheck, dns: actDns
+			run: actRun, stop: actStop, refresh: actRefresh, copy: actCopy, check: actCheck, dns: actDns,
+			csv: actCsv
 		}));
 	}
 
@@ -3537,18 +3725,22 @@ function buildPage(mapnode) {
 	srcPane.appendChild(P.srcRes);
 	var lastSources = null;
 	var lastCheck = null;
+	var lastPool = null;
 	var sourcesDrawn = false;
 	function drawSources(state) {
 		/* 和读数条同一套防吞点逻辑：没变就不重建，别在用户按下按钮时换节点。
 		 * 只动 P.srcRes —— 编辑区在另一个容器里，不参与这一步。 */
 		var checking = !!(state.busy && state.busy.check);
-		if (sourcesDrawn && state.sources === lastSources && checking === lastCheck)
+		/* pool 也要进判定：预览结果变了，这一块必须重画。
+		 * 漏掉它的话，点完「预览候选池」屏幕上不会有任何变化。 */
+		if (sourcesDrawn && state.sources === lastSources && checking === lastCheck && state.pool === lastPool)
 			return;
 		sourcesDrawn = true;
 		lastSources = state.sources;
 		lastCheck = checking;
+		lastPool = state.pool;
 		clear(P.srcRes);
-		P.srcRes.appendChild(SourcesPane(state.sources, { check: actCheck }));
+		P.srcRes.appendChild(SourcesPane(state.sources, { check: actCheck, pool: actPool }, state.pool));
 	}
 
 	/* ---- 面板 3：日志 ---- */
@@ -3560,17 +3752,19 @@ function buildPage(mapnode) {
 	 *      在中间看着的就不弹回顶部。 */
 	var lastLogsKey = null;
 	var logsDrawn = false;
-	function logsKeyOf(lg, full, auto) {
+	/* diag 并进指纹：取到诊断后这一页必须重画，否则按钮会变成"点了没反应"。 */
+	function logsKeyOf(lg, full, auto, diag) {
+		var dm = diag ? (diag.state || 'ok') : '-';
 		if (!lg)
-			return 'none';
+			return 'none:' + dm;
 		if (lg.state !== 'ok')
-			return lg.state + (auto ? ':A' : ':M');
+			return lg.state + (auto ? ':A' : ':M') + ':' + dm;
 		/* 显示模式并进指纹：不这么做的话点「显示完整时刻」时日志文本一个字没变，
 		 * drawLogs 会认为"没变化"直接跳过 —— 按钮就变成点了没反应的那一类。 */
-		return 'ok:' + (full ? 'F' : 'T') + (auto ? 'A' : 'M') + ':' + lg.text.length + ':' + lg.text.slice(-60);
+		return 'ok:' + (full ? 'F' : 'T') + (auto ? 'A' : 'M') + ':' + dm + ':' + lg.text.length + ':' + lg.text.slice(-60);
 	}
 	function drawLogs(state) {
-		var key = logsKeyOf(state.logs, state.logFull, state.logAuto);
+		var key = logsKeyOf(state.logs, state.logFull, state.logAuto, state.diag);
 		if (logsDrawn && key === lastLogsKey)
 			return;
 		/* 面板不在眼前就别重画。两个理由：一是白重画（看不见，日志一屏上千个节点）；
@@ -3599,7 +3793,7 @@ function buildPage(mapnode) {
 		logsDrawn = true;
 		lastLogsKey = key;
 		clear(logsPane);
-		logsPane.appendChild(LogsPane(state.logs, { refresh: actLogs, copy: actCopyLogs, full: actLogFull, auto: actLogAuto }, state.logAuto));
+		logsPane.appendChild(LogsPane(state.logs, { refresh: actLogs, copy: actCopyLogs, full: actLogFull, auto: actLogAuto, diag: actDiag }, state.logAuto, state.diag));
 		var fresh = logsPane.querySelector ? logsPane.querySelector('.logbox') : null;
 		if (fresh) {
 			var top = null;

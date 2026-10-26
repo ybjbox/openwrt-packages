@@ -661,3 +661,12 @@
   line-height:1.5;
   opacity:.9;
 }
+
+/* 候选池预览里的 IP 列表（r98 P1-4）。
+ * 等宽排出来，扫一眼就能看出是不是同一段地址；word-break 是为了在窄屏上
+ * 不会因为一串长 IP 把容器撑出横向滚动条。 */
+.cfp .cfp-poolips{
+  font-family:var(--mono);
+  word-break:break-all;
+  line-height:1.8;
+}

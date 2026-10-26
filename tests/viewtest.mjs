@@ -1906,6 +1906,33 @@ ok('日志画在自己的滚动容器里', byClass(lp, 'logbox').length === 1);
 has('说明只给最近一段', lp, '60 KB');
 has('给复制入口', lp, '复制全部');
 
+/* r98 P1-2/3/4：三个只读出口的页面入口。
+ * 这三件事此前都只能 ssh 干（cf-ipcheck csv / diag / pool），页面上一个入口都没有 ——
+ * 而「配置到底生效没有」「源到底拉到了什么」正是最常见的两个问题。 */
+const csvPane = t.BoardPane(done, Object.assign({}, noActions, { csv: noop }));
+has('榜单页有下载 CSV 的入口', csvPane, '下载 CSV');
+has('CSV 那行点明是七列 CFST 口径', csvPane, 'CFST 口径');
+
+const spPool = t.SourcesPane({ state: 'ok', rows: srcRows },
+	{ check: noop, pool: noop }, { state: 'ok', ips: [ '1.1.1.1', '2.2.2.2' ] });
+has('源页有候选池预览入口', spPool, '预览候选池');
+has('候选池给出候选个数', spPool, '共有 2 个候选 IP');
+has('候选池把 IP 列出来', spPool, '1.1.1.1');
+const spNoPool = t.SourcesPane({ state: 'ok', rows: srcRows },
+	{ check: noop, pool: noop }, { state: 'ok', ips: [] });
+has('候选池为空时明说是空的', spNoPool, '一个候选 IP 都没拉到');
+
+const lpDiag = t.LogsPane({ state: 'ok', text: '一行\n' },
+	{ refresh: noop, copy: noop, diag: noop }, true,
+	{ state: 'ok', data: { has_uci: 1, uci_get_rc: 0, curl: '/usr/bin/curl', jq: '/usr/bin/jq',
+		domains: 'example.com', port: 443, budget: 256,
+		run_dir: '/tmp/cf-ipcheck', etc_dir: '/etc/cf-ipcheck', dns_sync: 0, apply_dns_ok: 1 } });
+has('日志页有诊断摘要入口', lpDiag, '取诊断');
+has('诊断摘要报出 uci 是否可用', lpDiag, 'uci：可用');
+has('诊断摘要报出 curl 与 jq 路径', lpDiag, '/usr/bin/jq');
+has('诊断摘要报出探测目标', lpDiag, 'example.com:443');
+has('诊断摘要报出 DNS 同步与 helper 状态', lpDiag, 'helper 可执行');
+
 /* r76：日志页自动刷新。默认开（按钮显示「停止刷新」）；停掉后按钮变「自动刷新」，
  * 说明行里始终保留一个「立即刷新」的手动入口。 */
 {
