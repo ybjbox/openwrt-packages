@@ -4,6 +4,7 @@
 'require rpc';
 'require ui';
 'require view';
+'require uci';
 
 /*
  * luci-app-cf-ipcheck —— 读数面板（重写版）
@@ -29,7 +30,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r107';
+var VIEW_BUILD = 'r108';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -4499,9 +4500,22 @@ return view.extend({
 		o = dns.option(form.TextValue, 'dns_targets', _('记录名清单'), _('一行一条：记录名 [数量] [@机房码] [zone]'));
 		o.rows = 5;
 		o.cfgvalue = function (section_id) {
-			/* super 不可用时退回空串而不是抛错：一个字段的取值异常不该把整页带白。
-			 * 正常情况下走 form.Value.cfgvalue（uci 里的分号单行）。 */
-			var v = (this.super ? this.super('cfgvalue', [ section_id ]) : '') || '';
+			/* 这台机器的 CBI 上 this.super 拿不到值 —— 真机实测：配置里明明有
+			 * option dns_targets 'test.bjstudio.eu.org 3 @NRT'，文本框却是空的，
+			 * 于是页面显示"没保存过"。所以 super 给空就直接问 uci 兜底。 */
+			var v = '';
+			try {
+				v = (this.super ? this.super('cfgvalue', [ section_id ]) : '') || '';
+			} catch (e) {
+				v = '';
+			}
+			if (v === '' && typeof uci !== 'undefined' && uci.get) {
+				try {
+					v = uci.get('cf_ipcheck', section_id, 'dns_targets') || '';
+				} catch (e2) {
+					v = '';
+				}
+			}
 			return String(v).replace(/;[ \t]*/g, '\n');
 		};
 		o.write = function (section_id, formvalue) {
