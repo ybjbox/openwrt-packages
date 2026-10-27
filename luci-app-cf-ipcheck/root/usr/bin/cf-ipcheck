@@ -563,6 +563,14 @@ load_config() {
 		cfg_warn "配置项 dc_pick 只认 all / auto / 三位机房码（现在是「$dcp_raw」），按 all 处理"
 		C_DCPICK=all
 	fi
+	# 按机房展示（r102）：只列配置的机房、每个展开显示配置的条数；空 = 沿用旧行为
+	# （列本轮全部机房、每块默认 12 条）。归一化在 dc_show_norm，告警在这个 shell 里记。
+	dcs_raw=$(cfg dc_show '')
+	_dcs_warn=$(dc_show_norm "$dcs_raw" 2>&1 >/dev/null)
+	C_DCSHOW=$(dc_show_norm "$dcs_raw" 2>/dev/null)
+	if [ -n "$_dcs_warn" ]; then
+		cfg_warn "dc_show 有配置问题：$(printf '%s' "$_dcs_warn" | tr '\n' '；')"
+	fi
 	# 速度单位（r90）：mb=十进制 MB/s（÷1000000，与测速站同口径，用户习惯的那个）；
 	# mib=二进制 MiB/s（÷1048576，CFST 的 result.csv 口径）。**只影响 CSV 那一列与
 	# 表头**，页面与 result.json 的 speed_mbytes 永远十进制 —— 那是给人的数字。
@@ -1192,6 +1200,33 @@ dc_pick_norm() {
 			esac
 			;;
 	esac
+}
+
+# 配置 dc_show 的归一化（纯函数，selftest 直接驱动）：
+#   输入：分号或换行分隔的「机房码 [条数]」，条数省略 = 3，夹到 1..10。
+#   输出：每行 `CODE|N`（同一机房只留第一条）；非法条目把原因写到 stderr，
+#   其余条目照常生效 —— 一行写错不该让整块配置失效。
+# 为什么不在这里 cfg_warn：调用方用 $( ) 接结果，那是子壳，告警会随子壳消失
+# （dc_pick_norm 的注释里记过同一件事）。所以调用方按 stderr 收。
+dc_show_norm() {
+	printf '%s\n' "${1:-}" | tr ';' '\n' | while IFS= read -r _e; do
+		_e=$(printf '%s' "$_e" | sed 's/#.*//; s/^[[:space:]]*//; s/[[:space:]]*$//')
+		[ -n "$_e" ] || continue
+		# shellcheck disable=SC2086
+		set -- $_e
+		_dc=$(printf '%s' "${1:-}" | tr 'a-z' 'A-Z')
+		_dn=${2:-3}
+		case "$_dc" in
+			[A-Z][A-Z][A-Z]) : ;;
+			*) printf '规则「%s」的机房码不像三位码，已忽略\n' "$_e" >&2; continue ;;
+		esac
+		case "$_dn" in
+			''|*[!0-9]*) printf '规则「%s」的条数 %s 不是正整数，按 3 处理\n' "$_e" "$_dn" >&2; _dn=3 ;;
+		esac
+		if [ "$_dn" -lt 1 ]; then _dn=1; printf '规则「%s」的条数小于 1，按 1 处理\n' "$_e" >&2; fi
+		if [ "$_dn" -gt 10 ]; then _dn=10; printf '规则「%s」的条数超过 10，按 10 处理\n' "$_e" >&2; fi
+		printf '%s|%s\n' "$_dc" "$_dn"
+	done | awk -F'|' '!seen[$1]++'
 }
 
 # 把 $RUN_DIR/hdr/*.hdr 里的 CF-RAY 收成 ip \t colo 追加进 dc.tsv。
@@ -2252,12 +2287,20 @@ write_outputs() {
 			printf ']'
 		)
 	fi
+	# dc_show 进状态 JSON：页面只负责画，归一化与去重都在引擎里做过了。
+	dcshow_json='[]'
+	if [ -n "${C_DCSHOW:-}" ]; then
+		dcshow_json=$(printf '%s\n' "$C_DCSHOW" | awk -F'|' '
+			BEGIN { printf "[" }
+			NF >= 2 { printf "%s{\"dc\":\"%s\",\"n\":%d}", (n++ ? "," : ""), $1, $2 }
+			END { printf "]" }')
+	fi
 	{
-		printf '{"state":"done","started":"%s","finished":"%s","pool":%s,"qualified":%s,"usable":%s,"intercepted":%s,"counts":%s,"domains":"%s","budget":%s,"port":%s,"speed_mode":"%s","speed_weight":%s,"below_gate":%s,"bypass":"%s","probe_metric":"%s","speed_unit":"%s","dc_pick":"%s","dc_summary":%s,"items":[' \
+		printf '{"state":"done","started":"%s","finished":"%s","pool":%s,"qualified":%s,"usable":%s,"intercepted":%s,"counts":%s,"domains":"%s","budget":%s,"port":%s,"speed_mode":"%s","speed_weight":%s,"below_gate":%s,"bypass":"%s","probe_metric":"%s","speed_unit":"%s","dc_pick":"%s","dc_summary":%s,"dc_show":%s,"items":[' \
 			"${STARTED:-}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$pool_n" "$qualified" \
 			"$(grep -c . "$colored" || true)" "$intercepted" "$counts" "$C_DOMAINS" "$C_BUDGET" "$C_PORT" \
 			"${SPEED_MODE:-display}" "${C_SPEED_W:-0}" "${bg_in:-0}" "${BYPASS:-unknown}" \
-			"${C_METRIC:-http}" "${C_SUUNIT:-mb}" "${C_DCPICK:-all}" "$dcsum_json"
+			"${C_METRIC:-http}" "${C_SUUNIT:-mb}" "${C_DCPICK:-all}" "$dcsum_json" "$dcshow_json"
 		# r71：多样本验证的四个派生键（loss/jitter_ms/net_ttfb_ms/ray_ok）从边表按 IP
 		# 并入。未验证的 IP 四项都是 null——页面据此区分"没验过"和"验了没丢包"，
 		# 不会把 null 读成 0 说成"零丢包"。边表由 do_run 保证存在（可能为空）。
@@ -4152,6 +4195,16 @@ selftest() {
 	check 'dc_pick：all 原样' "$(dc_pick_norm all)" 'all'
 	check 'dc_pick：auto 原样' "$(dc_pick_norm AUTO)" 'auto'
 	check 'dc_pick：小写三字码被规范成大写' "$(dc_pick_norm nrt)" 'NRT'
+	# ---- dc_show 归一化（r102）----
+	check 'dc_show：机房码 + 条数' "$(dc_show_norm 'NRT 3')" 'NRT|3'
+	check 'dc_show：小写也认、条数省略默认 3' "$(dc_show_norm 'nrt')" 'NRT|3'
+	check 'dc_show：分号分隔多机房' "$(dc_show_norm 'NRT 2; sin 5')" "$(printf 'NRT|2\nSIN|5')"
+	check 'dc_show：条数 0 夹到 1' "$(dc_show_norm 'NRT 0')" 'NRT|1'
+	check 'dc_show：条数超 10 夹到 10' "$(dc_show_norm 'NRT 99')" 'NRT|10'
+	check 'dc_show：机房码不像三位码 ⇒ 忽略该条' "$(dc_show_norm 'X1Y 2')" ''
+	check 'dc_show：同一机房只留第一条（顺序即展示顺序）' "$(dc_show_norm 'NRT 2; nrt 5')" 'NRT|2'
+	check 'dc_show：空配置 ⇒ 空（页面沿用旧行为）' "$(dc_show_norm '')" ''
+	check 'dc_show：行尾 # 注释被剥掉' "$(dc_show_norm 'NRT 4 # 东京')" 'NRT|4'
 	check 'dc_pick：空值当 all' "$(dc_pick_norm '')" 'all'
 	check 'dc_pick：看不懂的值输出空（由调用方退回 all 并告警）' "$(dc_pick_norm 'tokyo')" ''
 	# 走一遍真实配置路径：非法值必须退回 all，并且告警真的落进了缓冲（不在子壳里丢）

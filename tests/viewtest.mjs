@@ -1112,6 +1112,43 @@ eq('正在跑的时候不提示',
 }
 
 /* ================================================================== *
+ * 6d. r102：dc_show —— 只画配置的机房、每块按配置条数、缺的机房留占位
+ * ================================================================== */
+{
+	const it2 = (ip, ttfb) => ({ ip: ip, ttfb_ms: ttfb, connect_ms: 10, speed_bps: 1000 });
+	const d2 = (code, items) => ({ dc: code, count: items.length,
+		ttfb_med: items.length ? items[0].ttfb_ms : null,
+		best_ip: items.length ? items[0].ip : null, items: items });
+	/* 不用 \b：这一行是脚本生成的，反斜杠被吃过一次；indexOf 更稳 */
+	const row2 = (node, code) => byClass(node, 'dcrow').filter(n =>
+		String(n.attrs['class'] || '').indexOf('data') >= 0 && textOf(n).indexOf(code) >= 0)[0];
+	const items2 = node => {
+		const box = byClass(node, 'dcilist')[0];
+		return box ? all(box).filter(n => n.attrs.role === 'listitem') : [];
+	};
+
+	const s12 = t.DcSummary({
+		dc_summary: [ d2('NUE', [ it2('104.31.0.1', 100), it2('104.31.0.2', 110), it2('104.31.0.3', 120) ]),
+			d2('SIN', [ it2('104.31.9.9', 300) ]) ],
+		dc_pick: 'all',
+		dc_show: [ { dc: 'NUE', n: 2 }, { dc: 'WAW', n: 3 } ]
+	});
+	eq('r102 只画 dc_show 里的机房，顺序=配置顺序',
+		byClass(s12, 'dc-code').map(n => textOf(n)).join(','), 'NUE,WAW');
+	eq('r102 汇总里有、但没配进 dc_show 的机房不画', textOf(s12).indexOf('SIN'), -1);
+	has('r102 配置了但本轮没有的机房标「本轮无」', s12, '本轮无');
+	hasNot('r102 配置了就不再出现「其余 N 个数据中心」', s12, '其余');
+
+	row2(s12, 'NUE').dispatch('click');
+	eq('r102 明细条数按 dc_show 的 n 截断（配置 2，不是默认 12）', items2(s12).length, 2);
+	ok('r102 被截断时提示「还有 1 个」',
+		byTag(s12, 'button').some(b => /还有 1 个/.test(textOf(b))), 'button');
+
+	const s13 = t.DcSummary({ dc_summary: [ d2('NUE', []), d2('SIN', []) ], dc_pick: 'all' });
+	eq('r102 没配 dc_show 时仍列全部机房（老行为不变）', byClass(s13, 'dc-code').length, 2);
+}
+
+/* ================================================================== *
  * 7. 源检测：段内占比是判定源是否还可用的关键
  * ================================================================== */
 const srcRows = [

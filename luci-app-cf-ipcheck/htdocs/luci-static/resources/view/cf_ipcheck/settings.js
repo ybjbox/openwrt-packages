@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r101';
+var VIEW_BUILD = 'r102';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -1342,6 +1342,33 @@ function DcSummary(st) {
 	if (!list.length)
 		return null;
 
+	/* r102：配置了 dc_show 就只画这些机房（顺序 = 配置顺序），每块明细按配置的条数。
+	 * 本轮没有该机房 IP 时留一行占位「本轮无」—— 配置里写了就说明他关心这个机房，
+	 * 整行消失会让人以为是功能坏了。没配置时保持老行为（全部机房、每块 12 条）。 */
+	var capOf = {};
+	var showCfg = st && st.dc_show && st.dc_show.length ? st.dc_show : null;
+	if (showCfg) {
+		var byCode = {};
+		for (var bi = 0; bi < list.length; bi++) {
+			var bk = list[bi].dc ? String(list[bi].dc) : '';
+			if (bk && !byCode[bk])
+				byCode[bk] = list[bi];
+		}
+		var picked = [];
+		for (var si = 0; si < showCfg.length; si++) {
+			var sc = showCfg[si] || {};
+			var scode = sc.dc ? String(sc.dc) : '';
+			if (!scode)
+				continue;
+			capOf[scode] = Number(sc.n) > 0 ? Number(sc.n) : 3;
+			picked.push(byCode[scode] || {
+				dc: scode, count: 0, ttfb_med: null, best_ip: null, items: [], empty: true
+			});
+		}
+		if (picked.length)
+			list = picked;
+	}
+
 	/* dc_pick 只有「具体机房码」才算「当前」；all / auto 是两种策略，不是某个机房 */
 	var cur = st.dc_pick && st.dc_pick !== 'all' && st.dc_pick !== 'auto' ? String(st.dc_pick) : null;
 	/* 列头恒写 TTFB：引擎的 dc_summary 不论判定口径是什么，中位数都按首字节时间算
@@ -1406,6 +1433,8 @@ function DcSummary(st) {
 				el('span', { class: 'dc-code n', text: code }),
 				/* 「当前」用实心小块，和榜首那颗 1 同一种记号：不动列宽、一眼能认 */
 				on ? el('span', { class: 'dc-tag', text: T('当前') }) : null,
+				/* r102：配置了但这一轮没测到这个机房 —— 说出来，别让它悄悄消失 */
+				r.empty ? el('span', { class: 'dc-tag', text: T('本轮无') }) : null,
 				/* 这一行是按钮，元素内容就是它的无障碍名字（按钮的子节点对读屏器
 				 * 是纯文本）：读数照旧念出来，这里补一句「按下去会发生什么」。
 				 * 不写 aria-label —— 那会把这一行的数字整个盖掉。 */
@@ -1427,7 +1456,8 @@ function DcSummary(st) {
 	function dcDetail(r, code) {
 		var items = dcItemsOf(r);
 		var all = dcItemAll.has(code);
-		var shown = all ? items : items.slice(0, DC_ITEM_SHOW);
+		var cap = capOf[code] > 0 ? capOf[code] : DC_ITEM_SHOW;
+		var shown = all ? items : items.slice(0, cap);
 		var kids = [
 			el('div', { class: 'dcitem head', 'aria-hidden': 'true' }, [
 				el('span', { class: 'dci-h', text: T('IP') }),
@@ -1454,8 +1484,10 @@ function DcSummary(st) {
 		kids.push(box);
 
 		var foot = [];
-		if (items.length > DC_ITEM_SHOW) {
-			var rest = items.length - DC_ITEM_SHOW;
+		/* 阈值必须跟着 cap 走：配置成 2 条时，第 3 条起也得留一个"还有 N 个"的入口，
+		 * 否则用户按配置藏起来的那几条就再也点不出来了。 */
+		if (items.length > cap) {
+			var rest = items.length - cap;
 			foot.push(el('button', {
 				class: 'lnk',
 				type: 'button',
@@ -1473,7 +1505,7 @@ function DcSummary(st) {
 				}
 			}, el('span', {
 				text: all
-					? T('只看前 %s 个').format(DC_ITEM_SHOW)
+					? T('只看前 %s 个').format(cap)
 					: T('还有 %s 个').format(rest)
 			})));
 		}
@@ -1509,7 +1541,7 @@ function DcSummary(st) {
 	function paint(focusCode) {
 		clear(body);
 		rowAt = {};
-		var rows = dcOpen ? list : list.slice(0, DC_SHOW);
+		var rows = showCfg ? list : (dcOpen ? list : list.slice(0, DC_SHOW));
 		for (var k = 0; k < rows.length; k++) {
 			var r = rows[k];
 			var code = codeOf(r);
@@ -1520,7 +1552,7 @@ function DcSummary(st) {
 			if (dcItemOpen.has(code) && dcItemsOf(r).length)
 				body.appendChild(dcDetail(r, code));
 		}
-		var rest = list.length - DC_SHOW;
+		var rest = showCfg ? 0 : list.length - DC_SHOW;
 		if (rest > 0) {
 			/* 用真的 <button>：回车/空格天生可点，不用自己接 keydown */
 			body.appendChild(el('div', { class: 'dc-more' },
@@ -4024,6 +4056,16 @@ return view.extend({
 		o.description = help('dc_pick',
 			_('默认 all：全部机房都留在榜上。'),
 			_('all（默认）：不过滤，各机房一起排，汇总照常列出每一个。auto：只留中位最快的那一个机房 —— 看中位不看单颗，单颗快可能只是碰巧。也可以直接填三位机房码（NRT 东京、SIN 新加坡、LAX 洛杉矶），只留这个机房。跨机房差距大时（东京 40ms、新加坡 120ms）混排会让客户端切到慢的明显卡，所以才有人这么做。填了机房码但这一轮没有该机房的 IP，榜单会是空的 —— 先看上方汇总表里有哪些机房。'));
+
+		/* r102：按机房看前 N 个。与 dc_pick 的分工要说清：dc_pick 决定「榜单留谁」，
+		 * 这一项只决定「汇总里画哪些机房、每块列几条」，不影响榜单本身。 */
+		o = thr.option(form.Value, 'dc_show', _('汇总里按机房看前几个'), _('留空=列全部机房。例：NRT 3; SIN 2'));
+		o.placeholder = 'NRT 3; SIN 2';
+		o.description = help('dc_show',
+			_('留空=列全部机房、每块 12 条（老行为）。'),
+			_('用分号分隔，每条写「机房码 条数」，条数省略按 3，最多 10。写了哪些机房就只画哪些（顺序即显示顺序），'
+				+ '每块展开明细显示这么多条；这一轮没测到该机房时那一行会标「本轮无」。'
+				+ '它只影响这块汇总的显示，不会改变榜单保留了谁 —— 要让榜单只留某个机房，用上面的「只留某个机房」。'));
 
 		o = thr.option(form.Flag, 'speed_probe', _('进榜后再测下载速度'), _('串行拉大文件测 MB/s。'));
 		o.rmempty = false;
