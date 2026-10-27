@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r105';
+var VIEW_BUILD = 'r107';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -2854,7 +2854,12 @@ var DNS_LIMIT = 10;
 /* 文本 -> 行清单。kind='row' 是认识的记录行；kind='raw' 是注释/空行/怪行，原样留。 */
 function dnsLinesOf(text) {
 	var out = [];
-	String(text || '').split(/\r?\n/).forEach(function (line) {
+	var all = String(text || '');
+	/* 空输入就是零行：不这么写的话，空串会被拆成"一条空行"，
+	 * 加一行后文本就变成 "\njp.example.com 2 @NRT"（真机就是这么多一个空行的）。 */
+	if (all === '')
+		return out;
+	all.split(/\r?\n/).forEach(function (line) {
 		var t = String(line).replace(/^\s+|\s+$/g, '');
 		if (!t || t.charAt(0) === '#' || t.indexOf('.') < 0) {
 			out.push({ kind: 'raw', text: String(line) });
@@ -2882,7 +2887,13 @@ function dnsLinesOf(text) {
 
 /* 行清单 -> 文本（顺序不变，"其余 token"如 zone 留在原位） */
 function dnsTextOf(lines) {
-	return (lines || []).map(function (ln) {
+	var src = lines || [];
+	/* 末尾的空行不回写：加一行后文本不该变成 "\njp..."，也不该每存一次多一行空行。
+	 * 中间的空行属于用户排版，原样保留。 */
+	while (src.length && src[src.length - 1] && src[src.length - 1].kind === 'raw' &&
+		String(src[src.length - 1].text || '').trim() === '')
+		src = src.slice(0, -1);
+	return src.map(function (ln) {
 		if (!ln || ln.kind !== 'row')
 			return ln && ln.text != null ? ln.text : '';
 		var r = ln.row;
@@ -3000,15 +3011,20 @@ function mountDnsEditor(mapnode) {
 			if (ta.value === text)
 				return;
 			ta.value = text;
-			/* 让 CBI 认为这个字段被改过：它监听的就是 input */
-			var ev;
-			try {
-				ev = new Event('input', { bubbles: true });
-			} catch (e) {
-				ev = document.createEvent('HTMLEvents');
-				ev.initEvent('input', true, false);
-			}
-			ta.dispatchEvent(ev);
+			/* 让 CBI 认为这个字段被改过。事件名必须对齐它的绑定（r106 真机实测）：
+			 * 这个 LuCI 的文本域在 keyup/blur 上更新自己的值、在 change 上标记改动；
+			 * 只发 input 时它认为没改过 —— 点「保存并应用」只发 apply_rollback，
+			 * 连一条 uci/set 都没有，表现就是「没有待应用的更改」。 */
+			['input', 'keyup', 'change'].forEach(function (type) {
+				var ev;
+				try {
+					ev = new Event(type, { bubbles: true });
+				} catch (e) {
+					ev = document.createEvent('HTMLEvents');
+					ev.initEvent(type, true, false);
+				}
+				ta.dispatchEvent(ev);
+			});
 		}
 	});
 	var host = el('div', { class: 'dnsrows-host' }, [
@@ -3018,9 +3034,15 @@ function mountDnsEditor(mapnode) {
 	/* 参照节点必须是 textarea 自己的父节点：CBI 把它包在一层无名 div 里，
 	 * 拿 .cbi-value-field 作父节点会抛 NotFoundError —— 而这段在 render 的 promise 里，
 	 * 抛出去就是**整页白屏**（r104 装机时就是这么挂的，桩测发现不了）。 */
+	/* 必须插在 CBI 的 frame 容器**外面**：那层 div 是控件自己的 node，
+	 * 它的 getValue() 读的是 `node.firstElementChild.value`。把编辑器插进 frame 里、
+	 * 排在 textarea 前面，firstElementChild 就变成我的 div → getValue() 读出 undefined
+	 * → CBI 当成"这个字段是空的"→ 保存时只发 uci delete → 页面报「没有待应用的更改」
+	 * （r106 真机实测，桩测发现不了：stub 里没有这种父子关系）。 */
 	try {
-		var parent = ta.parentNode || box;
-		parent.insertBefore(host, ta);
+		var frame = ta.parentNode || box;
+		var outer = (frame && frame.parentNode) || frame;
+		outer.insertBefore(host, frame);
 	} catch (e) {
 		return null;
 	}
