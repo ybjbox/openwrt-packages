@@ -202,6 +202,14 @@ config global 'global'
 	# 例：cf.example.com 3; www.example.com 1; api.example.net 2 other.net
 	option dns_targets ''
 
+	# 注释后缀（r110，可选）：最终写成 "cf-ipcheck · <这里>"。
+	# 前缀 cf-ipcheck 是"记录归本插件管"的唯一判据，不接受改前缀。
+	option dns_comment ''
+
+	# 记录名自动编号（r110，默认关）：开 test.example.com 3 → test1/test2/test3.example.com，
+	# 每个 1 条 A 记录；数量调小会把多出来的编号清掉。
+	option dns_auto_name '0'
+
 	# 旧版单记录名，仅为升级兼容保留：
 	# dns_targets 有内容时它被忽略；都空时才回退用它（数量按 1 条算）。
 	# 升级时迁移脚本会把旧值搬进 dns_targets，所以一般不碰这一项。

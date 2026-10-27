@@ -30,7 +30,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r109';
+var VIEW_BUILD = 'r110';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -4499,6 +4499,22 @@ return view.extend({
 		 * 「分号分隔的单行」，界面上读写时各转一次。不转的话用户一按保存就写出坏配置。 */
 		o = dns.option(form.TextValue, 'dns_targets', _('记录名清单'), _('一行一个机房；同一记录名多行会合并'));
 		o.rows = 5;
+
+		/* r110：注释后缀 + 自动编号。注释前缀 cf-ipcheck 不动 —— 那是归属判据。 */
+		o = dns.option(form.Value, 'dns_comment', _('记录备注（可选）'), _('写在 cf-ipcheck 后面，便于在面板里认。'));
+		o.placeholder = 'bjstudio';
+		o.description = help('dns_comment',
+			_('可选。会写成「cf-ipcheck · 你的备注」。'),
+			_('只追加在固定前缀后面：「cf-ipcheck」这个前缀是"这条记录归本插件管"的唯一判据，'
+				+ '换掉它就等于把以前建的记录全变成别人的 —— 从此既不更新也不清理，所以不给改前缀。'));
+
+		o = dns.option(form.Flag, 'dns_auto_name', _('记录名自动编号'), _('test.example.com 3 → test1/test2/test3'));
+		o.default = '0';
+		o.rmempty = false;
+		o.description = help('dns_auto_name',
+			_('关闭（默认）：一个记录名下挂多条 A 记录。'),
+			_('打开后，「test.example.com 3」会写成 test1.example.com、test2.example.com、test3.example.com，'
+				+ '每个 1 条 A 记录（序号插在第一段后面）。数量调小时，多出来的编号（test4…test8）会把本插件建的那几条清掉。'));
 		o.cfgvalue = function (section_id) {
 			/* 这台机器的 CBI 上 this.super 拿不到值 —— 真机实测：配置里明明有
 			 * option dns_targets 'test.bjstudio.eu.org 3 @NRT'，文本框却是空的，

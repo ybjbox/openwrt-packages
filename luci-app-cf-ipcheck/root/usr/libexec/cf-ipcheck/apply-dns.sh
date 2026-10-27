@@ -53,6 +53,10 @@ set -u
 API='https://api.cloudflare.com/client/v4'
 PROG='apply-dns'
 MARK='cf-ipcheck'          # 写进记录 comment 的标记，也是「这是本工具建的」唯一判据
+# 注释可配（r110）：但 **MARK 前缀必须留着**。判"这条记录归我管"看的就是这个前缀，
+# 让用户把整个 comment 换掉，等于把以前建的记录全变成"别人的"—— 从此既不更新也不清理。
+# 所以配置只是往后缀上追加：comment = "cf-ipcheck · <用户写的>"。
+COMMENT="$MARK"
 MAX_COUNT=10               # 单个记录名最多挂几条 A 记录
 BUDGET=25                  # 整次同步的时间预算（秒）。rpcd 上限 30，留 5 秒余量
 REQ_TIMEOUT=4              # 单请求超时（秒）。见下面 api() 的注释
@@ -138,6 +142,8 @@ env_of() {
 		dns_ttl)        printf '%s' "${CFIP_DNS_TTL:-}" ;;
 		dns_token)      printf '%s' "${CFIP_DNS_TOKEN:-}" ;;
 		dns_token_file) printf '%s' "${CFIP_DNS_TOKEN_FILE:-}" ;;
+		dns_comment)    printf '%s' "${CFIP_DNS_COMMENT:-}" ;;
+		dns_auto_name)  printf '%s' "${CFIP_DNS_AUTO_NAME:-}" ;;
 		*)              printf '' ;;
 	esac
 }
@@ -290,6 +296,15 @@ parse_targets() {
 		}'
 }
 
+# 记录名自动编号（r110）：test.bjstudio.eu.org + 2 = test2.bjstudio.eu.org
+# 只在第一段后面插序号：这样 test / test1 / test2 都落在同一个 zone 里。
+auto_name() { # $1=记录名 $2=序号
+	case "${1:-}" in
+		*.*) printf '%s%s.%s' "${1%%.*}" "${2:-}" "${1#*.}" ;;
+		*)   printf '%s%s' "${1:-}" "${2:-}" ;;
+	esac
+}
+
 # ---- 候选 IP 清单 ----
 # 输出所有候选 IP，一行一个，**去重且保序**（顺序 = 榜单排名）。
 # 来源优先级：--ip > result.json > best-ip.txt。
@@ -317,12 +332,12 @@ ranked_ips() {
 
 # 请求体用 jq 拼，不手工拼字符串 —— 记录名里可能有需要转义的字符
 body_create() {
-	"$JQ" -n --arg n "$2" --arg c "$1" --argjson t "$TTL" --arg m "$MARK" \
+	"$JQ" -n --arg n "$2" --arg c "$1" --argjson t "$TTL" --arg m "$COMMENT" \
 		'{type:"A",name:$n,content:$c,proxied:false,ttl:$t,comment:$m}'
 }
 
 body_patch() {
-	"$JQ" -n --arg c "$1" --argjson t "$TTL" --arg m "$MARK" \
+	"$JQ" -n --arg c "$1" --argjson t "$TTL" --arg m "$COMMENT" \
 		'{content:$c,proxied:false,ttl:$t,comment:$m}'
 }
 
@@ -403,6 +418,11 @@ cf.example.com 2
 	chk '记录名不像 FQDN → 丢弃' \
 		"$(parse_targets 'nohost 2' 'example.com' 2>/dev/null)" ''
 	chk '全空输入 → 空输出' "$(parse_targets '' 'example.com' 2>/dev/null)" ''
+
+	# ---- r110：记录名自动编号 ----
+	chk '自动编号：在第一段后插序号' "$(auto_name test.bjstudio.eu.org 2)" 'test2.bjstudio.eu.org'
+	chk '自动编号：两段域名插在中间' "$(auto_name example.com 1)" 'example1.com'
+	chk '自动编号：没有点就接在末尾' "$(auto_name localhost 3)" 'localhost3'
 
 	# ---- r103：@机房码与同域名合并 ----
 	chk '带 @机房码：机房记进第 4 段，zone 照常推' 		"$(parse_targets 'jp.example.com 3 @NRT' 'example.com' 2>/dev/null)" 'jp.example.com|3|example.com|NRT'
@@ -587,6 +607,11 @@ TARGETS_RAW=$(cfg dns_targets | tr ';' '\n')
 TOKEN=$(cfg dns_token)
 TOKEN_FILE=$(cfg dns_token_file)
 TTL=$(cfg dns_ttl)
+_dc_note=$(cfg dns_comment)
+[ -n "$_dc_note" ] && COMMENT="$MARK · $_dc_note"
+AUTO_NAME=$(cfg dns_auto_name 0)
+case "$AUTO_NAME" in ''|0) AUTO_NAME=0 ;; *) AUTO_NAME=1 ;; esac
+AUTO_STALE=5               # 自动编号模式下，数量变小时往后清几号（test4..test8）
 SYNC=$(cfg dns_sync)
 
 # 令牌文件只在 dns_token 为空时才读（与 gist 那套一致的优先级）
@@ -625,6 +650,37 @@ if [ -n "$_PARSE_WARN" ]; then
 	log "目标清单有解析问题：$(printf '%s' "$_PARSE_WARN" | tr '\n' '；')"
 fi
 [ -n "$TARGETS" ] || { log '目标清单为空（全部行都解析失败），不执行'; exit 2; }
+
+# 自动编号（r110）：把 `test.example.com 3` 展开成 test1/test2/test3 各 1 条；
+# 再补 test4..test8 作为"清理目标"（条数写 0 → 期望为空 → 把本工具建的全删掉）。
+# 为什么放在 parse 之后统一展开、而不是在 handle_target 里循环：
+# 展开后每个名字就是一个普通目标，差异比对/先加后删/回读校验那一整套不用改一行。
+if [ "$AUTO_NAME" = 1 ]; then
+	_exp=''
+	while IFS= read -r _spec; do
+		[ -n "$_spec" ] || continue
+		_f=${_spec%%|*}; _rest=${_spec#*|}
+		_n=${_rest%%|*}; _rest=${_rest#*|}
+		_z=${_rest%%|*}; _colo=${_rest#*|}
+		[ "$_colo" = "$_rest" ] && _colo=''
+		_i=1
+		while [ "$_i" -le "$_n" ]; do
+			_exp="$_exp
+$(auto_name "$_f" "$_i")|1|$_z|$_colo|$_i"
+			_i=$((_i + 1))
+		done
+		_i=$((_n + 1))
+		while [ "$_i" -le $((_n + AUTO_STALE)) ] 2>/dev/null; do
+			_exp="$_exp
+$(auto_name "$_f" "$_i")|0|$_z|$_colo"
+			_i=$((_i + 1))
+		done
+	done <<EOF
+$TARGETS
+EOF
+	TARGETS=$(printf '%s\n' "$_exp" | grep .)
+	log "自动编号已开启：$(printf '%s' "$TARGETS" | grep -c .) 个记录名（含清理目标）"
+fi
 
 TARGET_TOTAL=$(printf '%s\n' "$TARGETS" | grep -c .)
 
@@ -722,13 +778,23 @@ handle_target() {
 	_no=$1; _tot=$2; _spec=$3
 	_f=${_spec%%|*}; _rest=${_spec#*|}
 	_n=${_rest%%|*}; _rest=${_rest#*|}
-	_z=${_rest%%|*}; _colo=${_rest#*|}
-	[ "$_colo" = "$_rest" ] && _colo=''
+	_z=${_rest%%|*}; _rest2=${_rest#*|}
+	_colo=${_rest2%%|*}
+	_idx=${_rest2#*|}
+	[ "$_idx" = "$_rest2" ] && _idx=''
 
 	if [ -n "$_colo" ]; then
-		_want=$(colo_ips "$_colo" | head -n "$_n")
+		_pool=$(colo_ips "$_colo")
 	else
-		_want=$(top_ips "$_n")
+		_pool=$(ranked_ips)
+	fi
+	if [ -n "$_idx" ]; then
+		# 自动编号：第 i 个名字拿第 i 颗（不这么取的话每个编号都是同一颗最快的）
+		_want=$(printf '%s
+' "$_pool" | sed -n "${_idx}p")
+	else
+		_want=$(printf '%s
+' "$_pool" | head -n "$_n")
 	fi
 	_want_n=$(printf '%s\n' "$_want" | grep -c .)
 	_want_csv=$(printf '%s\n' "$_want" | tr '\n' ' ' | sed 's/ $//')
@@ -739,7 +805,7 @@ handle_target() {
 		# 按既定语义清空它 —— 但必须说得让人一眼看见，别让人几天后才发现解析空了。
 		log "$_tag：@$_colo 本轮没有可用 IP —— 按配置清空 $_f 的记录（想避免就再挂一个不限机房的记录名做兜底）"
 	fi
-	if [ "$_want_n" -lt "$_n" ]; then
+	if [ "$_n" -gt 0 ] && [ "$_want_n" -lt "$_n" ]; then
 		if [ -n "$_colo" ]; then
 			log "$_tag：@$_colo 只有 $_want_n 个可用 IP（想要 $_n 个），按实际数量办"
 		else
