@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r103';
+var VIEW_BUILD = 'r104';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -2840,6 +2840,187 @@ function mountSourcesForm(mapnode, srcEdit) {
 }
 
 /* 配置面板外壳：说明 + 全部展开/收起 + 表单本体（异步由 Map 渲染好后塞进来） */
+/* ==========================================================================
+ * 11b. 按机房推送的图形编辑器（r104）
+ * ==========================================================================
+ * 它只是 dns_targets 那个文本框的一层视图：行从文本解析出来、改动写回文本，
+ * 存储格式与保存链路一个字没动 —— zone、注释、手写的怪行都还能原样留着。
+ * 为什么不做成独立 uci 段：那要把 apply-dns 的读取方式一起改（还有迁移与四处契约），
+ * 而这一层视图已经能做到"下拉选机房"，收益全拿到、风险小得多。
+ * 注意注释行与解析不了的行**原样保留**：用户手写的东西不该被这层吞掉。
+ */
+var DNS_LIMIT = 10;
+
+/* 文本 -> 行清单。kind='row' 是认识的记录行；kind='raw' 是注释/空行/怪行，原样留。 */
+function dnsLinesOf(text) {
+	var out = [];
+	String(text || '').split(/\r?\n/).forEach(function (line) {
+		var t = String(line).replace(/^\s+|\s+$/g, '');
+		if (!t || t.charAt(0) === '#' || t.indexOf('.') < 0) {
+			out.push({ kind: 'raw', text: String(line) });
+			return;
+		}
+		var tok = t.split(/\s+/);
+		var count = 1;
+		if (tok[1] && /^\d+$/.test(tok[1]))
+			count = Number(tok[1]);
+		var code = '';
+		var rest = [];
+		for (var k = 1; k < tok.length; k++) {
+			var x = tok[k];
+			if (k === 1 && /^\d+$/.test(x))
+				continue;
+			if (x.charAt(0) === '@' && /^[A-Za-z]{3}$/.test(x.slice(1)))
+				code = x.slice(1).toUpperCase();
+			else
+				rest.push(x);
+		}
+		out.push({ kind: 'row', row: { domain: tok[0], count: count, code: code, rest: rest } });
+	});
+	return out;
+}
+
+/* 行清单 -> 文本（顺序不变，"其余 token"如 zone 留在原位） */
+function dnsTextOf(lines) {
+	return (lines || []).map(function (ln) {
+		if (!ln || ln.kind !== 'row')
+			return ln && ln.text != null ? ln.text : '';
+		var r = ln.row;
+		var s = r.domain + ' ' + (r.count || 1);
+		if (r.code)
+			s += ' @' + r.code;
+		(Array.isArray(r.rest) ? r.rest : []).forEach(function (x) { s += ' ' + x; });
+		return s.replace(/\s+$/, '');
+	}).join('\n');
+}
+
+function DnsRowsEditor(p) {
+	var wrap = el('div', { class: 'dnsrows' });
+	var lines = dnsLinesOf(p.value);
+	var codes = p.codes || [];
+
+	function emit() {
+		if (p.onChange)
+			p.onChange(dnsTextOf(lines));
+	}
+
+	function paint() {
+		clear(wrap);
+		wrap.appendChild(el('div', { class: 'dnsrow dnsrow-h', 'aria-hidden': 'true' }, [
+			el('span', { text: T('机房') }),
+			el('span', { text: T('记录名') }),
+			el('span', { text: T('条数') }),
+			el('span', { text: '' })
+		]));
+		lines.forEach(function (ln, idx) {
+			if (!ln || ln.kind !== 'row') {
+				/* 注释/怪行：只显示，不参与编辑 —— 保留原位，保存时原样写回 */
+				wrap.appendChild(el('div', { class: 'dnsrow dnsrow-raw' },
+					el('span', { class: 'dim', text: String((ln && ln.text) || '') })));
+				return;
+			}
+			var r = ln.row;
+			var sel = el('select', { class: 'dnsrow-code' });
+			sel.appendChild(el('option', { value: '', text: T('不限（全局前 N）') }));
+			codes.forEach(function (c) {
+				sel.appendChild(el('option', {
+					value: String(c.dc),
+					text: c.count != null && c.count !== '' ? String(c.dc) + T('（%s 条）').format(String(c.count)) : String(c.dc)
+				}));
+			});
+			/* 配置里写了本轮不存在的机房：也要能显示出来，否则一保存就被改成「不限」 */
+			var known = false;
+			for (var ci = 0; ci < codes.length; ci++) {
+				if (String(codes[ci].dc) === r.code) { known = true; break; }
+			}
+			if (r.code && !known)
+				sel.appendChild(el('option', { value: r.code, text: r.code + T('（本轮无）') }));
+			sel.value = r.code || '';
+			sel.addEventListener('change', function () { r.code = sel.value; emit(); });
+
+			var dom = el('input', { type: 'text', class: 'dnsrow-dom', value: r.domain, placeholder: 'jp.example.com' });
+			dom.addEventListener('input', function () { r.domain = dom.value; emit(); });
+
+			var cnt = el('input', {
+				type: 'number', class: 'dnsrow-n', min: '1', max: String(DNS_LIMIT),
+				value: String(r.count || 1)
+			});
+			cnt.addEventListener('input', function () {
+				var v = Number(cnt.value);
+				r.count = (isFinite(v) && v >= 1) ? Math.min(DNS_LIMIT, Math.floor(v)) : 1;
+				emit();
+			});
+
+			var del = Button({
+				kind: 'lnk', label: T('删除'),
+				onClick: function () {
+					lines.splice(idx, 1);
+					emit();
+					paint();
+				}
+			});
+
+			wrap.appendChild(el('div', { class: 'dnsrow' }, [ sel, dom, cnt, del ]));
+		});
+		wrap.appendChild(el('div', { class: 'dnsrows-add' }, Button({
+			kind: 'lnk', label: T('+ 添加一行'),
+			onClick: function () {
+				lines.push({ kind: 'row', row: { domain: '', count: 1, code: '', rest: [] } });
+				emit();
+				paint();
+			}
+		})));
+	}
+
+	paint();
+	return wrap;
+}
+
+/* 把编辑器挂到 dns_targets 那个字段里（文本域上方）。找不到字段就安静跳过 ——
+ * 配置页的 DOM 由 CBI 生成，契约变了也不该把整页带白。 */
+function mountDnsEditor(mapnode) {
+	if (!mapnode || !mapnode.querySelector)
+		return null;
+	var box = mapnode.querySelector('.cbi-value[data-name="dns_targets"]');
+	if (!box || box.__dnsEditor)
+		return null;
+	var ta = box.querySelector('textarea');
+	if (!ta)
+		return null;
+	var st = store.get() && store.get().status;
+	var codes = [];
+	((st && st.dc_summary) || []).forEach(function (r) {
+		if (r && r.dc)
+			codes.push({ dc: String(r.dc), count: r.count });
+	});
+	var ed = DnsRowsEditor({
+		codes: codes,
+		value: ta.value,
+		onChange: function (text) {
+			if (ta.value === text)
+				return;
+			ta.value = text;
+			/* 让 CBI 认为这个字段被改过：它监听的就是 input */
+			var ev;
+			try {
+				ev = new Event('input', { bubbles: true });
+			} catch (e) {
+				ev = document.createEvent('HTMLEvents');
+				ev.initEvent('input', true, false);
+			}
+			ta.dispatchEvent(ev);
+		}
+	});
+	var host = el('div', { class: 'dnsrows-host' }, [
+		el('p', { class: 'note' }, T('下面这几行是同一个清单的图形版：这里改了会同步写进下面的文本框（一行「记录名 数量 @机房码」）。下方文本框仍可直接手写 zone、注释。')),
+		ed
+	]);
+	var field = box.querySelector('.cbi-value-field') || box;
+	field.insertBefore(host, ta);
+	box.__dnsEditor = true;
+	return ed;
+}
+
 function ConfigPane() {
 	var btnAll = Button({ kind: 'lnk', label: T('全部展开') });
 	var btnNone = Button({ kind: 'lnk', label: T('全部收起') });
@@ -4339,6 +4520,8 @@ return view.extend({
 			var root = buildPage(mapnode);
 			/* 落点由 regroupForm 自己保证（分组必须留在 map 节点里面，见该函数末注释） */
 			regroupForm(mapnode);
+			/* r104：按机房推送的图形编辑器（dns_targets 的一层视图，存储不变） */
+			mountDnsEditor(mapnode);
 			/* 源清单是另一张【只含 community_sources】的 Map，渲染进源页的宿主。
 			 * 顺序不能颠倒：宿主是 buildPage 时才创建的。 */
 			var ms = sourcesMap();

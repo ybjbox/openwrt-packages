@@ -38,6 +38,8 @@ const hook = "\nglobalThis.__cf_t = {\n" +
 	"\tlogStamp: logStamp, logAnchor: logAnchor, logAnchorTop: logAnchorTop,\n" +
 	"\tTabBar: TabBar, StatusRail: StatusRail, Readout: Readout,\n" +
 	"\tICONS: ICONS, svgIcon: svgIcon, Button: Button,\n" +
+	"dnsLinesOf: (typeof dnsLinesOf === 'function' ? dnsLinesOf : null), dnsTextOf: (typeof dnsTextOf === 'function' ? dnsTextOf : null),\n" +
+	"DnsRowsEditor: (typeof DnsRowsEditor === 'function' ? DnsRowsEditor : null),\n" +
 	"\tregroupForm: regroupForm, ConfigPane: ConfigPane,\n" +
 	"\thelp: help, applyHelp: applyHelp, HelpMark: HelpMark, HELP: HELP,\n" +
 	"\tTAB_DEFS: TAB_DEFS, GROUPS: GROUPS, GROUP_OPTIONS: GROUP_OPTIONS,\n" +
@@ -1112,8 +1114,42 @@ eq('正在跑的时候不提示',
 }
 
 /* ================================================================== *
- * 6d. r102：dc_show —— 只画配置的机房、每块按配置条数、缺的机房留占位
+ * 6e. r104：按机房推送的图形编辑器（dns_targets 的视图层）
  * ================================================================== */
+{
+	const txt = 'jp.example.com 2 @NRT\n# 手写的注释\n\nwww.example.com 1 jp.example.jp';
+	const lines = t.dnsLinesOf(txt);
+	eq('r104 文本被拆成 4 段（2 行记录 + 注释 + 空行）', lines.length, 4);
+	eq('r104 机房码被认出来', lines[0].row.code, 'NRT');
+	eq('r104 条数被认出来', lines[0].row.count, 2);
+	eq('r104 zone 留在"其余 token"里，不丢', lines[3].row.rest.join(','), 'jp.example.jp');
+	eq('r104 注释与空行原样保留', lines[1].kind + '/' + lines[2].kind, 'raw/raw');
+	eq('r104 行→文本可往返（注释与空行留在原位）', t.dnsTextOf(lines), txt);
+
+	const got = [];
+	const ed = t.DnsRowsEditor({
+		codes: [ { dc: 'NRT', count: 8 }, { dc: 'KIX', count: 4 } ],
+		value: 'a.example.com 2 @NRT\nb.example.com 1\nc.example.com 3 @DME',
+		onChange: function (v) { got.push(v); }
+	});
+	const rows = byClass(ed, 'dnsrow').filter(n => !/dnsrow-h|dnsrow-raw/.test(String(n.attrs['class'] || '')));
+	eq('r104 每行记录渲染一行控件', rows.length, 3);
+	const sels = byTag(ed, 'select');
+	eq('r104 每行一颗机房下拉', sels.length, 3);
+	ok('r104 下拉第一项是"不限"', /不限/.test(textOf(byTag(sels[0], 'option')[0])), textOf(byTag(sels[0], 'option')[0]));
+	ok('r104 下拉里带本轮条数', byTag(ed, 'option').some(o => /NRT（8 条）/.test(textOf(o))), 'option');
+	eq('r104 已配置的机房被选中', sels[0].value, 'NRT');
+	ok('r104 本轮不存在的机房仍能显示（标"本轮无"）',
+		byTag(ed, 'option').some(o => /DME（本轮无）/.test(textOf(o))), 'option');
+
+	sels[1].value = 'KIX';
+	sels[1].dispatch('change');
+	eq('r104 改下拉会写回文本（只改那一行）',
+		got.length ? got[got.length - 1].split('\n')[1] : '(没触发)', 'b.example.com 1 @KIX');
+	eq('r104 其余行原样不动', got.length ? got[got.length - 1].split('\n')[0] : '', 'a.example.com 2 @NRT');
+}
+
+
 {
 	const it2 = (ip, ttfb) => ({ ip: ip, ttfb_ms: ttfb, connect_ms: 10, speed_bps: 1000 });
 	const d2 = (code, items) => ({ dc: code, count: items.length,

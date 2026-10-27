@@ -670,3 +670,20 @@
   word-break:break-all;
   line-height:1.8;
 }
+
+/* ---- r104：按机房推送的图形编辑器（dns_targets 的视图层） ---- */
+.cfp .dnsrows-host{margin:.2em 0 .6em}
+.cfp .dnsrows{border:1px solid var(--rule);border-radius:var(--r2);overflow:hidden}
+.cfp .dnsrow{display:grid;grid-template-columns:9.5em 1fr 5em 3.2em;gap:var(--s2);align-items:center;padding:.35em var(--s2)}
+.cfp .dnsrow + .dnsrow{border-top:1px solid var(--rule)}
+.cfp .dnsrow-h{font-size:var(--t-xs);color:var(--ink-3)}
+.cfp .dnsrow-h span{padding-left:.1em}
+.cfp .dnsrow-raw{grid-template-columns:1fr;color:var(--ink-3)}
+.cfp .dnsrowe-code,.cfp .dnsrow select,.cfp .dnsrow input{width:100%;box-sizing:border-box}
+.cfp .dnsrow input[type=number]{text-align:right}
+.cfp .dnsrows-add{padding:.3em var(--s2);border-top:1px solid var(--rule)}
+@media (max-width:760px){
+  .cfp .dnsrow{grid-template-columns:1fr 1fr;row-gap:var(--s2)}
+  .cfp .dnsrow-h{display:none}
+}
+
