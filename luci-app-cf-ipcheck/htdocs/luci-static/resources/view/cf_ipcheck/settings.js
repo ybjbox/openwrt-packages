@@ -30,7 +30,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r110';
+var VIEW_BUILD = 'r111';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -2583,11 +2583,11 @@ var GROUP_OPTIONS = {
 	            'speed_bytes', 'speed_timeout',
 	            'speed_domain', 'speed_path',
 	            'colo_probe', 'colo_domain', 'canary_check', 'probe_user', 'annotate' ],
-	/* DNS 解析（r96 起）：6 个字段。dns_proxied 故意不在这里 —— 它固定按灰云写，
+	/* DNS 解析（r96 起）：8 个字段（r110 加了注释后缀与自动编号）。dns_proxied 故意不在这里 —— 它固定按灰云写，
 	 * 摆到页面上只会让人以为自己能切橙云（切了功能就失效）。
 	 * r97 把 dns_record（单条）换成 dns_targets（多记录名 + 每个可挂多个 IP）；
 	 * dns_record 这个 uci 键仍然保留，只为升级兼容，不在界面上出现。 */
-	dns:   [ 'dns_sync', 'dns_zone', 'dns_targets', 'dns_ttl', 'dns_token', 'dns_token_file' ],
+	dns:   [ 'dns_sync', 'dns_zone', 'dns_targets', 'dns_comment', 'dns_auto_name', 'dns_ttl', 'dns_token', 'dns_token_file' ],
 	gist:  [ 'upload_gist', 'gist_id', 'gist_file', 'gist_token', 'token_file' ]
 };
 
@@ -4500,21 +4500,6 @@ return view.extend({
 		o = dns.option(form.TextValue, 'dns_targets', _('记录名清单'), _('一行一个机房；同一记录名多行会合并'));
 		o.rows = 5;
 
-		/* r110：注释后缀 + 自动编号。注释前缀 cf-ipcheck 不动 —— 那是归属判据。 */
-		o = dns.option(form.Value, 'dns_comment', _('记录备注（可选）'), _('写在 cf-ipcheck 后面，便于在面板里认。'));
-		o.placeholder = 'bjstudio';
-		o.description = help('dns_comment',
-			_('可选。会写成「cf-ipcheck · 你的备注」。'),
-			_('只追加在固定前缀后面：「cf-ipcheck」这个前缀是"这条记录归本插件管"的唯一判据，'
-				+ '换掉它就等于把以前建的记录全变成别人的 —— 从此既不更新也不清理，所以不给改前缀。'));
-
-		o = dns.option(form.Flag, 'dns_auto_name', _('记录名自动编号'), _('test.example.com 3 → test1/test2/test3'));
-		o.default = '0';
-		o.rmempty = false;
-		o.description = help('dns_auto_name',
-			_('关闭（默认）：一个记录名下挂多条 A 记录。'),
-			_('打开后，「test.example.com 3」会写成 test1.example.com、test2.example.com、test3.example.com，'
-				+ '每个 1 条 A 记录（序号插在第一段后面）。数量调小时，多出来的编号（test4…test8）会把本插件建的那几条清掉。'));
 		o.cfgvalue = function (section_id) {
 			/* 这台机器的 CBI 上 this.super 拿不到值 —— 真机实测：配置里明明有
 			 * option dns_targets 'test.bjstudio.eu.org 3 @NRT'，文本框却是空的，
@@ -4553,6 +4538,21 @@ return view.extend({
 			return bad.length ? _('这几行不像记录名：') + ' ' + bad.join(' / ') : true;
 		};
 
+		/* r110：注释后缀 + 自动编号。注释前缀 cf-ipcheck 不动 —— 那是归属判据。 */
+		o = dns.option(form.Value, 'dns_comment', _('记录备注（可选）'), _('写在 cf-ipcheck 后面，便于在面板里认。'));
+		o.placeholder = 'bjstudio';
+		o.description = help('dns_comment',
+			_('可选。会写成「cf-ipcheck · 你的备注」。'),
+			_('只追加在固定前缀后面：「cf-ipcheck」这个前缀是"这条记录归本插件管"的唯一判据，'
+				+ '换掉它就等于把以前建的记录全变成别人的 —— 从此既不更新也不清理，所以不给改前缀。'));
+
+		o = dns.option(form.Flag, 'dns_auto_name', _('记录名自动编号'), _('test.example.com 3 → test1/test2/test3'));
+		o.default = '0';
+		o.rmempty = false;
+		o.description = help('dns_auto_name',
+			_('关闭（默认）：一个记录名下挂多条 A 记录。'),
+			_('打开后，「test.example.com 3」会写成 test1.example.com、test2.example.com、test3.example.com，'
+				+ '每个 1 条 A 记录（序号插在第一段后面）。数量调小时，多出来的编号（test4…test8）会把本插件建的那几条清掉。'));
 		o = dns.option(form.Value, 'dns_ttl', _('TTL（秒）'), _('建议 60，便于切换。'));
 		o.datatype = 'and(uinteger,min(1),max(86400))';
 		o.default = '60';
