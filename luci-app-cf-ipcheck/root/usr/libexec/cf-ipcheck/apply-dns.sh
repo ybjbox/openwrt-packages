@@ -40,6 +40,12 @@
 #   apply-dns.sh --dry-run             # 只打印计划，不联网、不写
 #   apply-dns.sh                       # 需要 dns_sync=1（或 --manual/--force）才真的写
 #   apply-dns.sh --ip 1.2.3.4,5.6.7.8  # 指定候选 IP（逗号分隔，顺序即优先级）
+#
+# dns_targets 一行一条：`记录名 条数 [@机房码] [zone]`。带 @NRT 就只取该机房的 IP；
+# 同一个记录名可以写多行（不同机房），**合并成一处**再写：条数取最大的那个，
+# 机房取并集，候选 IP 跨机房按 ttfb 合并排序 —— 日本同时有 NRT 和 KIX 时不会互相覆盖。
+# 某个机房这一轮一条可用 IP 都没有时，该记录名按配置**清空**（日志会明说），
+# 免得域名一直指着上一轮的旧 IP。
 #   apply-dns.sh --selftest            # 离线自检，不联网
 
 set -u
@@ -224,7 +230,24 @@ parse_targets() {
 		set -- $_l
 		_f=${1:-}
 		_c=${2:-1}
-		_z=${3:-}
+		# 第 3 个 token 起：可能是 zone，也可能是 @机房码（两者顺序随意，@ 开头的一定是机房）
+		_z=''
+		_colo=''
+		_i=0
+		for _t in "$@"; do
+			_i=$((_i + 1))
+			[ "$_i" -le 2 ] && continue
+			case "$_t" in
+				@*)
+					_cc=$(printf '%s' "${_t#@}" | tr 'a-z' 'A-Z')
+					case "$_cc" in
+						[A-Z][A-Z][A-Z]) _colo=$_cc ;;
+						*) printf '解析失败：%s 的机房码「%s」不像三位码，按不限机房处理\n' "$_f" "${_t#@}" >&2 ;;
+					esac
+					;;
+				*) [ -n "$_z" ] || _z=$_t ;;
+			esac
+		done
 
 		case "$_f" in
 			'') printf '解析失败：缺记录名\n' >&2; continue ;;
@@ -245,8 +268,26 @@ parse_targets() {
 			continue
 		fi
 
-		printf '%s|%s|%s\n' "$_f" "$_c" "$_z"
-	done
+		printf '%s|%s|%s|%s\n' "$_f" "$_c" "$_z" "$_colo"
+	done | awk -F'|' '
+		# 同一个记录名 + zone 的多行合并：条数取最大、机房取并集（逗号分隔）。
+		# 不合并的话同域名的两行会互相覆盖 —— 第二轮只写自己那几个，第一轮的等于白写。
+		{
+			k = $1 "|" $3
+			if (!(k in cnt)) { order[++n] = k; cnt[k] = 0 }
+			if ($2 + 0 > cnt[k]) cnt[k] = $2 + 0
+			if ($4 != "") {
+				if (codes[k] == "") codes[k] = $4
+				else if (index("," codes[k] ",", "," $4 ",") == 0) codes[k] = codes[k] "," $4
+			}
+		}
+		END {
+			for (i = 1; i <= n; i++) {
+				k = order[i]
+				split(k, p, "|")
+				printf "%s|%d|%s|%s\n", p[1], cnt[k], p[2], codes[k]
+			}
+		}'
 }
 
 # ---- 候选 IP 清单 ----
@@ -334,34 +375,45 @@ selftest() {
 
 	# ---- 目标清单解析（用户手写，容错边界最容易错）----
 	chk '单行只写记录名 → 数量默认 1' \
-		"$(parse_targets 'cf.example.com' 'example.com' 2>/dev/null)" 'cf.example.com|1|example.com'
+		"$(parse_targets 'cf.example.com' 'example.com' 2>/dev/null)" 'cf.example.com|1|example.com|'
 	chk '带数量' \
-		"$(parse_targets 'cf.example.com 3' 'example.com' 2>/dev/null)" 'cf.example.com|3|example.com'
+		"$(parse_targets 'cf.example.com 3' 'example.com' 2>/dev/null)" 'cf.example.com|3|example.com|'
 	chk '带数量与独立 zone' \
-		"$(parse_targets 'api.other.net 2 other.net' 'example.com' 2>/dev/null)" 'api.other.net|2|other.net'
+		"$(parse_targets 'api.other.net 2 other.net' 'example.com' 2>/dev/null)" 'api.other.net|2|other.net|'
 	chk '空行与 # 注释行被跳过' \
 		"$(parse_targets '
 # 这是注释
 cf.example.com 2
 
-' 'example.com' 2>/dev/null)" 'cf.example.com|2|example.com'
+' 'example.com' 2>/dev/null)" 'cf.example.com|2|example.com|'
 	chk '行尾注释被去掉' \
-		"$(parse_targets 'cf.example.com 2 # 主线' 'example.com' 2>/dev/null)" 'cf.example.com|2|example.com'
+		"$(parse_targets 'cf.example.com 2 # 主线' 'example.com' 2>/dev/null)" 'cf.example.com|2|example.com|'
 	_multi=$(printf 'a.example.com 3\nb.example.com 1\nc.example.net 2 other.net')
 	chk '多行保序' \
 		"$(parse_targets "$_multi" 'example.com' 2>/dev/null | tr '\n' ',')" \
-		'a.example.com|3|example.com,b.example.com|1|example.com,c.example.net|2|other.net,'
+		'a.example.com|3|example.com|,b.example.com|1|example.com|,c.example.net|2|other.net|,'
 	chk '不带 zone 且无全局 zone 时按记录名推导' \
-		"$(parse_targets 'cf.example.com 2' '' 2>/dev/null)" 'cf.example.com|2|example.com'
+		"$(parse_targets 'cf.example.com 2' '' 2>/dev/null)" 'cf.example.com|2|example.com|'
 	chk '数量非数字 → 丢弃并报错' \
 		"$(parse_targets 'cf.example.com x' 'example.com' 2>/dev/null)" ''
 	chk '数量 0 → 丢弃' \
 		"$(parse_targets 'cf.example.com 0' 'example.com' 2>/dev/null)" ''
 	chk '数量超上限 → 截到 10' \
-		"$(parse_targets 'cf.example.com 99' 'example.com' 2>/dev/null)" 'cf.example.com|10|example.com'
+		"$(parse_targets 'cf.example.com 99' 'example.com' 2>/dev/null)" 'cf.example.com|10|example.com|'
 	chk '记录名不像 FQDN → 丢弃' \
 		"$(parse_targets 'nohost 2' 'example.com' 2>/dev/null)" ''
 	chk '全空输入 → 空输出' "$(parse_targets '' 'example.com' 2>/dev/null)" ''
+
+	# ---- r103：@机房码与同域名合并 ----
+	chk '带 @机房码：机房记进第 4 段，zone 照常推' 		"$(parse_targets 'jp.example.com 3 @NRT' 'example.com' 2>/dev/null)" 'jp.example.com|3|example.com|NRT'
+	chk '小写 @nrt 规范成大写' 		"$(parse_targets 'jp.example.com 2 @nrt' 'example.com' 2>/dev/null)" 'jp.example.com|2|example.com|NRT'
+	chk '@机房码与 zone 顺序随意' 		"$(parse_targets 'jp.example.com 1 @NRT jp.example.jp' '' 2>/dev/null)" 'jp.example.com|1|jp.example.jp|NRT'
+	chk '同域名多行：条数取最大、机房取并集' 		"$(parse_targets 'jp.example.com 2 @NRT
+jp.example.com 3 @KIX' 'example.com' 2>/dev/null)" 'jp.example.com|3|example.com|NRT,KIX'
+	chk '同域名重复写同一机房不重复记' 		"$(parse_targets 'jp.example.com 2 @NRT
+jp.example.com 1 @NRT' 'example.com' 2>/dev/null)" 'jp.example.com|2|example.com|NRT'
+	chk '机房码不像三位码 ⇒ 告警并按不限机房处理' 		"$(parse_targets 'jp.example.com 1 @XX' 'example.com' 2>/dev/null)" 'jp.example.com|1|example.com|'
+	chk '不带 @ 的行仍是全局（第 4 段空）' 		"$(parse_targets 'www.example.com 1' 'example.com' 2>/dev/null)" 'www.example.com|1|example.com|'
 
 	# ---- 候选 IP：读取 / 去重 / 保序 ----
 	_tmp="${TMPDIR:-/tmp}/cfip-test.$$"
@@ -611,6 +663,18 @@ top_ips() {
 	printf '%s\n' "$CANDIDATES" | head -n "$1"
 }
 
+# 这些机房本轮的候选 IP：跨机房合并后按 ttfb 升序（每行一个）。
+# 数据取自 result.json 的 dc_summary（每块的 items 已按 ttfb 排好，这里再全局排一次）。
+colo_ips() { # $1=逗号分隔的机房码
+	[ -n "$JQ" ] || return 1
+	[ -f "$RUN_DIR/result.json" ] || return 1
+	"$JQ" -r --arg codes ",$1," '
+		[ .dc_summary[]? | . as $r
+		  | select($codes | index("," + $r.dc + ","))
+		  | $r.items[]? | { ip: .ip, t: (.ttfb_ms // 1000000000) } ]
+		| sort_by(.t) | .[].ip' "$RUN_DIR/result.json" 2>/dev/null
+}
+
 # 某 IP 是否在换行分隔的列表里
 ip_in_list() {
 	case "
@@ -657,20 +721,38 @@ resolve_zone() {
 handle_target() {
 	_no=$1; _tot=$2; _spec=$3
 	_f=${_spec%%|*}; _rest=${_spec#*|}
-	_n=${_rest%%|*}; _z=${_rest#*|}
+	_n=${_rest%%|*}; _rest=${_rest#*|}
+	_z=${_rest%%|*}; _colo=${_rest#*|}
+	[ "$_colo" = "$_rest" ] && _colo=''
 
-	_want=$(top_ips "$_n")
+	if [ -n "$_colo" ]; then
+		_want=$(colo_ips "$_colo" | head -n "$_n")
+	else
+		_want=$(top_ips "$_n")
+	fi
 	_want_n=$(printf '%s\n' "$_want" | grep -c .)
 	_want_csv=$(printf '%s\n' "$_want" | tr '\n' ' ' | sed 's/ $//')
 
 	_tag="目标 $_no/$_tot $_f"
-	[ "$_want_n" -ge "$_n" ] || log "$_tag：榜单只有 $_want_n 个可用 IP（想要 $_n 个），按实际数量办"
+	if [ -n "$_colo" ] && [ "$_want_n" = 0 ]; then
+		# 这是配置里最危险的一种状态：机房被墙/没测到，而这个域名只挂这个机房。
+		# 按既定语义清空它 —— 但必须说得让人一眼看见，别让人几天后才发现解析空了。
+		log "$_tag：@$_colo 本轮没有可用 IP —— 按配置清空 $_f 的记录（想避免就再挂一个不限机房的记录名做兜底）"
+	fi
+	if [ "$_want_n" -lt "$_n" ]; then
+		if [ -n "$_colo" ]; then
+			log "$_tag：@$_colo 只有 $_want_n 个可用 IP（想要 $_n 个），按实际数量办"
+		else
+			log "$_tag：榜单只有 $_want_n 个可用 IP（想要 $_n 个），按实际数量办"
+		fi
+	fi
 
 	_zid=$(resolve_zone "$_z") || return 3
 
 	# ---- 读现有记录（同名 A 记录可能多条，全要）----
 	if [ "$DRY" = 1 ]; then
 		printf '[dry-run] %s（zone %s）\n' "$_tag" "$_z"
+		printf '          机房: %s\n' "${_colo:-不限（全局前 N）}"
 		printf '          期望: %s\n' "$_want_csv"
 		printf '          GET   %s/zones/%s/dns_records?type=A&name=%s&per_page=100\n' "$API" "${_zid:-<zone_id>}" "$_f"
 		printf '          读回后按差异执行：缺的 POST、comment=%s 且不在期望内的 DELETE、其余不动\n' "$MARK"

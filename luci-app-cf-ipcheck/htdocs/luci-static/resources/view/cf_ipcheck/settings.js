@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r102';
+var VIEW_BUILD = 'r103';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -4286,7 +4286,7 @@ return view.extend({
 		/* 多行文本框。这里有个必须处理的坑：uci 的 option 值不能含换行
 		 * （换行会把 /etc/config 写成两行，直接坏掉），所以配置里存成
 		 * 「分号分隔的单行」，界面上读写时各转一次。不转的话用户一按保存就写出坏配置。 */
-		o = dns.option(form.TextValue, 'dns_targets', _('记录名清单'), _('一行一条：记录名 [数量] [zone]'));
+		o = dns.option(form.TextValue, 'dns_targets', _('记录名清单'), _('一行一条：记录名 [数量] [@机房码] [zone]'));
 		o.rows = 5;
 		o.cfgvalue = function (section_id) {
 			/* super 不可用时退回空串而不是抛错：一个字段的取值异常不该把整页带白。
@@ -4303,8 +4303,8 @@ return view.extend({
 			return lines.join('; ');
 		};
 		o.description = help('dns_targets',
-			_('一行一条：记录名 [数量] [zone]'),
-			_('每行一条：记录名 数量 zone，后两项可省。数量 = 这个记录名下挂几条 A 记录（省=1，最多 10）；同名多条在 DNS 层轮流返回，某颗连不上会自动落到别的，所以这既是分散也是粗粒度容灾。zone 省了用上面的 Zone，两处都空就从记录名推（cf.example.com → example.com）；多个记录名分属不同域名时各自行尾写 zone。行首 # 为注释。例：cf.example.com 3 挂前 3 名，www.example.com 1 只挂第 1 名。只改带 cf-ipcheck 备注的记录，面板上手工加的不会被碰（日志会报几条未动）；可用 IP 不够时按实际写，并在日志里说明。'));
+			_('一行一条：记录名 [数量] [@机房码] [zone]'),
+			_('每行一条：记录名 数量 [@机房码] [zone]，后三项可省。数量 = 这个记录名下挂几条 A 记录（省=1，最多 10）；同名多条在 DNS 层轮流返回，某颗连不上会自动落到别的，所以这既是分散也是粗粒度容灾。写 @NRT 就只取这个机房的 IP（机房码见「榜单」页的汇总）；同一个记录名可以写多行、每行一个机房 —— 会合并成一处再写：条数取最大的那个，机房取并集，候选 IP 跨机房按延迟合并排序（日本同时有 NRT 和 KIX 时不会互相覆盖）。某个机房这一轮没有可用 IP 时，这个记录名会被清空（日志会明说）；怕断就把同一域名再挂一行不带 @ 的做全局兜底。zone 省了用上面的 Zone，两处都空就从记录名推（cf.example.com → example.com）；多个记录名分属不同域名时各自行尾写 zone。行首 # 为注释。例：jp.example.com 2 @NRT；只改带 cf-ipcheck 备注的记录，面板上手工加的不会被碰；可用 IP 不够时按实际写，并在日志里说明。'));
 		o.validate = function (section_id, value) {
 			var bad = String(value || '').split(/\r?\n/).filter(function (s) {
 				s = s.replace(/^[ \t]+|[ \t]+$/g, '');
