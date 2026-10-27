@@ -29,7 +29,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r104';
+var VIEW_BUILD = 'r105';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -3015,8 +3015,15 @@ function mountDnsEditor(mapnode) {
 		el('p', { class: 'note' }, T('下面这几行是同一个清单的图形版：这里改了会同步写进下面的文本框（一行「记录名 数量 @机房码」）。下方文本框仍可直接手写 zone、注释。')),
 		ed
 	]);
-	var field = box.querySelector('.cbi-value-field') || box;
-	field.insertBefore(host, ta);
+	/* 参照节点必须是 textarea 自己的父节点：CBI 把它包在一层无名 div 里，
+	 * 拿 .cbi-value-field 作父节点会抛 NotFoundError —— 而这段在 render 的 promise 里，
+	 * 抛出去就是**整页白屏**（r104 装机时就是这么挂的，桩测发现不了）。 */
+	try {
+		var parent = ta.parentNode || box;
+		parent.insertBefore(host, ta);
+	} catch (e) {
+		return null;
+	}
 	box.__dnsEditor = true;
 	return ed;
 }
