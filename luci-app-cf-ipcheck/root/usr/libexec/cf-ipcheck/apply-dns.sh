@@ -28,7 +28,13 @@
 #   · 令牌只进 Authorization 头，任何时候都不打印、不写日志；
 #   · --dry-run 把 Authorization 打码后打印计划，不联网；
 #   · 单请求与总耗时都有上限（rpcd 对外部执行有 30 秒平台级上限）；
-#   · 任何失败都只追加一行日志，不做跨目标的回滚（避免覆盖他人改动）。
+#   · 任何失败都只追加一行日志，不做跨目标的回滚（避免覆盖他人改动）；
+#   · 写的时候**先加后删**：新增成功之后才删多余的旧记录。反过来（先删后加）一旦
+#     新增失败，解析就会少几条甚至空掉 —— 那是"把网站写挂"，比多留一条旧 IP 严重得多；
+#   · 同一时刻只允许一个同步在跑（mkdir 原子锁）：自动收尾与页面按钮是两条独立路径，
+#     同时算 diff 会各自基于同一份旧快照 POST/DELETE，结果是重复记录或一边删一边加；
+#   · 每条要删的记录在删之前把原字段（content/proxied/ttl/comment/id）写进日志，
+#     这就是"撤回"需要的全部信息 —— 密码/令牌除外，留在日志里也不会多一条。
 #
 # 用法：
 #   apply-dns.sh --dry-run             # 只打印计划，不联网、不写
@@ -48,6 +54,11 @@ REQ_TIMEOUT=4              # 单请求超时（秒）。见下面 api() 的注�
 RUN_DIR="${CFIP_RUN_DIR:-/tmp/cf-ipcheck}"
 ETC_DIR="${CFIP_ETC_DIR:-/etc/cf-ipcheck}"
 LOG="$RUN_DIR/cf-ipcheck.log"
+# 锁的状态变量要在最早处赋值：--selftest 会在读到锁那段代码之前就 exit，
+# 而自测里要拿它做 save/restore（踩过一次 unbound variable）。
+LOCKDIR="$RUN_DIR/dns-sync.lock"
+LOCK_STALE=600
+LOCK_HELD=0
 
 DRY=0
 # 三个动作要分开，不能用同一个 force 混着表达：
@@ -390,6 +401,32 @@ cf.example.com 2
 	ETC_DIR=$_save_etc2; ZCACHE=$_save_zc
 	rm -rf "$_tmp2" 2>/dev/null
 
+	# ---- 并发锁（B2）：只有一个人能拿到；残留/陈旧的锁要能被接管 ----
+	_tmp3="${TMPDIR:-/tmp}/cfip-lock.$$"
+	mkdir -p "$_tmp3" 2>/dev/null
+	_save_run3=$RUN_DIR; _save_lock3=$LOCKDIR; _save_log3=$LOG
+	RUN_DIR="$_tmp3"; LOCKDIR="$_tmp3/dns-sync.lock"; LOG="$_tmp3/cf-ipcheck.log"
+	LOCK_HELD=0
+	lock_take; chk '第一次拿锁成功' "$?" 0
+	lock_take; chk '同一进程再拿一次拿不到（有活着的持有者）' "$?" 1
+	release_lock
+	lock_take; chk '释放后能再拿到' "$?" 0
+	# 残留锁：持有者 pid 已经不在
+	release_lock
+	mkdir -p "$LOCKDIR"; printf '999999 %s\n' "$(date +%s)" >"$LOCKDIR/owner"
+	lock_take; chk '持有者进程已不在的残留锁会被接管' "$?" 0
+	# 陈旧锁：pid 活着（就是自己）但起锁时间超过 10 分钟
+	release_lock
+	mkdir -p "$LOCKDIR"; printf '%s %s\n' "$$" "$(( $(date +%s) - 9999 ))" >"$LOCKDIR/owner"
+	lock_take; chk '活着但超时的锁会被接管（断电/被杀不再永久卡死）' "$?" 0
+	# 时间字段是脏值：算术里出现非数字会把 BusyBox 的 shell 打死（cfg_num 那一课）
+	release_lock
+	mkdir -p "$LOCKDIR"; printf '999999 胡来\n' >"$LOCKDIR/owner"
+	lock_take; chk '时间字段是脏值时不炸、按已死处理' "$?" 0
+	release_lock
+	RUN_DIR=$_save_run3; LOCKDIR=$_save_lock3; LOG=$_save_log3
+	rm -rf "$_tmp3" 2>/dev/null
+
 	if [ -n "$JQ" ]; then
 		TTL=60
 		_b=$(body_patch '1.2.3.4')
@@ -438,8 +475,56 @@ cf.example.com 2
 	return 0
 }
 
+release_lock() {
+	[ "${LOCK_HELD:-0}" = 1 ] && rm -rf "$LOCKDIR" 2>/dev/null
+	LOCK_HELD=0
+	return 0
+}
+
+lock_owner_alive() { # $1=pid
+	case "${1:-}" in
+		''|*[!0-9]*) return 1 ;;
+	esac
+	kill -0 "$1" 2>/dev/null
+}
+
+lock_take() {
+	mkdir -p "$RUN_DIR" 2>/dev/null
+	if mkdir "$LOCKDIR" 2>/dev/null; then
+		printf '%s %s\n' "$$" "$(date +%s)" >"$LOCKDIR/owner" 2>/dev/null
+		LOCK_HELD=1
+		trap 'release_lock' EXIT INT TERM HUP
+		return 0
+	fi
+	_own=$(sed -n '1p' "$LOCKDIR/owner" 2>/dev/null)
+	_p=${_own%% *}
+	_t=${_own##* }
+	# 算术里出现非数字会把 BusyBox 的 shell 直接打死（cfg_num 那一课），先挡掉
+	case "$_t" in ''|*[!0-9]*) _t=0 ;; esac
+	_now=$(date +%s)
+	if lock_owner_alive "$_p" && [ $(( _now - _t )) -lt "$LOCK_STALE" ] 2>/dev/null; then
+		log "另一个 DNS 同步正在进行（pid $_p），本次跳过"
+		return 1
+	fi
+	if lock_owner_alive "$_p"; then
+		log "接管陈旧的 DNS 同步锁（pid $_p 已持有超过 ${LOCK_STALE} 秒）"
+	else
+		log "接管残留的 DNS 同步锁（pid ${_p:-?} 已不在）"
+	fi
+	rm -rf "$LOCKDIR"
+	mkdir "$LOCKDIR" 2>/dev/null || { log '拿不到 DNS 同步锁，本次跳过'; return 1; }
+	printf '%s %s\n' "$$" "$_now" >"$LOCKDIR/owner" 2>/dev/null
+	LOCK_HELD=1
+	trap 'release_lock' EXIT INT TERM HUP
+	return 0
+}
+
 [ "$SELFTEST" = 1 ] && { selftest; exit $?; }
 
+# ---------------------------------------------------------------- 并发锁
+# 为什么用 mkdir 而不是 flock：BusyBox 上没有 flock，而 mkdir 在所有 unix 上都是
+# 原子的（要么建成功、要么已存在）。锁目录里记 pid + 起锁时刻；pid 已死或超过
+# LOCK_STALE 秒就接管 —— 断电/被杀留下的锁不能让 DNS 同步永远停摆。
 # ---------------------------------------------------------------- 主流程
 
 DEFAULT_ZONE=$(cfg dns_zone)
@@ -505,6 +590,13 @@ if [ "$DRY" = 0 ]; then
 fi
 
 T_START=$(date +%s)
+
+# 单实例：--dry-run 只读、不占锁（否则"先看看计划"会被一个正在跑的同步挡住）。
+# 抢不到就 exit 2 —— 脚本自己已经把"另一个同步在跑"记进日志了，引擎那边按 2 处理，
+# 不会把它报成失败。
+if [ "$DRY" = 0 ]; then
+	lock_take || exit 2
+fi
 
 # 全量候选 IP（去重保序）。取不到就没有可写的内容。
 CANDIDATES=$(ranked_ips) || CANDIDATES=''
@@ -640,25 +732,32 @@ handle_target() {
 		return 0
 	fi
 
-	# ---- 删除多余的（先删后加：先把不再需要的名额腾出来）----
-	for _item in $_del; do
-		_id=${_item%%:*}
-		_ip=${_item#*:}
+	# ---- 先新增缺少的 ----
+	# 顺序是刻意的：新增成功之后才动删除。反过来的窗口里（旧的删了、新的还没建成）
+	# 这个记录名的 A 记录会少几条甚至空掉 —— 对线上来说就是解析中断或变慢。
+	# 先加的唯一代价是中间那一小会儿多一两颗"旧但当时可用"的 IP，DNS 层轮询无碍。
+	for _ip in $_add; do
 		budget_ok || return 3
-		_r=$(api DELETE "/zones/$_zid/dns_records/$_id") || { log "$_tag：删除 $_ip 失败（网络）"; return 3; }
+		_body=$(body_create "$_ip" "$_f")
+		_r=$(api POST "/zones/$_zid/dns_records" "$_body") || { log "$_tag：新增 $_ip 失败（网络），旧记录未动"; return 3; }
 		if [ "$(printf '%s' "$_r" | "$JQ" -r '.success')" != 'true' ]; then
-			log "$_tag：删除 $_ip 被拒：$(printf '%s' "$_r" | "$JQ" -r '.errors[0].message // "未知错误"')（保留原记录）"
+			log "$_tag：新增 $_ip 被拒：$(printf '%s' "$_r" | "$JQ" -r '.errors[0].message // "未知错误"')（旧记录未动）"
 			return 4
 		fi
 	done
 
-	# ---- 新增缺少的 ----
-	for _ip in $_add; do
+	# ---- 再删除多余的（删之前先把原记录留档）----
+	for _item in $_del; do
+		_id=${_item%%:*}
+		_ip=${_item#*:}
+		# 留档就是"撤回"要的全部信息：拿这一行去面板重建，或照着它手动 POST 回去。
+		_prev=$(printf '%s' "$_res" | "$JQ" -r --arg id "$_id" \
+			'.result[]|select(.id==$id)|"proxied=\(.proxied) ttl=\(.ttl) comment=\(.comment // "")"')
+		log "$_tag：删除前留档 $_f A $_ip（${_prev:-原字段读不到}，id=$_id）—— 要恢复就照这行重建"
 		budget_ok || return 3
-		_body=$(body_create "$_ip" "$_f")
-		_r=$(api POST "/zones/$_zid/dns_records" "$_body") || { log "$_tag：新增 $_ip 失败（网络）"; return 3; }
+		_r=$(api DELETE "/zones/$_zid/dns_records/$_id") || { log "$_tag：删除 $_ip 失败（网络）"; return 3; }
 		if [ "$(printf '%s' "$_r" | "$JQ" -r '.success')" != 'true' ]; then
-			log "$_tag：新增 $_ip 被拒：$(printf '%s' "$_r" | "$JQ" -r '.errors[0].message // "未知错误"')"
+			log "$_tag：删除 $_ip 被拒：$(printf '%s' "$_r" | "$JQ" -r '.errors[0].message // "未知错误"')（保留原记录）"
 			return 4
 		fi
 	done
@@ -671,13 +770,23 @@ handle_target() {
 	for _ip in $_want; do
 		printf '%s\n' "$_got" | grep -qx "$_ip" || _missing="$_missing $_ip"
 	done
-	_extra=$(printf '%s' "$_verify" | "$JQ" -r --arg m "$MARK" \
+	# 这里要的是"本工具建的、却不在期望里"的那些，不是"所有本工具建的"。
+	# 变量名沿用 _extra，但判据必须过一遍期望清单 —— 否则正常轮次也会误报"删除没生效"。
+	_mine_now=$(printf '%s' "$_verify" | "$JQ" -r --arg m "$MARK" \
 		'[.result[]|select((.comment//"")|startswith($m))|.content]|join(" ")')
+	_extra=''
+	for _ip in $_mine_now; do
+		ip_in_list "$_ip" "$_want" || _extra="$_extra $_ip"
+	done
 
 	_note=''
 	[ "$_other_n" -gt 0 ] && _note="，另有 $_other_n 条非本工具管理的记录未动"
 	if [ -n "$_missing" ]; then
 		log "$_tag：回读少了 IP:$_missing（期望 $_want_csv）—— 请人工核对（未做回滚，避免覆盖他人改动）"
+		return 5
+	fi
+	if [ -n "$(printf '%s' "$_extra" | tr -d ' ')" ]; then
+		log "$_tag：回读仍有本工具建却不在期望内的记录（$_extra）—— 删除没生效，请人工核对"
 		return 5
 	fi
 	log "$_tag：已同步 新增 $_add_n / 删除 $_del_n / 保持 $_keep_n（当前 $_want_csv）$_note"
