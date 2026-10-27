@@ -2714,6 +2714,10 @@ eq('再点一下回到只显示时刻', firstLts(), '04:28:44');
 		strings.filter(s => /^出口被接管$/.test(s)).length, 0);
 	ok('C7 术语第一次出现时给一句注解：SNI 那处带括号解释',
 		/SNI（[^）]+）/.test(join), shown(/SNI[^，。]{0,24}/));
+	/* r100：本文件 288 行的 String.prototype.format 只替换 %s。视图里只要还有 %d，
+	 * 测试拿到的就是字面 "%d"，对它的断言全部空转（真发生过 4 处）。 */
+	eq('视图里没有 %d（桩测的 format 只认 %s，否则断言空转）',
+		strings.filter(s => /%d/.test(s)).length, 0);
 }
 
 console.log(fails === 0 ? '=== view 渲染断言全部通过' : `=== view 渲染断言失败 ${fails} 项`);
