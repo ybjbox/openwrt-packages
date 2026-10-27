@@ -30,7 +30,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r111';
+var VIEW_BUILD = 'r112';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -4550,7 +4550,7 @@ return view.extend({
 		o.default = '0';
 		o.rmempty = false;
 		o.description = help('dns_auto_name',
-			_('关闭（默认）：一个记录名下挂多条 A 记录。'),
+			_('关闭时一个名字挂多条；打开后 test.example.com 3 → test1/test2/test3。'),
 			_('打开后，「test.example.com 3」会写成 test1.example.com、test2.example.com、test3.example.com，'
 				+ '每个 1 条 A 记录（序号插在第一段后面）。数量调小时，多出来的编号（test4…test8）会把本插件建的那几条清掉。'));
 		o = dns.option(form.Value, 'dns_ttl', _('TTL（秒）'), _('建议 60，便于切换。'));
