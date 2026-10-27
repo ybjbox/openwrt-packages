@@ -687,3 +687,6 @@
   .cfp .dnsrow-h{display:none}
 }
 
+/* ---- r109：记录名清单只留图形版，原始文本框藏起来（它仍是 CBI 取值/保存的那份） ---- */
+.cfp .cbi-value[data-name="dns_targets"] textarea{display:none}
+
