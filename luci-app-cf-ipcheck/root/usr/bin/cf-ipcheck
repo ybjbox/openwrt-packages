@@ -97,7 +97,7 @@ LOCK_MAX=21600
 # 解析顺序：CFIP_LIB 覆盖 > 脚本旁边的 ../libexec/cf-ipcheck/（仓库树与装机后都成立）
 # > /usr/libexec/cf-ipcheck/。找不到就明确退出：缺了它「按绝对路径找 uci」会静默失效，
 # 症状是整个配置被忽略、页面显示的一切都是默认值。
-_cfip_self=$(CDPATH= cd -- "$(dirname "$0")" 2>/dev/null && pwd) || _cfip_self=''
+_cfip_self=$(CDPATH= cd "$(dirname "$0")" 2>/dev/null && pwd) || _cfip_self=''
 _cfip_lib=''
 for _cfip_cand in "${CFIP_LIB:-}" "$_cfip_self/../libexec/cf-ipcheck/lib.sh" /usr/libexec/cf-ipcheck/lib.sh; do
 	[ -n "$_cfip_cand" ] && [ -r "$_cfip_cand" ] && { _cfip_lib=$_cfip_cand; break; }

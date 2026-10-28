@@ -105,7 +105,7 @@ done
 
 # ---------------------------------------------------------------- 基础工具
 # find_bin / valid_ip4 / now_iso 与引擎共用 lib.sh（就在本文件旁边）。
-_cfip_self=$(CDPATH= cd -- "$(dirname "$0")" 2>/dev/null && pwd) || _cfip_self=''
+_cfip_self=$(CDPATH= cd "$(dirname "$0")" 2>/dev/null && pwd) || _cfip_self=''
 _cfip_lib=''
 for _cfip_cand in "${CFIP_LIB:-}" "$_cfip_self/lib.sh" /usr/libexec/cf-ipcheck/lib.sh; do
 	[ -n "$_cfip_cand" ] && [ -r "$_cfip_cand" ] && { _cfip_lib=$_cfip_cand; break; }
