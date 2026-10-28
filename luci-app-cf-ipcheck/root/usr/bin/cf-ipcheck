@@ -93,21 +93,17 @@ LOCK=$RUN_DIR/lock
 STOP=$RUN_DIR/STOP
 # 锁的最长寿命：进程被 OOM 杀掉后 pid 可能被复用，超过这个时间就当作陈旧锁回收。
 LOCK_MAX=21600
-# 找可执行文件必须按绝对路径探一遍，不能只信 command -v：
-# rpcd 起子进程时继承的 PATH 可能不含 /sbin。真机实测就是这样 —— uci 在
-# /sbin/uci，`command -v uci` 在页面触发的那条路径上失败 → HAS_UCI=0 →
-# 整套 uci 配置被静默忽略、全部落回默认值，表现是"页面里明明配了 13 条源，
-# 点立即测速却说候选池是空的"，而且日志里看不出任何异常。
-find_bin() { # $1=名字 $2..=候选绝对路径
-	name=$1
-	shift
-	for p in "$@"; do
-		[ -x "$p" ] && { printf '%s' "$p"; return 0; }
-	done
-	path=$(command -v "$name" 2>/dev/null || true)
-	[ -n "$path" ] && { printf '%s' "$path"; return 0; }
-	return 1
-}
+# 基础件（find_bin / valid_ip4 / now_iso）与 apply-dns.sh 共用一份，见 lib.sh。
+# 解析顺序：CFIP_LIB 覆盖 > 脚本旁边的 ../libexec/cf-ipcheck/（仓库树与装机后都成立）
+# > /usr/libexec/cf-ipcheck/。找不到就明确退出：缺了它「按绝对路径找 uci」会静默失效，
+# 症状是整个配置被忽略、页面显示的一切都是默认值。
+_cfip_self=$(CDPATH= cd -- "$(dirname "$0")" 2>/dev/null && pwd) || _cfip_self=''
+_cfip_lib=''
+for _cfip_cand in "${CFIP_LIB:-}" "$_cfip_self/../libexec/cf-ipcheck/lib.sh" /usr/libexec/cf-ipcheck/lib.sh; do
+	[ -n "$_cfip_cand" ] && [ -r "$_cfip_cand" ] && { _cfip_lib=$_cfip_cand; break; }
+done
+[ -n "$_cfip_lib" ] || { echo 'cf-ipcheck: 缺 lib.sh（包没装全？）' >&2; exit 78; }
+. "$_cfip_lib"
 
 UCI_BIN=$(find_bin uci /sbin/uci /usr/sbin/uci /bin/uci /usr/bin/uci || true)
 SU_BIN=$(find_bin su /sbin/su /usr/sbin/su /bin/su /usr/bin/su || true)
@@ -171,7 +167,7 @@ log() {
 	# 日志给人读，就用路由器自己的本地时间，并带上偏移（国内是 +0800），
 	# 这样页面上、日志文件里、和他手腕上的钟是同一个数。
 	# 结构化状态（status.json / result.json）仍写 UTC 的 ...Z —— 那边由页面负责转本地。
-	printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*" >>"$LOG" 2>/dev/null || true
+	printf '%s %s\n' "$(now_iso)" "$*" >>"$LOG" 2>/dev/null || true
 	# 攒够 200 行才查一次体积：每条日志都去 stat 就等于白 fork 几百次
 	LOGWRITES=$((LOGWRITES + 1))
 	if [ "$LOGWRITES" -ge 200 ]; then
@@ -208,7 +204,7 @@ trim_log() {
 	# tail -c 会拦腰截在一行中间，第一行是残句，直接丢掉
 	tail -c "$keep" "$LOG" 2>/dev/null | sed '1d' >"$LOG.tmp" || { rm -f "$LOG.tmp"; return 0; }
 	printf '%s 日志已超过上限 %s KB，较早的内容被丢弃（保留最近约 %s KB）\n' \
-		"$(date '+%Y-%m-%dT%H:%M:%S%z')" "$cap" "$((keep / 1024))" >>"$LOG.tmp"
+		"$(now_iso)" "$cap" "$((keep / 1024))" >>"$LOG.tmp"
 	# 重写后的权限必须跟新建时一致（umask 077 ⇒ 600），不能图省事写 644：
 	# 运行目录是 711（只给探测身份穿过去用），所以**文件位就是唯一的屏障**，
 	# 一旦 644，同机任何用户知道路径就能读整份日志 —— 而日志里现在还有
@@ -604,24 +600,8 @@ load_config() {
 	[ -c /dev/null ] || log "本机 /dev/null 不是字符设备，改用 $NULL_DEV 丢弃响应体"
 }
 
-# valid_ip4 <字符串> -> 只有纯 IPv4 才返回 0。
-# 凡是会进 `su -c` 那条 shell 字符串的地址都必须先过这一关：探测池里的地址是
-# grep 提取出来的（天然干净），但 `cf-ipcheck colo <IP>` 的参数是外部输入 ——
-# 传错东西不该顺带被 shell 执行掉（这条是在核对"页面上能不能落文件"时发现的）。
-valid_ip4() {
-	# 空串与含非数字字符的先在这里挡掉：**awk 一条记录都读不到时退出码是 0**，
-	# 只靠下面的正则会把空参数当成合法地址放行（这条断言当场把它抓出来了）。
-	case "${1:-}" in
-		''|*[!0-9.]*) return 1 ;;
-	esac
-	printf '%s' "${1:-}" | awk '
-	/^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$/ {
-		split($0, o, ".")
-		for (i = 1; i <= 4; i++) if (o[i] + 0 > 255) exit 1
-		exit 0
-	}
-	{ exit 1 }'
-}
+# valid_ip4 在 lib.sh 里（与 apply-dns.sh 共用；空串、非数字、越界三条判据
+# 两边必须一模一样，否则「页面能写、脚本却拒」这类分歧永远查不完）。
 
 # ---------------- 运行锁（带存活判定）--------------------------------------
 # 只看“锁文件在不在”是不够的：后台那一轮被 OOM/断电/重启打断时锁会残留，

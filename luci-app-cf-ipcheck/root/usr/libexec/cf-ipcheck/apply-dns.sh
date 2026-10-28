@@ -104,14 +104,14 @@ while [ $# -gt 0 ]; do
 done
 
 # ---------------------------------------------------------------- 基础工具
-
-# busybox 下按绝对路径找可执行文件（rpcd 子进程 PATH 里没有 /sbin，引擎踩过这个坑）
-find_bin() {
-	for f in "$@"; do
-		[ -x "$f" ] && { printf '%s' "$f"; return 0; }
-	done
-	return 1
-}
+# find_bin / valid_ip4 / now_iso 与引擎共用 lib.sh（就在本文件旁边）。
+_cfip_self=$(CDPATH= cd -- "$(dirname "$0")" 2>/dev/null && pwd) || _cfip_self=''
+_cfip_lib=''
+for _cfip_cand in "${CFIP_LIB:-}" "$_cfip_self/lib.sh" /usr/libexec/cf-ipcheck/lib.sh; do
+	[ -n "$_cfip_cand" ] && [ -r "$_cfip_cand" ] && { _cfip_lib=$_cfip_cand; break; }
+done
+[ -n "$_cfip_lib" ] || { echo 'apply-dns: 缺 lib.sh（包没装全？）' >&2; exit 78; }
+. "$_cfip_lib"
 
 UCI=$(find_bin /sbin/uci /usr/sbin/uci /bin/uci /usr/bin/uci) || UCI=''
 JQ=$(find_bin /usr/bin/jq /usr/sbin/jq /bin/jq) || JQ=''
@@ -124,7 +124,7 @@ CURL="${CFIP_CURL:-$(find_bin /usr/bin/curl /usr/sbin/curl /bin/curl)}" || CURL=
 log() {
 	[ "$DRY" = 1 ] && { printf '[dry-run] %s\n' "$*"; return 0; }
 	mkdir -p "$RUN_DIR" 2>/dev/null
-	printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || echo '-')" "$*" >> "$LOG" 2>/dev/null
+	printf '%s %s\n' "$(now_iso)" "$*" >> "$LOG" 2>/dev/null
 	# 手工在 ssh 里跑时（stderr 是终端）同时打出来；由 rpcd 调用时不是 tty，
 	# 就只进日志 —— 免得引擎那边的 stdout 契约被这些行污染。
 	[ -t 2 ] && printf '%s\n' "$*" >&2
@@ -157,24 +157,7 @@ cfg() {
 	printf '%s' "$_cv"
 }
 
-# IPv4 校验：先挡空值再判形状。
-# 为什么不用 awk 正则兜底：真机上 `awk` 空输入也退出 0，曾被空值骗过（引擎 selftest 有这条）。
-valid_ip4() {
-	case "${1:-}" in
-		''|*[!0-9.]*) return 1 ;;
-	esac
-	_old_ifs=$IFS
-	IFS=.
-	# shellcheck disable=SC2086
-	set -- $1
-	IFS=$_old_ifs
-	[ $# -eq 4 ] || return 1
-	for _o in "$@"; do
-		[ -n "$_o" ] || return 1
-		[ "$_o" -ge 0 ] 2>/dev/null && [ "$_o" -le 255 ] || return 1
-	done
-	return 0
-}
+# valid_ip4 在 lib.sh 里（与引擎共用；空串/非数字/越界三条判据必须一致）。
 
 # 从记录名推导 zone：cf.example.com -> example.com
 # 只砍第一个 label。对 example.co.uk 这类多级后缀会推错，所以配置里可以显式写 zone。
@@ -713,11 +696,6 @@ if [ -z "$CANDIDATES" ]; then
 	exit 2
 fi
 CAND_TOTAL=$(printf '%s\n' "$CANDIDATES" | grep -c .)
-
-# 取榜单前 N 个
-top_ips() {
-	printf '%s\n' "$CANDIDATES" | head -n "$1"
-}
 
 # 这些机房本轮的候选 IP：跨机房合并后按 ttfb 升序（每行一个）。
 # 数据取自 result.json 的 dc_summary（每块的 items 已按 ttfb 排好，这里再全局排一次）。

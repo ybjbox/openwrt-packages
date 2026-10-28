@@ -825,6 +825,57 @@ if [ -f "$VIEW" ]; then
     fi
 fi
 
+# --- 共享库：引擎与 apply-dns 必须 source 同一份，且两边不许再各留一份 ----------
+# 两份 valid_ip4 的口径一旦分叉，会出现「引擎认、DNS 脚本不认」这种只在真机上
+# 看得见的偏差（早年就是两套算法）。lib.sh 是 source 用的库，必须是 0644：
+# 可执行位会让人以为它能单独跑，也可能被误当成命令调。
+LIB=luci-app-cf-ipcheck/root/usr/libexec/cf-ipcheck/lib.sh
+DNS=luci-app-cf-ipcheck/root/usr/libexec/cf-ipcheck/apply-dns.sh
+rl_lib=0
+if [ -f "$LIB" ]; then
+    for fn in find_bin valid_ip4 now_iso; do
+        if grep -q "^$fn()" "$LIB"; then
+            : 
+        else
+            echo "[FAIL] lib: $LIB 里没有 $fn()（两边共用的那几件就靠它）"
+            rl_lib=1
+        fi
+    done
+    for f in "$ENGINE" "$DNS"; do
+        if [ -f "$f" ] && grep -q '\. "\$_cfip_lib"' "$f"; then
+            : 
+        else
+            echo "[FAIL] lib: $f 没有 source lib.sh"
+            rl_lib=1
+        fi
+    done
+    for f in "$ENGINE" "$DNS"; do
+        for fn in find_bin valid_ip4; do
+            if [ -f "$f" ] && grep -q "^$fn()" "$f"; then
+                echo "[FAIL] lib: $f 里又定义了一份 $fn()（会盖掉 lib.sh 的）"
+                rl_lib=1
+            fi
+        done
+    done
+    if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        lmode=$(git ls-files -s -- "$LIB" 2>/dev/null | sed -n '1{s/ .*//;p}')
+        if [ "$lmode" = 100644 ]; then
+            echo "[PASS] lib: lib.sh 是 100644（source 用的库不需要执行位）"
+        else
+            echo "[FAIL] lib: lib.sh 的 index mode 是 <${lmode:-无}>，应固定 100644"
+            rl_lib=1
+        fi
+    fi
+else
+    echo "[FAIL] lib: 找不到 $LIB —— 引擎与 apply-dns 会同时在启动时退出 78"
+    rl_lib=1
+fi
+if [ "$rl_lib" = 1 ]; then
+    fail=1
+else
+    echo "[PASS] lib: shared helpers live in one sourced file"
+fi
+
 # --- 版本一致性：视图里的 VIEW_BUILD 必须等于 Makefile 的 PKG_RELEASE -----------
 # 视图版本号是给「你看到的到底是哪一版」准备的（uhttpd 只发 ETag，浏览器可能拿缓存
 # 不重新验证）。但没人核对的话，这个号自己就会变成第二处「文档说的和代码不一样」。
