@@ -799,8 +799,12 @@ handle_target() {
 	_want_n=$(printf '%s\n' "$_want" | grep -c .)
 	_want_csv=$(printf '%s\n' "$_want" | tr '\n' ' ' | sed 's/ $//')
 
+	# 条数 0 = 自动编号留下的"清理目标"（test4…test8）：它只可能删、不会建，
+	# 所以那句"@机房本轮没有可用 IP、按配置清空"对它不适用，也别逐行刷日志。
+	_cleanup=0
+	[ "$_n" = 0 ] && _cleanup=1
 	_tag="目标 $_no/$_tot $_f"
-	if [ -n "$_colo" ] && [ "$_want_n" = 0 ]; then
+	if [ "$_cleanup" = 0 ] && [ -n "$_colo" ] && [ "$_want_n" = 0 ]; then
 		# 这是配置里最危险的一种状态：机房被墙/没测到，而这个域名只挂这个机房。
 		# 按既定语义清空它 —— 但必须说得让人一眼看见，别让人几天后才发现解析空了。
 		log "$_tag：@$_colo 本轮没有可用 IP —— 按配置清空 $_f 的记录（想避免就再挂一个不限机房的记录名做兜底）"
@@ -874,6 +878,8 @@ handle_target() {
 
 	# ---- 无差异：直接收工 ----
 	if [ "$_add_n" -eq 0 ] && [ "$_del_n" -eq 0 ]; then
+		# 清理目标没东西可删就安静收工（否则 5 个清理目标各刷一行，纯噪音）
+		[ "$_cleanup" = 1 ] && return 0
 		_note=''
 		[ "$_other_n" -gt 0 ] && _note="，另有 $_other_n 条非本工具管理的记录未动"
 		log "$_tag：已与期望一致（$_want_csv），未发写请求$_note"
@@ -937,7 +943,11 @@ handle_target() {
 		log "$_tag：回读仍有本工具建却不在期望内的记录（$_extra）—— 删除没生效，请人工核对"
 		return 5
 	fi
-	log "$_tag：已同步 新增 $_add_n / 删除 $_del_n / 保持 $_keep_n（当前 $_want_csv）$_note"
+	if [ "$_cleanup" = 1 ]; then
+		log "$_tag：清理掉 $_del_n 条编号多余的记录"
+	else
+		log "$_tag：已同步 新增 $_add_n / 删除 $_del_n / 保持 $_keep_n（当前 $_want_csv）$_note"
+	fi
 	return 0
 }
 
