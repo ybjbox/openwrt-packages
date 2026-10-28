@@ -30,7 +30,7 @@ var CMD = '/usr/bin/cf-ipcheck';
  * ETag/Last-Modified，没有 Cache-Control，浏览器完全可能拿缓存那份不重新验证；
  * 「点了没反应」这类问题第一条要排除的就是这个。
  * tests/lint.sh 会核对它和 Makefile 里的 PKG_RELEASE 是否同一个数，防止各说一套。 */
-var VIEW_BUILD = 'r115';
+var VIEW_BUILD = 'r116';
 
 /* 翻译别名。LuCI 全局提供 _()，但 `_` 这个单字符在表达式里极难扫读（`T('.note')`
  * 一眼就知道是给人看的文案，`_('.note')` 不是）。整份代码只用 T()，_ 只在
@@ -887,7 +887,7 @@ function HelpMark(full) {
 
 	mark.addEventListener('click', toggle);
 	mark.addEventListener('keydown', function (ev) {
-		if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar')
+		if (isToggleKey(ev))
 			toggle(ev);
 	});
 	return mark;
@@ -978,6 +978,17 @@ function setBusy(btn, on) {
 		btn.setAttribute('aria-busy', on ? 'true' : 'false');
 }
 
+/* 忙碌标记的唯一构造器。
+ * 以前每个动作函数都手写一份 `Object.assign({}, store.get().busy, {…})`，
+ * 25 处一模一样；漏一处就是按钮永久转圈（或转圈永远不出现）。这里只负责
+ * 产出一份新的 busy 对象，绝不原地改 —— store.set 会合帧通知，所以需要同时
+ * 写 status 的调用点仍然能一次写进去。 */
+function busyPatch(key, on) {
+	var p = {};
+	p[key] = !!on;
+	return Object.assign({}, store.get().busy, p);
+}
+
 /* 空态 / 加载态：一句说清为什么空，再给一个能解决它的动作。
  * p.more：错误/异常状态的深度排查细节。常驻的只有「一句结论」，背景知识
  * （引擎内部怎么自愈、平台侧超时多少）挂 ⓘ 悬停/点击就地展开 —— 与表单
@@ -993,6 +1004,66 @@ function EmptyBox(p) {
 	if (p.action)
 		box.push(el('div', { class: 'empty-a' }, p.action));
 	return el('div', { class: 'empty' + (p.spin ? ' spin' : '') }, box);
+}
+
+/* 折叠盒：配置页每个分组、源清单编辑区、兜底组都长这样 —— 一行头
+ * （chevron + 标题 + 提示）+ 一个可折叠 body。以前这套交互写了 5 份，
+ * 兜底组因此漏过 tabindex/role，键盘进不去、顶部「全部展开」也管不到。
+ * 这里只接管 a11y 与开合，内容由调用方给。
+ * p: { id, cls, title, hint, body, defaultOpen, persistKey, onToggle }
+ * 返回 { node, apply(v), isOpen() }；node.__apply 保留同名（外部工具按它调）。 */
+function CollapseBox(p) {
+	var open = !!p.defaultOpen;
+	if (p.persistKey) {
+		try {
+			var saved = window.localStorage.getItem(p.persistKey);
+			if (saved != null)
+				open = saved === '1';
+		} catch (e) {}
+	}
+	var cls = 'grp' + (p.cls ? ' ' + p.cls : '');
+	var head = el('div', {
+		class: 'grp-h',
+		tabindex: '0',
+		role: 'button',
+		'aria-expanded': open ? 'true' : 'false'
+	}, [
+		el('i', { class: 'chev' }),
+		el('span', { class: 'grp-t', text: p.title }),
+		el('span', { class: 'grp-x', text: p.hint })
+	]);
+	var box = el('div', { class: cls + (open ? ' open' : '') }, [ head, p.body ]);
+
+	function apply(v) {
+		box.className = cls + (v ? ' open' : '');
+		head.setAttribute('aria-expanded', v ? 'true' : 'false');
+		if (p.persistKey) {
+			try { window.localStorage.setItem(p.persistKey, v ? '1' : '0'); } catch (e2) {}
+		}
+		if (p.onToggle)
+			p.onToggle(v);
+	}
+	function isOpen() {
+		return box.className.indexOf('open') >= 0;
+	}
+	head.addEventListener('click', function () { apply(!isOpen()); });
+	head.addEventListener('keydown', function (ev) {
+		if (!isToggleKey(ev))
+			return;
+		ev.preventDefault();
+		apply(!isOpen());
+	});
+	if (p.id)
+		box.setAttribute('data-group', p.id);
+	box.__apply = apply;
+	return { node: box, apply: apply, isOpen: isOpen };
+}
+
+/* Enter/Space 是「按钮」的通用快捷键：Enter、空格（有的浏览器报 ' '，旧 WebKit 报
+ * 'Spacebar'）。全页 5 处折叠与 2 处帮助角标都走这一个判断。 */
+function isToggleKey(ev) {
+	var k = ev && ev.key;
+	return k === 'Enter' || k === ' ' || k === 'Spacebar';
 }
 
 /* 页内提示条：这版 LuCI 两个 toast API 都没有，全靠它。
@@ -1447,7 +1518,7 @@ function DcSummary(st) {
 				keydown: function (ev) {
 					if (!ev)
 						return;
-					if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') {
+					if (isToggleKey(ev)) {
 						if (ev.preventDefault)
 							ev.preventDefault();
 						toggle(code);
@@ -2665,20 +2736,6 @@ function regroupForm(mapnode) {
 	var leftovers = [];
 
 	groups.forEach(function (g) {
-		var openKey = GROUPS_KEY + g.def.id;
-		var open = true;
-		try {
-			var saved = window.localStorage.getItem(openKey);
-			if (saved != null)
-				open = saved === '1';
-		} catch (e) {}
-		/* r98 P1-1：「测速高级项」默认收起（21 项机制细节），其余默认展开。
-		 * 判据仍是「从没手动开合过」——用户自己点开过就尊重他的选择。 */
-		if (g.def.id === 'probeAdv' && (function () {
-			try { return window.localStorage.getItem(openKey) == null; } catch (e2) { return true; }
-		})())
-			open = false;
-
 		var body = el('div', { class: 'grp-b' });
 		g.rows.forEach(function (r) {
 			body.appendChild(r);
@@ -2686,39 +2743,16 @@ function regroupForm(mapnode) {
 		});
 		if (!g.rows.length)
 			return;
-
-		var head = el('div', {
-			class: 'grp-h',
-			tabindex: '0',
-			role: 'button',
-			'aria-expanded': open ? 'true' : 'false'
-		}, [
-			el('i', { class: 'chev' }),
-			el('span', { class: 'grp-t', text: T(g.def.title) }),
-			el('span', { class: 'grp-x', text: T(g.def.hint) })
-		]);
-
-		var box = el('div', { class: 'grp' + (open ? ' open' : '') }, [ head, body ]);
-
-		function apply(v) {
-			box.className = 'grp' + (v ? ' open' : '');
-			head.setAttribute('aria-expanded', v ? 'true' : 'false');
-			try { window.localStorage.setItem(openKey, v ? '1' : '0'); } catch (e3) {}
-		}
-		head.addEventListener('click', function () {
-			apply(!(box.className.indexOf('open') >= 0));
-		});
-		head.addEventListener('keydown', function (ev) {
-			if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') {
-				ev.preventDefault();
-				apply(!(box.className.indexOf('open') >= 0));
-			}
-		});
-
-		box.setAttribute('data-group', g.def.id);
-		/* 把开合函数交给调用方收集，给顶部「全部展开 / 收起」用 */
-		box.__apply = apply;
-		wrap.appendChild(box);
+		/* r98 P1-1：「测速高级项」默认收起（21 项机制细节），其余默认展开。
+		 * 用户自己点开过就尊重他的选择 —— 记忆键与以前逐字相同。 */
+		wrap.appendChild(CollapseBox({
+			id: g.def.id,
+			title: T(g.def.title),
+			hint: T(g.def.hint),
+			body: body,
+			defaultOpen: g.def.id !== 'probeAdv',
+			persistKey: GROUPS_KEY + g.def.id
+		}).node);
 	});
 
 	/* 认不出归属的行（以后加了新 option 就会落到这里）单独兜一组，
@@ -2731,26 +2765,13 @@ function regroupForm(mapnode) {
 		var lb = el('div', { class: 'grp-b' });
 		leftovers.forEach(function (r) { lb.appendChild(r); });
 		/* 这一组以前既没有 tabindex/role，也没交 __apply —— 于是顶部
-		 * 「全部展开 / 收起」从来不管它，键盘也进不去。现在和其他组一样对待。 */
-		var lhead = el('div', { class: 'grp-h', tabindex: '0', role: 'button', 'aria-expanded': 'true' }, [
-			el('i', { class: 'chev' }),
-			el('span', { class: 'grp-t', text: T('其它') }),
-			el('span', { class: 'grp-x', text: T('未归类字段') })
-		]);
-		var lbox = el('div', { class: 'grp open' }, [ lhead, lb ]);
-		function lapply(v) {
-			lbox.className = 'grp' + (v ? ' open' : '');
-			lhead.setAttribute('aria-expanded', v ? 'true' : 'false');
-		}
-		lbox.__apply = lapply;
-		lhead.addEventListener('click', function () { lapply(!(lbox.className.indexOf('open') >= 0)); });
-		lhead.addEventListener('keydown', function (ev) {
-			if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') {
-				ev.preventDefault();
-				lapply(!(lbox.className.indexOf('open') >= 0));
-			}
-		});
-		wrap.appendChild(lbox);
+		 * 「全部展开 / 收起」从来不管它，键盘也进不去。现在和其他组同构。 */
+		wrap.appendChild(CollapseBox({
+			title: T('其它'),
+			hint: T('未归类字段'),
+			body: lb,
+			defaultOpen: true
+		}).node);
 	}
 
 	/* 搬空之后把 form.js 留下的壳子收拾干净。
@@ -2829,41 +2850,20 @@ function mountSourcesForm(mapnode, srcEdit) {
 	if (!mapnode || !srcEdit || !srcEdit.appendChild)
 		return null;
 	clear(srcEdit);
-	var openKey = SRC_EDIT_OPEN_KEY;
-	var open = false;
-	try {
-		open = window.localStorage.getItem(openKey) === '1';
-	} catch (e) {}
-
 	var body = el('div', { class: 'grp-b' }, [ mapnode ]);
-	var head = el('div', {
-		class: 'grp-h', tabindex: '0', role: 'button',
-		'aria-expanded': open ? 'true' : 'false'
-	}, [
-		el('i', { class: 'chev' }),
-		el('span', { class: 'grp-t', text: T('源清单') }),
-		el('span', { class: 'grp-x', text: T('每行一个 HTTPS 地址；改完点页面底部「保存并应用」才生效') })
-	]);
-	var box = el('div', { class: 'grp src-edit' + (open ? ' open' : '') }, [ head, body ]);
-
-	function apply(v) {
-		box.className = 'grp src-edit' + (v ? ' open' : '');
-		head.setAttribute('aria-expanded', v ? 'true' : 'false');
-		try { window.localStorage.setItem(openKey, v ? '1' : '0'); } catch (e2) {}
-	}
-	/* 交给调用方（和配置页的组同一个约定），桩测与以后的「全部展开」都按这个口调 */
-	box.__apply = apply;
-	head.addEventListener('click', function () { apply(!(box.className.indexOf('open') >= 0)); });
-	head.addEventListener('keydown', function (ev) {
-		if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') {
-			ev.preventDefault();
-			apply(!(box.className.indexOf('open') >= 0));
-		}
+	/* 源清单默认收起（打开时输入框会抢走视线），记忆键与以前逐字相同。 */
+	var c = CollapseBox({
+		cls: 'src-edit',
+		title: T('源清单'),
+		hint: T('每行一个 HTTPS 地址；改完点页面底部「保存并应用」才生效'),
+		body: body,
+		defaultOpen: false,
+		persistKey: SRC_EDIT_OPEN_KEY
 	});
-	srcEdit.appendChild(box);
+	srcEdit.appendChild(c.node);
 	/* 完整解释贴成 ⓘ：这一步必须在节点就位之后（applyHelp 按 label[for] 认字段） */
 	applyHelp(srcEdit);
-	return box;
+	return c.node;
 }
 
 /* 配置面板外壳：说明 + 全部展开/收起 + 表单本体（异步由 Map 渲染好后塞进来） */
@@ -3187,12 +3187,12 @@ function refresh(manual) {
 	 * 而 mousedown/mouseup 落在两颗节点上 Chromium 就不合成 click（r29 立的规矩）。
 	 * 真机打标实测过：轮询中每 2 秒采一次，按钮/灯/日志框十次里全都不是同一颗。 */
 	if (manual)
-		store.set({ busy: Object.assign({}, store.get().busy, { refresh: true }) });
+		store.set({ busy: busyPatch('refresh', true) });
 	/* 上限按「我们是否还在等这一轮」给，不按本地状态：认输之后本地状态被写成
 	 * unreachable，若因此退回 8 秒上限，慢链路上就会一直判超时（自我强化）。 */
 	inflight = runCmd([ 'status' ], (wasRunning || pollOn) ? CMD_LIMIT.status_running : 0).then(function (out) {
 		inflight = null;
-		var busy = Object.assign({}, store.get().busy, { refresh: false });
+		var busy = busyPatch('refresh', false);
 		if (out === HUNG || out === null || out === undefined) {
 			/* 这里重新读一次 store 而不是用发请求前那份：等返回的这几秒里
 			 * actRun 可能已经把本地状态置成 running 了，用旧的会把它盖回去。 */
@@ -3214,7 +3214,7 @@ function refresh(manual) {
 		return st;
 	}, function () {
 		inflight = null;
-		store.set({ busy: Object.assign({}, store.get().busy, { refresh: false }) });
+		store.set({ busy: busyPatch('refresh', false) });
 		return store.get().status;
 	});
 	return inflight;
@@ -3304,10 +3304,10 @@ function stopLogPoll() {
 
 function actRun(btn) {
 	setBusy(btn, true);
-	store.set({ busy: Object.assign({}, store.get().busy, { run: true }) });
+	store.set({ busy: busyPatch('run', true) });
 	runCmd([ 'run-now' ]).then(function (out) {
 		setBusy(btn, false);
-		store.set({ busy: Object.assign({}, store.get().busy, { run: false }) });
+		store.set({ busy: busyPatch('run', false) });
 		if (out === HUNG) {
 			/* 挂住不等于没启动：run-now 是把后台进程甩出去，那一轮很可能已经在跑了，
 			 * 只是这条连接没回来。和成功路径同一套做法：本地先置 running、直接开轮询，
@@ -3343,21 +3343,21 @@ function actRun(btn) {
 				state: 'running',
 				started: new Date().toISOString()
 			}),
-			busy: Object.assign({}, store.get().busy, { run: false })
+			busy: busyPatch('run', false)
 		});
 		startPoll();
 	}, function () {
 		setBusy(btn, false);
-		store.set({ busy: Object.assign({}, store.get().busy, { run: false }) });
+		store.set({ busy: busyPatch('run', false) });
 	});
 }
 
 function actStop(btn) {
 	setBusy(btn, true);
-	store.set({ busy: Object.assign({}, store.get().busy, { stop: true }) });
+	store.set({ busy: busyPatch('stop', true) });
 	runCmd([ 'stop' ]).then(function (out) {
 		setBusy(btn, false);
-		store.set({ busy: Object.assign({}, store.get().busy, { stop: false }) });
+		store.set({ busy: busyPatch('stop', false) });
 		if (out === HUNG)
 			flash(T('停止命令没有回应'), T('%s 秒内没等到返回。停止信号可能已经写进去了，本轮收尾后自停。').format(Math.round(CMD_LIMIT.stop / 1000)), 'warn');
 		else if (out === null)
@@ -3367,7 +3367,7 @@ function actStop(btn) {
 		refresh();
 	}, function () {
 		setBusy(btn, false);
-		store.set({ busy: Object.assign({}, store.get().busy, { stop: false }) });
+		store.set({ busy: busyPatch('stop', false) });
 		flash(T('无法请求停止'), whyNoReply(T('停止命令没跑成'), 'stop'), 'bad');
 	});
 }
@@ -3409,17 +3409,17 @@ function actCheck(btn) {
 	 * 这一页因此改为：编辑区 + 只读检测 并排，并在两者不一致时明说（pendingSourceEdits）。 */
 	store.set({
 		sources: { state: 'checking' },
-		busy: Object.assign({}, store.get().busy, { check: true })
+		busy: busyPatch('check', true)
 	});
 	runCmd([ 'check-sources' ]).then(function (out) {
 		store.set({
 			sources: parseSources(out),
-			busy: Object.assign({}, store.get().busy, { check: false })
+			busy: busyPatch('check', false)
 		});
 	}, function () {
 		store.set({
 			sources: { state: 'unreachable' },
-			busy: Object.assign({}, store.get().busy, { check: false })
+			busy: busyPatch('check', false)
 		});
 	});
 }
@@ -3432,10 +3432,10 @@ function actCheck(btn) {
  * 三个分支必须分开说：没回应（链路）/ 调不到（权限或包）/ 引擎回了但没成功（配置或 API）。 */
 function actDns(btn) {
 	setBusy(btn, true);
-	store.set({ busy: Object.assign({}, store.get().busy, { dns: true }) });
+	store.set({ busy: busyPatch('dns', true) });
 	runCmd([ 'dns-sync' ]).then(function (out) {
 		setBusy(btn, false);
-		store.set({ busy: Object.assign({}, store.get().busy, { dns: false }) });
+		store.set({ busy: busyPatch('dns', false) });
 		if (out === HUNG) {
 			flash(T('DNS 同步没有回应'),
 				T('%s 秒内没等到返回。路由器可能正在忙；稍后到「日志」页看最后一行确认结果。')
@@ -3460,7 +3460,7 @@ function actDns(btn) {
 		flash(T('DNS 同步未完成（退出码 %s）').format(String(r.rc)), msg, 'warn');
 	}, function () {
 		setBusy(btn, false);
-		store.set({ busy: Object.assign({}, store.get().busy, { dns: false }) });
+		store.set({ busy: busyPatch('dns', false) });
 	});
 }
 
@@ -3470,9 +3470,9 @@ function logsRefresh() {
 	var st = store.get();
 	if (st.busy && st.busy.logs)
 		return Promise.resolve(st.logs);   /* 已经有一次在飞，别叠 */
-	store.set({ busy: Object.assign({}, st.busy, { logs: true }) });
+	store.set({ busy: busyPatch('logs', true) });
 	return runCmd([ 'logs' ]).then(function (out) {
-		var off = Object.assign({}, store.get().busy, { logs: false });
+		var off = busyPatch('logs', false);
 		/* 一次读不到不要把已经拿到的日志抹掉：日志面板是主动展示的，用户可能正在读，
 		 * 抹成「读取日志没有回应」等于把他手上的东西抢走（和状态那边同一个道理）。
 		 * 下一拍会再试；真连着读不到，状态那边的横幅已经把话说清了。 */
@@ -3488,7 +3488,7 @@ function logsRefresh() {
 		});
 		return lg;
 	}, function () {
-		store.set({ busy: Object.assign({}, store.get().busy, { logs: false }) });
+		store.set({ busy: busyPatch('logs', false) });
 		return store.get().logs;
 	});
 }
@@ -3549,10 +3549,10 @@ function actCsv(btn) {
  * 源没拉到东西，还是拉到了但全被门槛刷掉了。 */
 function actPool(btn) {
 	setBusy(btn, true);
-	store.set({ busy: Object.assign({}, store.get().busy, { pool: true }) });
+	store.set({ busy: busyPatch('pool', true) });
 	runCmd([ 'pool' ]).then(function (out) {
 		setBusy(btn, false);
-		store.set({ busy: Object.assign({}, store.get().busy, { pool: false }) });
+		store.set({ busy: busyPatch('pool', false) });
 		if (out === HUNG) {
 			flash(T('取候选池没有回应'),
 				T('%s 秒内没等到返回。拉源要联网，比别的命令慢；稍后再试一次。')
@@ -3574,7 +3574,7 @@ function actPool(btn) {
 			flash(T('候选池是空的'), T('一个 IP 都没拉到：源可能都拉不动了，或官方网段那一半被关着。'), 'warn');
 	}, function () {
 		setBusy(btn, false);
-		store.set({ busy: Object.assign({}, store.get().busy, { pool: false }) });
+		store.set({ busy: busyPatch('pool', false) });
 	});
 }
 
@@ -3582,10 +3582,10 @@ function actPool(btn) {
  * 页面有了它，「配置没生效」这类问题就不用再 ssh 跑一遍 diag 抄数字了。 */
 function actDiag(btn) {
 	setBusy(btn, true);
-	store.set({ busy: Object.assign({}, store.get().busy, { diag: true }) });
+	store.set({ busy: busyPatch('diag', true) });
 	runCmd([ 'diag' ]).then(function (out) {
 		setBusy(btn, false);
-		store.set({ busy: Object.assign({}, store.get().busy, { diag: false }) });
+		store.set({ busy: busyPatch('diag', false) });
 		if (out === HUNG) {
 			flash(T('取诊断没有回应'),
 				T('%s 秒内没等到返回。稍后再试一次。').format(Math.round(CMD_LIMIT.diag / 1000)), 'warn');
@@ -3604,7 +3604,7 @@ function actDiag(btn) {
 		store.set({ diag: { state: 'ok', data: o } });
 	}, function () {
 		setBusy(btn, false);
-		store.set({ busy: Object.assign({}, store.get().busy, { diag: false }) });
+		store.set({ busy: busyPatch('diag', false) });
 	});
 }
 

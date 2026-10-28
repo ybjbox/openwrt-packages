@@ -1488,6 +1488,20 @@ eq('收起后 aria-expanded=false', head0.attrs['aria-expanded'], 'false');
 head0.dispatch('keydown', { preventDefault: noop, key: 'Enter' });
 ok('回车再展开', /\bopen\b/.test(boxes[0].attrs['class']));
 eq('展开后 aria-expanded=true', head0.attrs['aria-expanded'], 'true');
+/* r116：空格（' ' 与旧 WebKit 的 'Spacebar'）同样翻面 —— 原来只有 Enter 被断言过，
+ * 而键盘处理是手抄的 5 份，兜底组那份还漏过 tabindex。 */
+head0.dispatch('keydown', { preventDefault: noop, key: ' ' });
+ok('空格也能收起', !/\bopen\b/.test(boxes[0].attrs['class']));
+head0.dispatch('keydown', { preventDefault: noop, key: 'Spacebar' });
+ok('旧 WebKit 的 Spacebar 也能展开', /\bopen\b/.test(boxes[0].attrs['class']));
+
+/* r116 结构守卫：折叠盒与忙碌标记都收成了一个原语，别再长出第二份。 */
+eq('折叠盒只有一份实现（grp-h 只在 CollapseBox 里构造）',
+	(src0.match(/class: 'grp-h'/g) || []).length, 1);
+eq('忙碌标记只有一个写入口（busy: Object.assign 清零）',
+	(src0.match(/busy: Object\.assign/g) || []).length, 0);
+ok('CollapseBox 的记忆键格式与以前逐字相同（组 = GROUPS_KEY + id，源清单 = SRC_EDIT_OPEN_KEY）',
+	src0.includes('persistKey: GROUPS_KEY + g.def.id') && src0.includes('persistKey: SRC_EDIT_OPEN_KEY'));
 
 /* r61：搬空之后配置页顶上不该再挂一屏空壳（装机量到 278px 死空档 + 四个重复组名，
  * 起因是那段收拾代码的条件写成 s.closest('.cfp') 就跳过 —— 恒真，从来没执行过） */
@@ -2816,9 +2830,9 @@ eq('再点一下回到只显示时刻', firstLts(), '04:28:44');
 }
 
 /* r114：断言数下限。少跑 = 少测，而且掉断言通常是「某个代码块被重构掉、
- * 连带它的断言一起消失」，报表仍然全绿。841 = r113 的 844 减去删除死代码
+ * 连带它的断言一起消失」，报表仍然全绿。847 = r115 实测（r113 的 844 − 3 条死代码断言 + 6 条结构守卫）
  * isRunningReply 时一并删掉的 3 条。 */
-const MIN_ASSERT = 841;
+const MIN_ASSERT = 847;
 if (nassert < MIN_ASSERT) {
 	console.log(`[FAIL] 断言执行数从 ${MIN_ASSERT} 掉到 ${nassert} —— 少跑的部分等于没测`);
 	fails++;
