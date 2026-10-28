@@ -10,6 +10,14 @@
  *   明暗由 .cfp.is-light 这个类决定 —— 类名由 JS 读主题实际渲染出来的底色加，
  *   不用 @media (prefers-color-scheme)，因为 Argon 的 uci mode=light/dark 会强制主题，
  *   媒体查询跟系统偏好走就会和页面真实明暗打架。
+ *
+ * r119 视觉世界：台式仪器面板（bench instrument）。
+ *   1) 整块面板是一张「表面」：没有卡片、没有阴影、没有大圆角；分区分的是发丝线。
+ *   2) 读数优先：大号等宽 tabular 数字，标签退到 11px 小字；一屏只让一个读数有重量。
+ *   3) 颜色只作信号：五个状态色只出现在灯、标签与告警句上，其余全是墨与线。
+ *   4) 空态不用虚线框：一条左信号线 + 一句结论 + 一个动作。
+ *   5) 动效只服务于状态变化（120ms 底色 / 折叠），不做入场编排以外的装饰。
+ *   改样式时先看这五条；令牌与实测对比度注释是资产，不要顺手重算。
  */
 :root{
   --s1:4px;
@@ -67,13 +75,13 @@
   --shadow:0 1px 2px oklch(0% 0 0 / 0.28);
 }
 .cfp.is-light{
-  --bg:oklch(98.2% 0.004 250);
+  --bg:oklch(96.6% 0.005 250);
   --panel:oklch(100% 0 0);
   --panel-2:oklch(96.8% 0.005 250);
   --ink:oklch(24% 0.018 250);
   --ink-2:oklch(45% 0.014 250);
   --ink-3:oklch(54% 0.012 250);
-  --rule:oklch(88% 0.008 250);
+  --rule:oklch(86% 0.009 250);
   --rule-soft:oklch(93% 0.006 250);
   --focus:oklch(58% 0.17 250);
   --idle-fg:oklch(52% 0.012 250);
@@ -104,6 +112,9 @@
 }
 .cfp{color:var(--ink);font-family:inherit;font-size:var(--t-md);line-height:1.55;
   -webkit-font-smoothing:antialiased;
+  /* r119：整块面板自带底色，不再靠一张张白卡浮在主题背景上 —— 仪表面是一整块
+   * 金属/纸面，分区分的是发丝线，不是圆角与阴影。 */
+  background:var(--bg);
   /* 原生控件（滚动条、select 下拉、number 步进箭头）按我们这块的实际明暗来画。
    * 只声明在 .cfp 上、不碰 html —— 页面根的颜色方案归主题，我们越界就会和 Argon 打架。
    * 暗色是默认那套令牌（:root），浅色靠 .is-light 类，所以判据跟着类走。 */
@@ -132,12 +143,14 @@
 .cfp .sec-t{margin:0;padding:0;line-height:1.55!important;font-size:var(--t-xs);font-weight:700;letter-spacing:.08em;text-transform:uppercase;
   color:var(--ink-3);white-space:nowrap}
 .cfp .sec-rule{flex:1;height:1px;background:var(--rule);transform:translateY(-.25em)}
+/* r119：读数条是这块仪表的「面板顶边」—— 不再是一张圆角卡，而是一条用发丝线
+ * 收尾的横带。读数在左，操作在右，中间用留白分开。 */
 .cfp .rail{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s3) var(--s4);
-  padding:var(--s3) var(--s4);background:var(--panel);border:1px solid var(--rule);
-  border-radius:var(--r3);box-shadow:var(--shadow);margin-bottom:var(--s4)}
+  padding:var(--s3) var(--s4) var(--s4) 0;background:none;border:0;border-bottom:1px solid var(--rule);
+  border-radius:0;box-shadow:none;margin-bottom:var(--s4)}
 .cfp .rail-id{display:flex;align-items:center;gap:var(--s3);min-width:0;flex:1 1 auto;flex-wrap:wrap}
 .cfp .rail-acts{display:flex;align-items:center;gap:var(--s2);flex-wrap:wrap}
-.cfp .lamp{display:inline-flex;align-items:center;gap:.5em;padding:.3em .7em;border-radius:999px;
+.cfp .lamp{display:inline-flex;align-items:center;gap:.5em;padding:.3em .6em;border-radius:2px;
   font-size:var(--t-sm);font-weight:600;white-space:nowrap;
   color:var(--idle-fg);background:var(--idle-bg);border:1px solid var(--idle-bd)}
 .cfp .lamp-dot{width:.5em;height:.5em;border-radius:50%;background:currentColor;flex:0 0 auto}
@@ -160,7 +173,7 @@
   font-weight:600}
 .cfp button{font-family:inherit;font-size:var(--t-sm);font-weight:500;line-height:1.4;
   white-space:nowrap;
-  display:inline-flex;align-items:center;gap:.4em;padding:.42em .8em;border-radius:var(--r2);
+  display:inline-flex;align-items:center;gap:.4em;padding:.42em .8em;border-radius:2px;
   border:1px solid var(--rule);background:var(--panel-2);color:var(--ink);cursor:pointer;
   transition:background var(--d-fast) var(--e-out),border-color var(--d-fast) var(--e-out),
     color var(--d-fast) var(--e-out),opacity var(--d-fast) var(--e-out)}
@@ -212,26 +225,31 @@
 .cfp .tab:hover:not(.on){color:var(--ink-2);background:var(--panel-2)}
 .cfp .tab:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
 .cfp .tab.on{color:var(--ink);font-weight:600;border-bottom-color:var(--accent)}
-.cfp .tab-n{font-size:var(--t-xs);font-weight:600;padding:.05em .4em;border-radius:999px;
-  background:var(--idle-bg);border:1px solid var(--idle-bd);color:var(--ink-3)}
+.cfp .tab-n{font-family:var(--mono);font-size:var(--t-xs);font-weight:600;padding:.05em .35em;
+  border-radius:2px;background:none;border:1px solid var(--rule);color:var(--ink-3)}
 .cfp .tab.on .tab-n{color:var(--accent-ink);border-color:var(--accent);background:var(--accent-bg)}
 .cfp .pane{display:none}
 .cfp .pane.on{display:block}
-.cfp .strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(134px,1fr));
-  gap:1px;background:var(--rule);border:1px solid var(--rule);border-radius:var(--r2);
+/* r119：读数带是一排「分段显示」：格与格之间只有 1px 发丝线，底色跟着面板走。
+ * 用 flex 而不是 auto-fit 网格：六个读数在 1024 下会排成 5+1，网格会把剩下
+ * 那四格轨道露成一大块灰底；flex 只会让最后一个自己换行，不会留下底色空档。 */
+.cfp .strip{display:flex;flex-wrap:wrap;border:1px solid var(--rule-soft);border-radius:0;
   overflow:hidden;margin-bottom:var(--s4)}
-.cfp .cell{background:var(--panel);padding:var(--s3)}
+.cfp .cell{background:var(--bg);padding:var(--s3);flex:1 1 9em;min-width:0;
+  border-left:1px solid var(--rule-soft)}
+.cfp .cell:first-child{border-left:0}
 .cfp .cell-k{font-size:var(--t-xs);color:var(--ink-3);letter-spacing:.04em;text-transform:uppercase;
   font-weight:600;white-space:nowrap}
 /* 读数数值与吞吐数字要 tabular-nums：跑动中 94→100、11.2→9.8 这类位数变化
  * 会把整格推宽（过去只给了 .n/.lts/.pn 三处，漏了这两处最大的数字）。 */
 .cfp .cell-v{display:flex;align-items:baseline;gap:.1em;margin-top:var(--s1);
-  font-size:var(--t-lg);font-weight:600;font-variant-numeric:tabular-nums}
+  font-size:var(--t-lg);font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
 .cfp .cell-v.warn{color:var(--warn-fg)}
 .cfp .cell-sub{font-size:var(--t-xs);color:var(--ink-3);margin-top:.15em;white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis}
-.cfp .board{border:1px solid var(--rule);border-radius:var(--r2);background:var(--panel);
-  overflow:hidden;margin-bottom:var(--s3)}
+/* r119：表格不再是「卡里的一张表」，而是面板上的一段刻度：上下发丝线，左右不留边框。 */
+.cfp .board{border:0;border-top:1px solid var(--rule);border-bottom:1px solid var(--rule);
+  border-radius:0;background:var(--bg);overflow:hidden;margin-bottom:var(--s3)}
 .cfp .board-scroll{overflow:auto;max-height:min(58vh,540px);overscroll-behavior:contain}
 /* 轨道分配：富余宽度过去只给 IP 那一列（它是唯一的 fr），实测 @1600 IP 列被拉到
  * 868px，8 个数字列合计只有 480px 且全贴着右边缘 —— 一行里 IP 和第一个数字之间
@@ -239,7 +257,7 @@
  * 现在 IP 按内容收（minmax(9em,max-content)，最长地址约 134px），末尾加一条空的
  * 1fr 轨道把富余全部吸走：数字紧跟 IP，空白挪到最右边（那里本来就没有要读的东西）。
  * 不用"给 IP 设 max-width"的写法，是因为那样 @768 会开始出横向滚动（实测 734/726）。 */
-.cfp .brow{display:grid;align-items:center;
+.cfp .brow{display:grid;align-items:center;min-height:34px;
   grid-template-columns:2.4em minmax(9em,max-content) 3.6em 4.6em 4.6em 4.8em 5em 3.8em 5.6em minmax(7em,1fr);
   border-bottom:1px solid var(--rule-soft);min-width:max-content}
 .cfp .brow:last-child{border-bottom:0}
@@ -249,7 +267,7 @@
    长 URL 的省略号永远出不来（完整地址在 title 里，鼠标停上去能看到）。 */
 .cfp .board.src .brow{grid-template-columns:minmax(0,1fr) 5.5em 7.5em 7.5em 8.5em;min-width:0}
 .cfp .board.src .bc.l{overflow:hidden;text-overflow:ellipsis}
-.cfp .brow.head{position:sticky;top:0;z-index:2;background:var(--panel-2);
+.cfp .brow.head{position:sticky;top:0;z-index:2;background:var(--bg);
   border-bottom:1px solid var(--rule)}
 .cfp .brow.head .bc{font-size:var(--t-xs);font-weight:700;letter-spacing:.04em;text-transform:uppercase;
   color:var(--ink-3);padding-top:var(--s2);padding-bottom:var(--s2)}
@@ -273,8 +291,9 @@
 .cfp .spd-fill{display:block;height:100%;background:var(--ok-fg);border-radius:2px}
 /* 多域名那一版多一列「胜出域名」（文字列，给它 1fr），末尾同样留一条吸富余的空轨道 */
 .cfp .board.multi .brow{grid-template-columns:2.4em minmax(9em,max-content) 3.6em 4.6em 4.6em 4.8em 5em 3.8em 5.6em minmax(7em,1fr) minmax(6em,1fr)}
-.cfp .empty{display:flex;align-items:flex-start;gap:var(--s3);padding:var(--s5) var(--s4);
-  border:1px dashed var(--rule);border-radius:var(--r2);background:var(--panel);margin:0 0 var(--s4)}
+/* r119：空态不用虚线框（那是"占位卡片"的语汇），改成一侧信号线 + 一句结论 + 一个动作。 */
+.cfp .empty{display:flex;align-items:flex-start;gap:var(--s3);padding:var(--s4) var(--s4);
+  border:0;border-left:2px solid var(--rule);border-radius:0;background:none;margin:0 0 var(--s4)}
 .cfp .empty-ic{flex:0 0 auto;width:20px;height:20px;border-radius:50%;
   border:2px solid var(--rule);border-top-color:var(--accent);margin-top:.1em}
 @media (prefers-reduced-motion: no-preference){
@@ -289,7 +308,7 @@
 .cfp .prog-h{display:flex;align-items:baseline;gap:var(--s2);flex-wrap:wrap}
 .cfp .prog-t{font-size:var(--t-md);font-weight:600}
 .cfp .psteps{list-style:none;margin:0;padding:0;display:grid;gap:1px;
-  border:1px solid var(--rule);border-radius:var(--r2);overflow:hidden;background:var(--rule)}
+  border:0;border-top:1px solid var(--rule-soft);border-bottom:1px solid var(--rule-soft);border-radius:0;overflow:hidden;background:var(--rule-soft)}
 .cfp .pstep{display:flex;align-items:center;gap:var(--s2);padding:.42em .7em;
   background:var(--panel);font-size:var(--t-sm);color:var(--ink-3);min-height:2.1em}
 .cfp .pstep .pm{flex:0 0 1em;text-align:center;font-style:normal}
@@ -323,9 +342,9 @@
 .cfp .note.warn{color:var(--warn-fg);border-left:2px solid var(--warn-bd);
   padding-left:var(--s3);background:var(--warn-bg)}
 .cfp .logbox{font-family:var(--mono);font-size:var(--t-xs);line-height:1.55;
-  max-height:min(58vh,540px);overflow:auto;background:var(--panel-2);overscroll-behavior:contain;
-  border:1px solid var(--rule);border-radius:var(--r2);padding:.55em .7em;
-  white-space:pre-wrap;word-break:break-all}
+  max-height:min(58vh,540px);overflow:auto;background:var(--bg);overscroll-behavior:contain;
+  border:0;border-top:1px solid var(--rule);border-bottom:1px solid var(--rule);border-radius:0;
+  padding:.55em .2em;white-space:pre-wrap;word-break:break-all}
 .cfp .lline{min-height:1.4em}
 /* r45：行首时间戳拆成独立一段 —— 定宽 + 表格数字，让正文那一列左边缘对齐；
    颜色退一级，扫读时眼睛先看到事件、再看到时刻。 */
@@ -340,7 +359,7 @@
 .cfp .lline.warn{color:var(--warn-fg)}
 .cfp abbr{text-decoration:underline dotted;text-underline-offset:2px;cursor:help}
 .cfp .flash{display:flex;align-items:flex-start;gap:.5em;margin-top:var(--s2);padding:.5em .75em;
-  border-radius:var(--r2);font-size:var(--t-sm);line-height:1.6;
+  border-radius:0;font-size:var(--t-sm);line-height:1.6;
   color:var(--idle-fg);background:var(--idle-bg);border:1px solid var(--idle-bd)}
 .cfp .flash.ok{color:var(--ok-fg);background:var(--ok-bg);border-color:var(--ok-bd)}
 .cfp .flash.warn{color:var(--warn-fg);background:var(--warn-bg);border-color:var(--warn-bd)}
@@ -353,9 +372,10 @@
  * 这一屏真正有内容的只有我们那一个 .grps，把 gap 收掉不牵动别的排布；
  * 只作用在配置页这张 map 上（源页那张 map 挂在 .src-edit 里，不在这条选择器下）。 */
 .cfp .grps-host > .cbi-map{gap:0}
-.cfp .grp{border:1px solid var(--rule);border-radius:var(--r2);margin-bottom:var(--s3);
-  background:var(--panel);overflow:hidden}
-.cfp .grp-h{display:flex;align-items:center;gap:var(--s2);padding:var(--s3) var(--s4);
+/* r119：配置分组从「一叠卡片」改成一列带发丝分隔的刻度段；组头就是段标签。 */
+.cfp .grp{border:0;border-top:1px solid var(--rule);border-radius:0;margin-bottom:0;
+  background:none;overflow:visible}
+.cfp .grp-h{display:flex;align-items:center;gap:var(--s2);padding:var(--s3) 0;
   cursor:pointer;user-select:none;transition:background var(--d-fast) var(--e-out)}
 .cfp .grp-h:hover{background:var(--panel-2)}
 .cfp .grp-h:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
@@ -458,7 +478,7 @@
   .cfp .hmark{position:relative}
   .cfp .hmark::after{content:'';position:absolute;left:50%;top:50%;width:24px;height:24px;
     transform:translate(-50%,-50%)}
-  .cfp .strip{grid-template-columns:repeat(auto-fit,minmax(104px,1fr))}
+  .cfp .cell{flex-basis:8em}
   .cfp .cell-v{font-size:var(--t-md)}
   /* 窄屏读数条两处"看不见内容"的修法（真机 420px 实测）：
    * 副行被 ellipsis 裁成 135/137/117 对 101，完整句子只在 title 里 —— 触摸设备悬不到，
@@ -519,8 +539,8 @@
   .cfp .board-scroll{max-height:none}
 }
 
-/* r83：读数带的焦点格 —— 一排六个读数里只让「达标」有重量 */
-.cfp .strip .cell.primary .cell-v .n{font-size:28px;letter-spacing:-.02em;color:var(--accent-ink)}
+/* r119：读数带里「达标」那一格是整块面板唯一的重量级读数。 */
+.cfp .strip .cell.primary .cell-v .n{font-size:30px;letter-spacing:-.03em;color:var(--accent-ink)}
 .cfp .strip .cell.primary .cell-k{color:var(--ink-2)}
 /* r83：质量列 */
 .cfp .q-none{color:var(--ink-3);opacity:.55}
@@ -548,8 +568,8 @@
 .cfp .brow.top > .bc:first-child{background:var(--accent-btn);border-radius:2px 0 0 2px}
 .cfp .brow.top > .bc:first-child .rk{color:var(--accent-fg);font-weight:700}
 /* 榜首整行淡淡染一层强调色：只染名次格太孤立，全行染又不抢读数（6%） */
-.cfp .brow.top{background:color-mix(in oklab, var(--accent) 6%, var(--panel))}
-.cfp .brow.top:hover{background:color-mix(in oklab, var(--accent) 9%, var(--panel))}
+.cfp .brow.top{background:color-mix(in oklab, var(--accent) 6%, var(--bg))}
+.cfp .brow.top:hover{background:color-mix(in oklab, var(--accent) 9%, var(--bg))}
 /* 行悬停：整行底色轻微抬起，左侧再升起一道 2px 导轨 —— 沿着行"通电"一次。
  * transition 与 :hover 都只在这里声明一份（以前在表格段与这里各写一遍，
  * csstidy 合并选择器后顺序不可依赖）。 */
@@ -592,7 +612,7 @@
   grid-template-columns:minmax(6.4em,max-content) 4.6em 7.4em minmax(8em,1fr);
   border-bottom:1px solid var(--rule-soft);min-width:0}
 .cfp .dcrow:last-child{border-bottom:0}
-.cfp .dcrow.head{background:var(--panel-2);border-bottom:1px solid var(--rule)}
+.cfp .dcrow.head{background:var(--bg);border-bottom:1px solid var(--rule)}
 .cfp .dc{padding:var(--s2) var(--s3);font-size:var(--t-sm);white-space:nowrap;min-width:0}
 .cfp .dc.r{text-align:right}
 .cfp .dcrow.head .dc{font-size:var(--t-xs);font-weight:700;letter-spacing:.04em;
@@ -604,7 +624,7 @@
   background:var(--accent-btn);color:var(--accent-fg);font-size:var(--t-xs);font-weight:700;
   line-height:1.5;vertical-align:.06em}
 /* 那一行淡淡染一层（6%，与榜首整行同档）：一眼能扫到，又不跟榜单抢强调 */
-.cfp .dcrow.cur{background:color-mix(in oklab, var(--accent) 6%, var(--panel))}
+.cfp .dcrow.cur{background:color-mix(in oklab, var(--accent) 6%, var(--bg))}
 .cfp .dc-more{padding:var(--s1) var(--s2) var(--s1) var(--s3);
   border-top:1px solid var(--rule-soft)}
 .cfp .dc-note{font-size:var(--t-xs);color:var(--ink-3);white-space:nowrap}
@@ -632,7 +652,7 @@
  * 只认第一格：最后一格也是 .dc.l（最快 IP），跟着变 flex 会让那串 IP 的省略号失效。 */
 .cfp .dcrow.data > .dc:first-child{display:flex;align-items:center;gap:.4em;min-width:0}
 .cfp .dcrow.data:not(.open) .chev{transform:rotate(-45deg)}
-.cfp .dcitems{background:var(--panel-2);border-bottom:1px solid var(--rule-soft);
+.cfp .dcitems{background:var(--bg);border-bottom:1px solid var(--rule-soft);
   padding:var(--s1) 0 var(--s2)}
 .cfp .dcitem{display:grid;grid-template-columns:minmax(0,1fr) 5.4em 6.2em;
   align-items:center;gap:.35em;min-width:0;
@@ -679,7 +699,7 @@
 
 /* ---- r104：按机房推送的图形编辑器（dns_targets 的视图层） ---- */
 .cfp .dnsrows-host{margin:.2em 0 .6em}
-.cfp .dnsrows{border:1px solid var(--rule);border-radius:var(--r2);overflow:hidden}
+.cfp .dnsrows{border:1px solid var(--rule);border-radius:0;overflow:hidden}
 .cfp .dnsrow{display:grid;grid-template-columns:9.5em 1fr 5em 3.2em;gap:var(--s2);align-items:center;padding:.35em var(--s2)}
 .cfp .dnsrow + .dnsrow{border-top:1px solid var(--rule)}
 .cfp .dnsrow-h{font-size:var(--t-xs);color:var(--ink-3)}
