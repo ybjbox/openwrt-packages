@@ -65,6 +65,25 @@ const hook = "\nglobalThis.__cf_t = {\n" +
 	"\tFAIL_STALE: FAIL_STALE, FAIL_GIVEUP: FAIL_GIVEUP,\n" +
 	"\tHUNG: HUNG, CMD_LIMIT: CMD_LIMIT, isRunningReply: isRunningReply\n" +
 	"};\n";
+
+/* ---- 导出面预检 ----------------------------------------------------------
+ * 钩子里引用的每个私有符号必须在源码里真的存在。直接 new Function 的话，任何
+ * 一个改名都会让整份脚本在加载阶段 ReferenceError：输出只有一句“x is not
+ * defined”，844 条断言一条都跑不到，看起来像测试坏了而不是代码变了。
+ * 这里先把缺失的名字一次性列出来再退出。 */
+const hookRefs = [];
+for (const m of hook.matchAll(/\b([A-Za-z_$][\w$]*)\s*:\s*(?:\(\s*typeof\s+)?([A-Za-z_$][\w$]*)/g))
+	hookRefs.push(m[2]);
+for (const m of hook.matchAll(/\bget\s+[A-Za-z_$][\w$]*\s*\(\s*\)\s*\{\s*return\s+([A-Za-z_$][\w$]*)/g))
+	hookRefs.push(m[1]);
+const exportedNames = [ ...new Set(hookRefs) ].filter((n) => !/^(null|undefined|true|false)$/.test(n));
+const missingExports = exportedNames.filter((n) =>
+	!new RegExp('(^|\\n)(?:function|var)\\s+' + n + '\\b').test(src0));
+if (missingExports.length) {
+	console.log('NO-SYMBOL: ' + missingExports.join(', '));
+	console.log('  钩子引用了源码里不存在的名字；改名/删除后要同步改本文件的 hook 列表');
+	process.exit(1);
+}
 const src = src0.replace(marker, hook + 'return view.extend({');
 
 /* ------------------------------------------------------------------ *
@@ -468,7 +487,9 @@ const t = globalThis.__cf_t;
 if (!t) { console.log('NO-HOOK'); process.exit(1); }
 
 let fails = 0;
+let nassert = 0;
 function eq(desc, got, want) {
+	nassert++;
 	if (String(got) === String(want)) console.log('[PASS] ' + desc);
 	else { console.log(`[FAIL] ${desc}: got <${got}> want <${want}>`); fails++; }
 }
@@ -2791,6 +2812,14 @@ eq('再点一下回到只显示时刻', firstLts(), '04:28:44');
 	 * 测试拿到的就是字面 "%d"，对它的断言全部空转（真发生过 4 处）。 */
 	eq('视图里没有 %d（桩测的 format 只认 %s，否则断言空转）',
 		strings.filter(s => /%d/.test(s)).length, 0);
+}
+
+/* r114：断言数下限。少跑 = 少测，而且掉断言通常是「某个代码块被重构掉、
+ * 连带它的断言一起消失」，报表仍然全绿。844 = r113 实测执行数。 */
+const MIN_ASSERT = 844;
+if (nassert < MIN_ASSERT) {
+	console.log(`[FAIL] 断言执行数从 ${MIN_ASSERT} 掉到 ${nassert} —— 少跑的部分等于没测`);
+	fails++;
 }
 
 console.log(fails === 0 ? '=== view 渲染断言全部通过' : `=== view 渲染断言失败 ${fails} 项`);

@@ -23,6 +23,16 @@ set -u
 
 fail=0
 
+# 两个被十来个检查反复引用的文件只在这里定义一次。
+# 以前 VIEW 定义在 red-line-6 块内部，路径写错时只有那一条红，其余视图检查
+# 全被 [ -f "$VIEW" ] 静默跳过 —— 改名反而让 CI 更绿。所以存在性先单独钉死。
+ENGINE=${LINT_ENGINE:-luci-app-cf-ipcheck/root/usr/bin/cf-ipcheck}
+VIEW=${LINT_VIEW:-luci-app-cf-ipcheck/htdocs/luci-static/resources/view/cf_ipcheck/settings.js}
+if [ ! -f "$ENGINE" ] || [ ! -f "$VIEW" ]; then
+    echo "[FAIL] existence: 找不到引擎或页面文件（$ENGINE / $VIEW）—— 下面所有依赖它们的检查都会跳过"
+    fail=1
+fi
+
 # Temp files (BusyBox always has /tmp).
 ALL_FILES="/tmp/lint_all_files.$$"
 TMP_ERR="/tmp/lint_err.$$"
@@ -182,6 +192,7 @@ if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/n
     USE_GIT=1
 fi
 rl5=0
+nexec=0
 while IFS= read -r f; do
     [ -z "$f" ] && continue
     case "$f" in
@@ -193,6 +204,7 @@ while IFS= read -r f; do
         *bin/sh*|*bin/bash*|*bin/ash*) ;;
         *) continue ;;
     esac
+    nexec=$((nexec + 1))
     if [ "$USE_GIT" = 1 ]; then
         mode=$(git ls-files -s -- "$f" 2>/dev/null | sed -n '1{s/ .*//;p}')
         how="git index mode"
@@ -208,6 +220,10 @@ while IFS= read -r f; do
         rl5=1
     fi
 done < "$ALL_FILES"
+if [ "$nexec" -eq 0 ]; then
+    echo "[FAIL] exec mode: 一个要装到 root/usr/bin 或 init.d 的脚本都没找到，这条检查失效了"
+    rl5=1
+fi
 if [ "$rl5" = 1 ]; then
     fail=1
 fi
@@ -218,15 +234,11 @@ fi
 # 单位从"看着像 megabits"到 MiB 再回到 Ryan 要的十进制 MB/s），靠真机才看得出来，
 # 所以这条契约检查放在 CI 里，两边任一侧单方面改名都会红。
 echo "=== [7/15] Red line 6: engine <-> view JSON field contract ==="
-ENGINE=luci-app-cf-ipcheck/root/usr/bin/cf-ipcheck
-VIEW=luci-app-cf-ipcheck/htdocs/luci-static/resources/view/cf_ipcheck/settings.js
 TMP_ENGINE="/tmp/lint_engine.$$"
 rl6=0
+nkeys=0
 
-if [ ! -f "$ENGINE" ] || [ ! -f "$VIEW" ]; then
-    echo "[FAIL] contract: 找不到引擎或页面文件（$ENGINE / $VIEW）"
-    rl6=1
-else
+if [ -f "$ENGINE" ] && [ -f "$VIEW" ]; then
     # 契约表：这三组就是页面会显示的全部数据来源。加字段必须在这里登记一份，
     # 目的是让「引擎写了但页面没读」「页面读了但引擎没写」两种单边改动都变红。
     # 为什么不直接正则扫引擎全文：Gist 载荷、Cloudflare /ips 的响应、自检里的
@@ -239,6 +251,7 @@ else
     sed 's/\\//g' "$ENGINE" > "$TMP_ENGINE"
 
     for k in $STATUS_KEYS $ITEM_KEYS $SOURCE_KEYS; do
+        nkeys=$((nkeys + 1))
         if grep -q "\"$k\":" "$TMP_ENGINE"; then
             e=ok
         else
@@ -257,9 +270,21 @@ else
         fi
     done
 
+    # 覆盖数下限：契约表被误删一行时，两边的循环都会少跑一轮，看上去仍然全绿。
+    # 38 = STATUS 20 + ITEM 13 + SOURCE 5（r113 实测）。只增不减。
+    if [ "$nkeys" -lt 38 ]; then
+        echo "[FAIL] contract: 只核对了 $nkeys 个键，契约表至少应有 38 个（少的那几行被删了？）"
+        rl6=1
+    fi
+
     # 反向兜底：页面从 items 里取的每个键必须登记在契约表里。
     # 前面的 [^.alnum_] 是为了别上 "/etc/init.d/rpcd" 这种路径的尾巴。
-    for k in $(grep -oE '[^.[:alnum:]_]it\.[a-z_][a-z_]*' "$VIEW" | sed 's/^.*it\.//' | sort -u); do
+    IT_USED=$(grep -oE '[^.[:alnum:]_]it\.[a-z_][a-z_]*' "$VIEW" | sed 's/^.*it\.//' | sort -u)
+    if [ -z "$IT_USED" ]; then
+        echo "[FAIL] contract: 从页面里一个 it.* 都没提取到，反向守卫失效了"
+        rl6=1
+    fi
+    for k in $IT_USED; do
         case " $ITEM_KEYS " in
             *" $k "*) ok=1 ;;
             *) ok=0 ;;
@@ -293,6 +318,21 @@ if [ -f "$VIEW" ] && [ -f "$ENGINE" ]; then
     rl7=0
     OPTS=$(grep -oE "\.option\(form\.[A-Za-z]+, '[a-z_]+'" "$VIEW" | sed "s/.*, '//; s/'$//" | sort)
     HELPS=$(grep -oE "help\('[a-z_]+'" "$VIEW" | sed "s/help('//; s/'$//" | sort)
+    # 空集合必须红：下面两个循环都是「对提取到的每一条做判断」，提取失败时
+    # 一条都不跑，脚本会打印 PASS —— 这正是把字段声明改成别的形状时最容易
+    # 掉进去的坑（改完 CI 更绿，护栏却没了）。
+    nopts=$(printf '%s\n' $OPTS | grep -c .)
+    if [ "$nopts" -eq 0 ]; then
+        echo "[FAIL] help-7: 从视图里一个字段都没提取到（.option(form.X, 'name') 的形状变了？）"
+        rl7=1
+    elif [ "$nopts" -lt 50 ]; then
+        echo "[FAIL] help-7: 只提取到 $nopts 个字段，r113 实测是 54 个（少了的字段没被本检查覆盖）"
+        rl7=1
+    fi
+    if [ -z "$HELPS" ]; then
+        echo "[FAIL] help-7: 从视图里一个 help() 都没提取到，配对检查失效了"
+        rl7=1
+    fi
     # 两侧都压成空格分隔的集合再判成员：留着换行的话 *" $k "* 只会命中首尾两项。
     OPTSET=" $(printf '%s ' $OPTS)"
     HELPSET=" $(printf '%s ' $HELPS)"
@@ -369,6 +409,17 @@ if [ -f "$VIEW" ] && [ -f "$ENGINE" ]; then
         sed -E "s/.*runCmd\(\[ '([a-z-]+)'.*/\1/" | sort -u > "$TMP_CALLS"
     if [ ! -s "$TMP_LABELS" ]; then
         echo "[FAIL] cmd: 从引擎里一条分派标签都没提出来，这条检查本身失效了"
+        rl8=1
+    fi
+    # 调用集为空同样要红：改一处引号/空格（runCmd(['x'])）就会让 sed 一条都匹配不到，
+    # 而下面是「对每条调用做判断」，零条 = 零失败 = 假绿。
+    ncalls=$(grep -c . "$TMP_CALLS" 2>/dev/null)
+    [ -n "$ncalls" ] || ncalls=0
+    if [ "$ncalls" -eq 0 ]; then
+        echo "[FAIL] cmd: 从视图里一条 runCmd([ 'x' 都没提取到，这条检查本身失效了"
+        rl8=1
+    elif [ "$ncalls" -lt 6 ]; then
+        echo "[FAIL] cmd: 只提取到 $ncalls 条子命令调用（r113 实测 9 条），有调用没被覆盖"
         rl8=1
     fi
     while read -r c; do
@@ -493,6 +544,10 @@ fi
 #      继承值），比直接报错难查得多。这里两个一起守。
 echo "=== [11/15] Red line 11: standalone stylesheet exists and its tokens resolve ==="
 CSS_REL=$(sed -n "s/.*CSS_PATH = '\([^']*\)'.*/\1/p" "$VIEW" 2>/dev/null | head -n 1)
+if [ -z "$CSS_REL" ]; then
+    echo "[FAIL] css: 从视图里提取不到 CSS_PATH —— 这条检查（含令牌解析）整块被跳过了"
+    fail=1
+fi
 if [ -n "$CSS_REL" ]; then
     rl11=0
     CSS_FILE="luci-app-cf-ipcheck/htdocs/luci-static/resources/$CSS_REL"
@@ -512,6 +567,10 @@ if [ -n "$CSS_REL" ]; then
     if [ -f "$CSS_FILE" ]; then
         grep -o '^[[:space:]]*--[A-Za-z0-9-]*' "$CSS_FILE" | tr -d ' \t' | sort -u > "$TMP_DEF"
         grep -oE 'var\(--[A-Za-z0-9-]+' "$CSS_FILE" | sed 's/^var(//' | sort -u > "$TMP_USE"
+        if [ ! -s "$TMP_DEF" ] || [ ! -s "$TMP_USE" ]; then
+            echo "[FAIL] token: 从 CSS 里提不出令牌定义或 var() 引用，令牌解析这一条失效了"
+            rl11=1
+        fi
         while read -r tok; do
             [ -n "$tok" ] || continue
             # -- 不能省：令牌名本身就是 -- 开头，否则 grep 把它当成选项
@@ -564,6 +623,12 @@ if [ -f "$VIEW" ] && [ -f "$UC_FILE" ] && [ -f "$ACL_FILE" ] && [ -f "$ENGINE" ]
     fi
     if [ ! -s "$TMP_LABELS12" ]; then
         echo "[FAIL] ucode: 从引擎里提不出分派标签，这条检查本身失效了"
+        rl12=1
+    fi
+    npairs=$(grep -c . "$TMP_PAIRS" 2>/dev/null)
+    [ -n "$npairs" ] || npairs=0
+    if [ "$npairs" -lt 9 ]; then
+        echo "[FAIL] ucode: 只提取到 $npairs 组 方法→子命令（r113 实测 9 组），有方法没被覆盖"
         rl12=1
     fi
     while IFS='=' read -r m sub; do
