@@ -146,9 +146,12 @@
 .cfp .lamp.t-warn{color:var(--warn-fg);background:var(--warn-bg);border-color:var(--warn-bd)}
 .cfp .lamp.t-bad{color:var(--bad-fg);background:var(--bad-bg);border-color:var(--bad-bd)}
 @media (prefers-reduced-motion: no-preference){
-  .cfp .lamp.t-run .lamp-dot{animation:cfp-pulse 1.5s var(--e-in-out) infinite}
-  @keyframes cfp-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(.65)}}
+  /* 运行中：指示灯缓慢呼吸。之前这里还留着一条 1.5 秒的 cfp-pulse，
+   * 但后面 552 行那条 cfp-breathe 会覆盖它 —— 两条 animation 争同一个属性，
+   * 前者从来没生效过。只保留呼吸这一条，并放回 no-preference 里。 */
+  .cfp .lamp.t-run .lamp-dot{animation:cfp-breathe 2.2s ease-in-out infinite}
 }
+@keyframes cfp-breathe{0%,100%{opacity:1}50%{opacity:.5}}
 .cfp .rail-note{font-size:var(--t-sm);color:var(--ink-3);min-width:0}
 .cfp .build{font-family:var(--mono);font-size:var(--t-xs);color:var(--ink-3);
   border:1px solid var(--rule);border-radius:var(--r1);padding:.1em .4em;white-space:nowrap}
@@ -252,8 +255,6 @@
   color:var(--ink-3);padding-top:var(--s2);padding-bottom:var(--s2)}
 .cfp .bc{padding:var(--s2) var(--s3);font-size:var(--t-sm);white-space:nowrap}
 .cfp .bc.r{text-align:right}
-.cfp .brow.data{transition:background var(--d-fast) var(--e-out)}
-.cfp .brow.data:hover{background:var(--panel-2)}
 .cfp .brow.top .bc{font-weight:600}
 .cfp .rk{color:var(--ink-3);font-size:var(--t-xs);font-weight:600}
 .cfp .brow.top .rk{color:var(--accent-ink)}
@@ -316,6 +317,11 @@
   transition:transform var(--d-base) var(--e-out)}
 .cfp .note{font-size:var(--t-xs);color:var(--ink-3);line-height:1.75;max-width:80ch}
 .cfp .note b{color:var(--ink-2);font-weight:600}
+/* 警告条：JS 从 r29 起就写了 class="note warn"，但样式表一直没有这条规则 ——
+ * 那句「编辑框里有 N 条还没生效」和普通说明长得一模一样。只加一条信号色左边线，
+ * 不加边框盒（卡片语汇在 r61 已经清掉了）。 */
+.cfp .note.warn{color:var(--warn-fg);border-left:2px solid var(--warn-bd);
+  padding-left:var(--s3);background:var(--warn-bg)}
 .cfp .logbox{font-family:var(--mono);font-size:var(--t-xs);line-height:1.55;
   max-height:min(58vh,540px);overflow:auto;background:var(--panel-2);overscroll-behavior:contain;
   border:1px solid var(--rule);border-radius:var(--r2);padding:.55em .7em;
@@ -389,7 +395,7 @@
  * 28 个字段全中。这里按自己的令牌重新给色，并显式把 opacity 抬回 1。
  * font-size 也一起接管：主题给的是 12px，而这是我们自己写的说明文字（不是控件），
  * 该跟着 --t-sm 这一档走 —— 窄屏那 28 条说明实测就卡在 12px，比正文还小一级。 */
-.cfp .cbi-value-description{max-width:none;cursor:help;opacity:1;color:var(--ink-2);font-size:var(--t-sm)}
+.cfp .cbi-value-description{max-width:none;cursor:help;opacity:1;color:var(--ink-2);font-size:var(--t-sm);line-height:1.7}
 /* 光标跟着交互性质走：.hmark 是个 role=button 的可点控件（点开/收起完整说明），
  * 指针手型是"这一下点得动"的唯一视觉承诺；问号光标说的是"停这儿有解释"，那是
  * 下面那行 .cbi-value-description 的性质（它只悬浮出 title，点了没反应），两处不能互换。 */
@@ -522,9 +528,8 @@
 
 /* ---------- r84：配置页的纵向节奏 ---------- */
 /* 表单每行原来是 LuCI 的默认留白（实测一行约 45px），一条说明就把一组参数拉得很长。
- * 收到 34~38px，并让说明文字用 1.7 行高（中文 12.5px 在 1.55 下太挤）。 */
+ * 收到 34~38px。说明文字的 1.7 行高在它自己的规则里（见上），这里只管行距。 */
 .cfp .cbi-value{padding:.22em 0}
-.cfp .cbi-value-description{line-height:1.7}
 .cfp .cbi-value-title{line-height:1.45}
 
 /* ---------- r84：一次入场编排（只在首次装配时有效） ---------- */
@@ -545,12 +550,13 @@
 /* 榜首整行淡淡染一层强调色：只染名次格太孤立，全行染又不抢读数（6%） */
 .cfp .brow.top{background:color-mix(in oklab, var(--accent) 6%, var(--panel))}
 .cfp .brow.top:hover{background:color-mix(in oklab, var(--accent) 9%, var(--panel))}
-/* 行悬停：左侧升起一道 2px 导轨，沿着行"通电"一次 */
+/* 行悬停：整行底色轻微抬起，左侧再升起一道 2px 导轨 —— 沿着行"通电"一次。
+ * transition 与 :hover 都只在这里声明一份（以前在表格段与这里各写一遍，
+ * csstidy 合并选择器后顺序不可依赖）。 */
 .cfp .brow.data{transition:background var(--d-fast) var(--e-out), box-shadow var(--d-fast) var(--e-out)}
-.cfp .brow.data:hover{box-shadow:inset 2px 0 0 var(--accent-ink)}
-/* 运行中：状态灯缓慢呼吸（2.2 秒一次）——"机器在动"的最小信号 */
-.cfp .lamp.t-run .lamp-dot{animation:cfp-breathe 2.2s ease-in-out infinite}
-@keyframes cfp-breathe{0%,100%{opacity:1}50%{opacity:.5}}
+.cfp .brow.data:hover{background:var(--panel-2);box-shadow:inset 2px 0 0 var(--accent-ink)}
+/* 运行中：状态灯缓慢呼吸（2.2 秒一次）——"机器在动"的最小信号。
+ * 规则本身在 148 行的 no-preference 块里（减少动效时整条不生效）。 */
 @media (prefers-reduced-motion: reduce){
   .cfp .lamp.t-run .lamp-dot{animation:none}
 }
@@ -679,7 +685,7 @@
 .cfp .dnsrow-h{font-size:var(--t-xs);color:var(--ink-3)}
 .cfp .dnsrow-h span{padding-left:.1em}
 .cfp .dnsrow-raw{grid-template-columns:1fr;color:var(--ink-3)}
-.cfp .dnsrowe-code,.cfp .dnsrow select,.cfp .dnsrow input{width:100%;box-sizing:border-box}
+.cfp .dnsrow select,.cfp .dnsrow input{width:100%;box-sizing:border-box}
 .cfp .dnsrow input[type=number]{text-align:right}
 .cfp .dnsrows-add{padding:.3em var(--s2);border-top:1px solid var(--rule)}
 @media (max-width:760px){

@@ -63,7 +63,7 @@ const hook = "\nglobalThis.__cf_t = {\n" +
 	"\tget pollFail() { return pollFail; }, pollGapSec: pollGapSec,\n" +
 	"\tPOLL_SEC: POLL_SEC, POLL_SLOW_SEC: POLL_SLOW_SEC, pollTick: pollTick,\n" +
 	"\tFAIL_STALE: FAIL_STALE, FAIL_GIVEUP: FAIL_GIVEUP,\n" +
-	"\tHUNG: HUNG, CMD_LIMIT: CMD_LIMIT, isRunningReply: isRunningReply\n" +
+	"\tHUNG: HUNG, CMD_LIMIT: CMD_LIMIT\n" +
 	"};\n";
 
 /* ---- 导出面预检 ----------------------------------------------------------
@@ -1823,7 +1823,12 @@ documentStub.head = makeNode('head');
 t.linkStyle();
 const links1 = byTag(documentStub.head, 'link');
 eq('第一次挂上一条 link', links1.length, 1);
-eq('link 的 href 在 L 没给 resource 时落到默认路径', links1[0].attrs.href, '/luci-static/resources/' + relCss);
+/* r115：样式表也吃缓存版本号。必须用本包的 VIEW_BUILD，而不是 L.env.resource_version
+ * （那是 luci-base 的版本，只升本包时不变 —— 加了等于没加）。 */
+const viewBuild = (/var VIEW_BUILD = '(r\d+)'/.exec(src0) || [])[1];
+eq('link 的 href 在 L 没给 resource 时落到默认路径', links1[0].attrs.href,
+	'/luci-static/resources/' + relCss + '?v=' + viewBuild);
+ok('CSS 的版本号来自本包 VIEW_BUILD', !!viewBuild && links1[0].attrs.href.slice(-viewBuild.length) === viewBuild);
 t.linkStyle();
 eq('再挂一次不累积（按 href 去重）', byTag(documentStub.head, 'link').length, 1);
 
@@ -1930,10 +1935,6 @@ has('源检测 hung 文案说没有回应', t.srcMessage({ state: 'hung' }), '�
 ok('源检测 hung 的深度细节进了 srcMore（8 秒上限与 30 秒平台超时没丢）',
 	/8 秒上限/.test(t.srcMore({ state: 'hung' })) && /30 秒/.test(t.srcMore({ state: 'hung' })));
 has('源检测被拒文案点名 check_sources', t.srcMessage({ state: 'unreachable' }), '调不到 luci.cf-ipcheck 的 check_sources 方法');
-
-ok('run-now 回 running 判为「还在跑」', t.isRunningReply('{"state":"running"}') === true);
-ok('run-now 回 done 不算还在跑', t.isRunningReply('{"state":"done"}') === false);
-ok('run-now 回脏值不算还在跑', t.isRunningReply('sh: out of memory') === false);
 
 /* 忙碌标记要跟着 store 的 busy 走，而不是只改被点那一下的 DOM：
  * 读数条每次 store 变化都整体重画，若只靠 setBusy，重画后转圈就没了。 */
@@ -2815,8 +2816,9 @@ eq('再点一下回到只显示时刻', firstLts(), '04:28:44');
 }
 
 /* r114：断言数下限。少跑 = 少测，而且掉断言通常是「某个代码块被重构掉、
- * 连带它的断言一起消失」，报表仍然全绿。844 = r113 实测执行数。 */
-const MIN_ASSERT = 844;
+ * 连带它的断言一起消失」，报表仍然全绿。841 = r113 的 844 减去删除死代码
+ * isRunningReply 时一并删掉的 3 条。 */
+const MIN_ASSERT = 841;
 if (nassert < MIN_ASSERT) {
 	console.log(`[FAIL] 断言执行数从 ${MIN_ASSERT} 掉到 ${nassert} —— 少跑的部分等于没测`);
 	fails++;
