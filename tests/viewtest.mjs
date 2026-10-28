@@ -908,14 +908,14 @@ eq('正在跑的时候不提示',
 	const notInProbe = newFields.filter(n => (t.GROUP_OPTIONS.probe || []).indexOf(n) < 0);
 	ok('r90 三个新字段都归在「测速与判定」分组', notInProbe.length === 0, notInProbe.join(','));
 	const optBlock = name => {
-		const m = new RegExp("thr\\.option\\(form\\.\\w+, '" + name + "'").exec(src);
-		return m ? src.slice(m.index, m.index + 800) : '';
+		const m = new RegExp("field\\(thr, '[A-Za-z]+', form\\.\\w+, '" + name + "'").exec(src);
+		return m ? src.slice(m.index, m.index + 1600) : '';
 	};
 	ok('r90 probe_metric 默认 http', /o\.default = 'http'/.test(optBlock('probe_metric')));
 	ok('r90 dc_pick 默认 all', /o\.default = 'all'/.test(optBlock('dc_pick')));
 	ok('r90 speed_unit 默认 mb', /o\.default = 'mb'/.test(optBlock('speed_unit')));
-	ok('r90 三个字段都挂了 help()（长解释不常驻页面）',
-		newFields.every(n => src.indexOf("help('" + n + "'") > 0));
+	ok('r90 三个字段都走 field()（短句与长解释同一出处）',
+		newFields.every(n => new RegExp("field\\(thr, '[A-Za-z]+', form\\.\\w+, '" + n + "'").test(src)));
 	ok('r90 probe_metric 两个取值都在、文案没写成内部术语',
 		/'http', _\('按 HTTP 首字节时间'\)/.test(optBlock('probe_metric')) &&
 		/'tcp', _\('按 TCP 建连时间'\)/.test(optBlock('probe_metric')) &&
@@ -1306,8 +1306,8 @@ const R88_FIELDS = ['speed_gate', 'speed_abs_min', 'speed_rel_min',
 		                      (t.GROUP_OPTIONS.probeAdv || []).indexOf(n) >= 0));
 	/* 每条 help 的完整解释只在本条字段附近，切到 1400 字符足够覆盖「开关 + 长说明」。 */
 	const blockOf = name => {
-		const i = src.indexOf("help('" + name + "'");
-		return i < 0 ? '' : src.slice(i, i + 1400);
+		const m = new RegExp("field\\(thr, '[A-Za-z]+', form\\.\\w+, '" + name + "'").exec(src);
+		return m ? src.slice(m.index, m.index + 1600) : '';
 	};
 	const gate = blockOf('speed_gate');
 	ok('r88 speed_gate 说明写全三步判定（连通性 / 稳定性 / 下载速度）',
@@ -1463,8 +1463,9 @@ const boxes = byData(grps, 'group');
 eq('分组数 = 6', boxes.length, 6);
 /* 拆分不能丢字段 —— 常驻与高级加起来必须还是原来那 31 个。
  * 只断言"总数"是不够的：还要钉住常驻确实收敛了，否则等于没拆。 */
-eq('「测速与判定」常驻字段收敛到 10', t.GROUP_OPTIONS.probe.length, 10);
-eq('拆分不丢字段：常驻 + 高级 = 31', t.GROUP_OPTIONS.probe.length + t.GROUP_OPTIONS.probeAdv.length, 31);
+/* r117：dc_show 原来漏登记，掉进「其它」组（11 + 21 = 32）。 */
+eq('「测速与判定」常驻字段收敛到 11（含 dc_show）', t.GROUP_OPTIONS.probe.length, 11);
+eq('拆分不丢字段：常驻 + 高级 = 32', t.GROUP_OPTIONS.probe.length + t.GROUP_OPTIONS.probeAdv.length, 32);
 let moved = 0;
 boxes.forEach(b => { moved += byClass(b, 'brow').length + b.querySelectorAll('.cbi-value').length; });
 eq('所有字段都被搬进分组', moved, allOptions.length);

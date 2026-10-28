@@ -311,73 +311,97 @@ else
     echo "[PASS] red-line-6: engine/view JSON contract holds"
 fi
 
-# --- red-line-7: 表单字段一律「短说明留在页面 + 完整解释挂悬停」---------------
-# 真机量过：17 条长说明一共 2299px，页面被拉到看不见榜单。这条只是防止以后再加字段时
-# 顺手把整段背景知识写回 description —— 那种改动肉眼看不出来，只能靠结构断言。
+# --- red-line-7: 字段声明只有一处 + 短说明留在页面、完整解释挂悬停 -----------
+# r117 起字段统一由 field(map, 'group', type, 'key', 标题, 短句, 长句) 声明：
+#   · 短句只写一次（option 的第 4 参与 help() 的第 2 参是同一个值）；
+#   · 分组写在第 2 个实参里，必须与 GROUP_OPTIONS 双向一致 —— dc_show 曾经漏登记，
+#     在页面上掉进「其它」组，直到 r117 才被发现；
+#   · 短句仍要 ≤160 字节：真机量过 17 条长说明一共 2299px，会把榜单挤出屏幕。
 if [ -f "$VIEW" ] && [ -f "$ENGINE" ]; then
     rl7=0
-    OPTS=$(grep -oE "\.option\(form\.[A-Za-z]+, '[a-z_]+'" "$VIEW" | sed "s/.*, '//; s/'$//" | sort)
-    HELPS=$(grep -oE "help\('[a-z_]+'" "$VIEW" | sed "s/help('//; s/'$//" | sort)
-    # 空集合必须红：下面两个循环都是「对提取到的每一条做判断」，提取失败时
-    # 一条都不跑，脚本会打印 PASS —— 这正是把字段声明改成别的形状时最容易
-    # 掉进去的坑（改完 CI 更绿，护栏却没了）。
-    nopts=$(printf '%s\n' $OPTS | grep -c .)
+    TMP_PAIRS="/tmp/lint_fieldpairs.$$"
+    TMP_GROUPS="/tmp/lint_fieldgroups.$$"
+    TMP_OPT="/tmp/lint_fieldopts.$$"
+    # 1) 声明里的 (分组, 键)；2) 分组表里的 (分组, 键)
+    grep -oE "field\([a-z]+, '[A-Za-z]+', form\.[A-Za-z]+, '[a-z_]+'" "$VIEW" |
+        sed -E "s/field\([a-z]+, '([A-Za-z]+)', form\.[A-Za-z]+, '([a-z_]+)'/\1 \2/" | sort -u > "$TMP_PAIRS"
+    sed -n '/^var GROUP_OPTIONS = {/,/^};/p' "$VIEW" |
+        awk -v q="'" '
+            /^[ \t]*[A-Za-z]+:/ { g = $1; sub(/:.*/, "", g) }
+            { n = split($0, p, q); for (i = 2; i <= n; i += 2) if (g != "" && p[i] ~ /^[a-z_]+$/) print g, p[i] }
+        ' | sort -u > "$TMP_GROUPS"
+    grep -oE "field\([a-z]+, '[A-Za-z]+', form\.[A-Za-z]+, '[a-z_]+'" "$VIEW" |
+        sed -E "s/.*, '([a-z_]+)'$/\1/" | sort > "$TMP_OPT"
+    # 源清单那张独立 Map 仍是手写 option（不在配置页的分组里），单独并进字段集
+    printf '%s\n' community_sources >> "$TMP_OPT"
+    sort -o "$TMP_OPT" "$TMP_OPT"
+
+    # 空集合必须红：下面都是「对提取到的每一条做判断」，提取失败时一条都不跑，
+    # 脚本会打印 PASS —— 改声明形状时最容易掉进去的坑。
+    nopts=$(grep -c . "$TMP_OPT" 2>/dev/null)
+    [ -n "$nopts" ] || nopts=0
     if [ "$nopts" -eq 0 ]; then
-        echo "[FAIL] help-7: 从视图里一个字段都没提取到（.option(form.X, 'name') 的形状变了？）"
+        echo "[FAIL] help-7: 从视图里一个字段都没提取到（field(...) 的形状变了？）"
         rl7=1
-    elif [ "$nopts" -lt 50 ]; then
+    elif [ "$nopts" -lt 54 ]; then
         echo "[FAIL] help-7: 只提取到 $nopts 个字段，r113 实测是 54 个（少了的字段没被本检查覆盖）"
         rl7=1
     fi
-    if [ -z "$HELPS" ]; then
-        echo "[FAIL] help-7: 从视图里一个 help() 都没提取到，配对检查失效了"
+    if [ ! -s "$TMP_PAIRS" ]; then
+        echo "[FAIL] help-7: 一条 field(...) 声明都没提取到，分组核对失效了"
         rl7=1
     fi
-    # 两侧都压成空格分隔的集合再判成员：留着换行的话 *" $k "* 只会命中首尾两项。
-    OPTSET=" $(printf '%s ' $OPTS)"
-    HELPSET=" $(printf '%s ' $HELPS)"
-    for k in $OPTS; do
-        case "$HELPSET" in
-            *" $k "*) : ;;
-            *) echo "[FAIL] help-7: 字段 $k 没有 help() 条目（长解释会退回页面上常驻）"; rl7=1 ;;
-        esac
-    done
-    # 反过来也要成对：HELP 里残留的键说明字段被改名/删掉了，悬停提示会静默失效。
-    for k in $HELPS; do
-        case "$OPTSET" in
-            *" $k "*) : ;;
-            *) echo "[FAIL] help-7: help('$k') 找不到对应字段（改名留下的孤儿键）"; rl7=1 ;;
-        esac
-    done
-    dup=$(printf '%s\n' $HELPS | uniq -d)
+    dup=$(uniq -d "$TMP_OPT")
     if [ -n "$dup" ]; then
-        echo "[FAIL] help-7: help() 键重复，后一条会覆盖前一条: $dup"
+        echo "[FAIL] help-7: 字段重复声明（后一条会覆盖前一条）: $dup"
         rl7=1
     fi
-    # 页面上常驻的那句必须短：help('key', _('短句'), _('长句')) 的第二个实参。
-    # 短句通常单独占一行，所以匹配到 help('key', 之后要么在同一行、要么在下一行取 _('…')。
-    # 字面圆括号一律写成 [(]：`\(` 在 gawk 的动态正则里会被当成未转义分组，整段 awk 直接报错。
-    # LC_ALL=C 是必须的：gawk 在 UTF-8 locale 下 length() 数的是字符数，busybox awk 数的是字节，
-    # 不钉住 locale 的话同一条阈值在两个 CI 容器里量出来的数差三倍，断言就成了看运气。
+
+    # 声明 → 分组表：field 里写的 group 必须真的列了这个键
+    while read -r g k; do
+        [ -n "$k" ] || continue
+        if grep -qx "$g $k" "$TMP_GROUPS"; then
+            :
+        else
+            echo "[FAIL] help-7: 字段 $k 在 field(...) 里声明属于「$g」，GROUP_OPTIONS.$g 却没列它（会掉进「其它」组）"
+            rl7=1
+        fi
+    done < "$TMP_PAIRS"
+    # 分组表 → 声明：表里出现的键必须有对应字段，否则分组指向一个不存在的字段
+    while read -r g k; do
+        [ -n "$k" ] || continue
+        if grep -qx "$k" "$TMP_OPT"; then
+            :
+        else
+            echo "[FAIL] help-7: GROUP_OPTIONS.$g 里有 $k，但没有任何 field(...) 声明它（改名留下的孤儿键）"
+            rl7=1
+        fi
+    done < "$TMP_GROUPS"
+    rm -f "$TMP_PAIRS" "$TMP_GROUPS" "$TMP_OPT"
+
+    # 页面上常驻的那句必须短：field(...) 第二行的第 2 个 _('…') 就是短句。
+    # 字面圆括号一律写成 [(]：`\(` 在 gawk 的动态正则里会被当成未转义分组。
+    # LC_ALL=C 是必须的：gawk 在 UTF-8 locale 下 length() 数的是字符数，busybox awk 数的是字节。
     TMP_HELP="/tmp/lint_help.$$"
     LC_ALL=C awk -v q="'" -v lim=160 '
-        function measure(s,   i, short) {
-            gsub(/^[ \t]+/, "", s)
-            if (s !~ ("^_[(]" q)) return
-            sub("^_[(]" q, "", s)
-            i = index(s, q "),")
-            short = (i > 0) ? substr(s, 1, i - 1) : s
-            if (length(short) > lim) { printf "%d bytes: %s\n", length(short), short; bad = 1 }
+        function measure(line,   n, s, i) {
+            n = 0
+            while (match(line, "_[(]" q)) {
+                line = substr(line, RSTART + 3)
+                i = index(line, q)
+                if (!i) break
+                s = substr(line, 1, i - 1)
+                n++
+                if (n == 2 && length(s) > lim) { printf "%d bytes: %s\n", length(s), s; bad = 1 }
+                line = substr(line, i + 1)
+            }
         }
-        {
+        /^[ \t]*o = field\(/ { pending = 1; next }
+        pending {
+            pending = 0
             line = $0
             gsub(/^[ \t]+/, "", line)
-            if (pending) { pending = 0; measure(line); }
-            if (line ~ ("^help[(]" q "[a-z_]+" q ",")) {
-                rest = line
-                sub("^help[(]" q "[a-z_]+" q ",[ \t]*", "", rest)
-                if (rest ~ ("^_[(]" q)) measure(rest); else pending = 1
-            }
+            measure(line)
         }
         END { exit !bad }' "$VIEW" > "$TMP_HELP"
     if [ -s "$TMP_HELP" ]; then
@@ -389,7 +413,7 @@ if [ -f "$VIEW" ] && [ -f "$ENGINE" ]; then
     if [ "$rl7" = 1 ]; then
         fail=1
     else
-        echo "[PASS] red-line-7: form fields all use short description + hover detail"
+        echo "[PASS] red-line-7: fields declared once; short text on page, detail on hover"
     fi
 fi
 
