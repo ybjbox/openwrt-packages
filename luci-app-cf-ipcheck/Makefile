@@ -33,6 +33,10 @@ define Package/luci-app-cf-ipcheck/conffiles
 /etc/config/cf_ipcheck
 endef
 
+# 诊断用：暂时关掉构建期压缩，确认编译失败是否来自 minify 步骤。
+LUCI_MINIFY_JS:=0
+LUCI_MINIFY_CSS:=0
+
 include $(TOPDIR)/feeds/luci/luci.mk
 
 # call BuildPackage - OpenWrt buildroot signature
