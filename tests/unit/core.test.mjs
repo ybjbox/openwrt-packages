@@ -62,7 +62,7 @@ function load() {
 const CFI = load();
 
 test('构建版本与包版本一致', () => {
-	assert.equal(CFI.build, 'r130');
+	assert.equal(CFI.build, 'r131');
 });
 
 test('IPC：9 个方法与超时预算', () => {
