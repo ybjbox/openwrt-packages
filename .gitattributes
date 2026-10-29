@@ -27,3 +27,7 @@ tests/** text eol=lf
 **/htdocs/** text eol=lf
 **/usr/share/luci/** text eol=lf
 **/usr/share/rpcd/** text eol=lf
+
+# 视图源码与构建脚本一律 LF：拼接产物的 sha 必须与平台无关
+luci-app-cf-ipcheck/view-src/** text eol=lf
+tools/** text eol=lf

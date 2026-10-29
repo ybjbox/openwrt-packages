@@ -42,6 +42,11 @@ esac
 mkdir -p "$TMPD" || fail "建不了临时目录"
 trap 'rm -rf "$TMPD"' EXIT INT TERM
 
+# 行尾统一成 LF 再处理：Windows 工作区会把 manifest 与源码 checkout 成 CRLF，
+# 而 CI 是 LF。不归一化的话，同一份 src 在两边算出不同的 sha、--check 互相打架。
+sed -e 's/[[:space:]]*$//' < "$MANIFEST" > "$TMPD/manifest.txt" || fail "读不了 manifest"
+MANIFEST_N="$TMPD/manifest.txt"
+
 # ---- 读 manifest：js / css 两类，顺序即拼接顺序 ----------------------------
 : > "$TMPD/js.list"
 : > "$TMPD/css.list"
@@ -57,7 +62,7 @@ while IFS= read -r line; do
 		css) echo "$rel" >> "$TMPD/css.list" ;;
 		*) fail "manifest 未知类型 <$kind>：$line" ;;
 	esac
-done < "$MANIFEST"
+done < "$MANIFEST_N"
 
 # ---- 源一致性：文件必须存在、不许空 ----------------------------------------
 for list in "$TMPD/js.list" "$TMPD/css.list"; do
@@ -110,9 +115,9 @@ mkrel=$(sed -n 's/^PKG_RELEASE:=[[:space:]]*\([0-9]*\).*/\1/p' "$PKG/Makefile" |
 # ---- 计算 src 指纹（manifest + 所有被引用文件，顺序敏感） -------------------
 hash_all() {
 	{
-		cat "$MANIFEST"
-		while IFS= read -r rel; do cat "$SRC/$rel"; done < "$TMPD/js.list"
-		while IFS= read -r rel; do cat "$SRC/$rel"; done < "$TMPD/css.list"
+		sed -e 's/[[:space:]]*$//' < "$MANIFEST"
+		while IFS= read -r rel; do sed -e 's/[[:space:]]*$//' < "$SRC/$rel"; done < "$TMPD/js.list"
+		while IFS= read -r rel; do sed -e 's/[[:space:]]*$//' < "$SRC/$rel"; done < "$TMPD/css.list"
 	} | sha256sum | cut -d' ' -f1
 }
 HASH=$(hash_all)
