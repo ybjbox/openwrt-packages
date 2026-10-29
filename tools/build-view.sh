@@ -10,7 +10,7 @@ set -u
 
 ROOT=$(CDPATH= cd "$(dirname "$0")/.." 2>/dev/null && pwd) || exit 1
 PKG="$ROOT/luci-app-cf-ipcheck"
-SRC=${CFI_SRC:-$PKG/src}
+SRC=${CFI_SRC:-$PKG/view-src}
 OUTDIR=${CFI_OUT:-$PKG/htdocs/luci-static/resources/view/cf_ipcheck}
 MANIFEST="$SRC/manifest.txt"
 OUTJS="$OUTDIR/settings.js"
