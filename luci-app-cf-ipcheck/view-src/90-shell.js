@@ -378,7 +378,7 @@
 			var btnRun = CFI.ui.Button({ kind: 'primary', icon: 'play', label: T('立即测速'), onClick: function () { actRun(btnRun.node); } });
 			var btnStop = CFI.ui.Button({ kind: 'danger', icon: 'stop', label: T('停止'), hidden: true, onClick: function () { actStop(btnStop.node); } });
 			var btnRefresh = CFI.ui.Button({ kind: 'quiet', icon: 'refresh', label: T('刷新'), onClick: function () { refresh(true); } });
-			var rail = el('header', { class: 'rail' }, [
+			var rail = el('div', { class: 'rail' }, [
 				el('div', { class: 'rail-main' }, [ lamp, ip, sched ]),
 				el('div', { class: 'rail-acts' }, [ btnRun.node, btnStop.node, btnRefresh.node, buildTag ])
 			]);

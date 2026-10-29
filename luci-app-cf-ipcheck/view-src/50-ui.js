@@ -26,10 +26,8 @@
 			b.setAttribute('aria-busy', q.busy ? 'true' : 'false');
 			if (q.title != null)
 				b.setAttribute('title', q.title);
-			if (q.hidden)
-				b.hidden = true;
-			else
-				b.hidden = false;
+			if (q.hidden !== undefined)
+				b.hidden = !!q.hidden;
 		}
 		update({ kind: p.kind, disabled: p.disabled, title: p.title });
 		return { node: b, update: update };

@@ -13,7 +13,7 @@
 			{ key: 'tls', h: 'TLS', cls: 'r c-tls' },
 			{ key: 'ttfb', h: st.probe_metric === 'tcp' ? 'TCP' : 'TTFB', cls: 'r' },
 			{ key: 'total', h: '总计', cls: 'r c-total' },
-			{ key: 'colo', h: '机房', cls: 'r' },
+			{ key: 'colo', h: '机房', cls: 'r c-colo' },
 			{ key: 'spd', h: st.speed_unit === 'mib' ? 'MiB/s' : 'MB/s', cls: 'r' },
 			{ key: 'q', h: '质量', cls: 'l c-q' }
 		];
@@ -60,7 +60,7 @@
 			return el('td', { class: 'r' }, node);
 		}
 		if (c.key === 'colo')
-			return el('td', { class: 'r mono' }, it.colo || F.DASH);
+			return el('td', { class: 'r mono c-colo' }, it.colo || F.DASH);
 		if (c.key === 'domain')
 			return el('td', { class: 'l dim' }, it.domain || F.DASH);
 		if (c.key === 'spd') {
