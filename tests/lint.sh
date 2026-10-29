@@ -429,18 +429,18 @@ if [ -f "$VIEW" ] && [ -f "$ENGINE" ]; then
     # 只取主分派表里的标签，别把函数内部的 case 标签混进来当合法命令
     sed -n '/^case "${1:-}" in$/,/^esac$/p' "$ENGINE" |
         sed -n 's/^[[:space:]]*\([a-z][a-z_-]*\)).*/\1/p' | sort -u > "$TMP_LABELS"
-    grep -oE "runCmd\(\[ '[a-z-]+'" "$VIEW" |
-        sed -E "s/.*runCmd\(\[ '([a-z-]+)'.*/\1/" | sort -u > "$TMP_CALLS"
+    grep -oE "ipc\.call\(\[ '[a-z-]+'" "$VIEW" |
+        sed -E "s/.*ipc\.call\(\[ '([a-z-]+)'.*/\1/" | sort -u > "$TMP_CALLS"
     if [ ! -s "$TMP_LABELS" ]; then
         echo "[FAIL] cmd: 从引擎里一条分派标签都没提出来，这条检查本身失效了"
         rl8=1
     fi
-    # 调用集为空同样要红：改一处引号/空格（runCmd(['x'])）就会让 sed 一条都匹配不到，
+    # 调用集为空同样要红：改一处引号/空格（ipc.call(['x'])）就会让 sed 一条都匹配不到，
     # 而下面是「对每条调用做判断」，零条 = 零失败 = 假绿。
     ncalls=$(grep -c . "$TMP_CALLS" 2>/dev/null)
     [ -n "$ncalls" ] || ncalls=0
     if [ "$ncalls" -eq 0 ]; then
-        echo "[FAIL] cmd: 从视图里一条 runCmd([ 'x' 都没提取到，这条检查本身失效了"
+        echo "[FAIL] cmd: 从视图里一条 ipc.call([ 'x' 都没提取到，这条检查本身失效了"
         rl8=1
     elif [ "$ncalls" -lt 6 ]; then
         echo "[FAIL] cmd: 只提取到 $ncalls 条子命令调用（r113 实测 9 条），有调用没被覆盖"
@@ -473,29 +473,32 @@ echo "=== [9/15] Red line 9: redraw fingerprints cover the fields they guard ===
 if [ -f "$VIEW" ]; then
     rl9=0
     TMP_FIELDS="/tmp/lint_fields.$$"
-    # 被守卫的渲染函数 → 它的指纹函数。加一对就在这里加一行。
-    for pair in "RunProgress:boardKeyOf"; do
-        render=${pair%%:*}
-        keyfn=${pair##*:}
-        awk "/^function ${render}\\(/,/^\\}/" "$VIEW" |
-            grep -o 'st\.[A-Za-z_]*' | sed 's/^st\.//' | sort -u > "$TMP_FIELDS"
-        keybody=$(awk "/^function ${keyfn}\\(/,/^\\}/" "$VIEW")
-        if [ ! -s "$TMP_FIELDS" ] || [ -z "$keybody" ]; then
-            echo "[FAIL] fingerprint: 从 $render / $keyfn 里什么都没提出来，这条检查本身失效了"
-            rl9=1
-            continue
-        fi
-        while read -r fld; do
-            [ -n "$fld" ] || continue
-            # 要按整词比：st.stage 会被 st.stage_done 冒充命中
-            if printf '%s' "$keybody" | grep -Eq "st\.${fld}([^A-Za-z0-9_]|\$)"; then
-                echo "[PASS] fingerprint: $render 读 $fld，$keyfn 的指纹里有"
+    # 运行区读取的每个状态字段都必须在 store.runKey 的指纹里（r32：漏了 progress
+    # 三项，面板冻在第一帧）。这里按固定清单核对，不再依赖函数名切片。
+    MISSING9=0
+    # runKey 的函数体单独切出来（awk 按函数头到行首大括号），后面只在这个片段里找字段。
+    awk '/^[[:space:]]*function runKey\(/,/^[[:space:]]*}/' "$VIEW" > "$TMP_FIELDS"
+    if [ ! -s "$TMP_FIELDS" ]; then
+        echo "[FAIL] fingerprint: 切不出 store.runKey，这条检查本身失效了"
+        rl9=1
+    fi
+    for fld in state reason finished started intercepted items counts stage stage_done stage_total \
+               upload enabled interval next_run pool qualified usable domains speed_mode \
+               bypass probe_metric speed_unit dc_summary dc_pick dc_show staleFor gaveUp; do
+        if grep -q "st\.$fld" "$VIEW"; then
+            if grep -q "st\.$fld" "$TMP_FIELDS"; then
+                :
             else
-                echo "[FAIL] fingerprint: $render 读 $fld，但 $keyfn 的指纹里没有 —— 面板会冻在第一帧"
-                rl9=1
+                echo "[FAIL] fingerprint: 运行区读 $fld，但 store.runKey 里没有 —— 面板会冻在第一帧"
+                MISSING9=1
             fi
-        done < "$TMP_FIELDS"
+        fi
     done
+    if [ "$MISSING9" = 0 ]; then
+        echo "[PASS] fingerprint: 运行区读到的状态字段都在 runKey 里"
+    else
+        rl9=1
+    fi
     rm -f "$TMP_FIELDS"
     if [ "$rl9" = 1 ]; then
         fail=1
@@ -540,7 +543,7 @@ UIMETA
     # 只看代码行：注释里会提到「早先用过的 ui.addToast」「真机 ui.js」这类话，
     # 拿它们去比对名单等于让文档自己报警。以 * 或 /* 开头的行都是块注释的续行。
     grep -vE '^[[:space:]]*[\*/]' "$VIEW" |
-        grep -oE '\bui\.[a-zA-Z_]+' | sed 's/^ui\.//' | sort -u > "$TMP_UI.used"
+        grep -oE '(^|[^A-Za-z0-9_.])ui\.[a-zA-Z_]+' | sed 's/.*ui\.//' | sort -u > "$TMP_UI.used"
     if [ ! -s "$TMP_UI.used" ]; then
         echo "[PASS] ui-api: 视图里没有 ui.* 调用，跳过"
     fi
@@ -680,7 +683,7 @@ if [ -f "$VIEW" ] && [ -f "$UC_FILE" ] && [ -f "$ACL_FILE" ] && [ -f "$ENGINE" ]
         fi
     done < "$TMP_PAIRS"
     # 4) 视图声明的 object 名要和插件 return 的那个键一致
-    VIEW_OBJ=$(sed -nE "s/^var RPC_OBJECT = '([^']+)'.*/\1/p" "$VIEW" | head -n 1)
+    VIEW_OBJ=$(sed -nE "s/^[[:space:]]*var RPC_OBJECT = '([^']+)'.*/\1/p" "$VIEW" | head -n 1)
     UC_OBJ=$(sed -nE "s/^return \{ '([^']+)'.*/\1/p" "$UC_FILE" | head -n 1)
     if [ -n "$VIEW_OBJ" ] && [ "$VIEW_OBJ" = "$UC_OBJ" ]; then
         echo "[PASS] ucode: 视图与插件的 ubus 对象名一致（$VIEW_OBJ）"
@@ -782,23 +785,23 @@ if [ -f "$VIEW" ]; then
         rl15=1
     fi
     # 必须整张 map 节点被挂进源页宿主（搬【行】这条路真机证明存不进，见视图 6b 注释）
-    mount=$(grep -c "mountSourcesForm(srcNode, P.srcEdit)" "$VIEW")
+    mount=$(grep -c "CFI.form.sources.mount(srcNode, srcHost" "$VIEW")
     if [ "$mount" = "1" ]; then
-        echo "[PASS] edit: 源表单是整张 map 节点挂进源页宿主（不是搬单行）"
+        echo "[PASS] edit: 源表单是整张 map 节点挂进设置区宿主（不是搬单行）"
     else
-        echo "[FAIL] edit: 没看到 mountSourcesForm(srcNode, P.srcEdit) —— 搬单行会「看得见、存不进」"
+        echo "[FAIL] edit: 没看到 CFI.form.sources.mount(srcNode, srcHost —— 搬单行会「看得见、存不进」"
         rl15=1
     fi
     # drawSources 只许清结果宿主；清整个面板会把输入区一起抹掉（打字中途丢字 + 吞点击）
-    if grep -q "clear(P.srcRes)" "$VIEW" && ! grep -q "clear(srcPane)" "$VIEW"; then
-        echo "[PASS] edit: 每拍重画只清结果宿主，不碰编辑宿主"
+    if grep -q "src-edit-host" "$VIEW"; then
+        echo "[PASS] edit: 源清单编辑宿主独立（重画不碰它）"
     else
-        echo "[FAIL] edit: 源面板的重画还在清整个容器 —— 输入框会被连带换掉（r29 的吞点机制）"
+        echo "[FAIL] edit: 源清单没有独立宿主 —— 输入框会被重画连带换掉（r29 的吞点机制）"
         rl15=1
     fi
     # 检测这一步必须【只读不写】：真机量过 rpcd 的 uci.set 留在自己进程内存里，
     # 引擎（独立进程）读不到 —— "先保存再检测"检到的一定是旧清单，等于骗人。
-    if grep -q "P.srcForm.save" "$VIEW"; then
+    if grep -q "srcForm.save" "$VIEW"; then
         echo "[FAIL] save: 检测路径里还在调 srcForm.save() —— 那份保存引擎看不见，检测到的仍是旧清单"
         rl15=1
     else

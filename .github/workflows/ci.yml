@@ -37,10 +37,10 @@ jobs:
         run: sh tests/test_cf_ipcheck.sh
 
   view-test:
-    name: LuCI view render test
+    name: View build / unit / contract
     # 不能并进上面那个 job：它在 alpine 容器里跑，而 alpine 没有 Node。
-    # 视图的形状（列数、右对齐类名、六态文案）用 grep 断言表达不出来，
-    # 只能把视图丢进 stub 里真渲染一次再断言 DOM。
+    # r130 起视图是 src/ 拼接产物：这里先校验产物与源一致，再跑纯逻辑单测
+    # 与契约测试（引擎↔ucode↔ACL↔uci↔字段表）。
     runs-on: ubuntu-latest
     steps:
       - name: 检出仓库
@@ -51,8 +51,14 @@ jobs:
         with:
           node-version: '22'
 
-      - name: 视图渲染桩测
-        run: node tests/viewtest.mjs
+      - name: 视图产物与源一致
+        run: sh tools/build-view.sh --check
+
+      - name: 视图单元测试
+        run: node --test tests/unit/*.test.mjs
+
+      - name: 对外契约测试
+        run: node tests/contract.mjs
 
   build:
     name: Build package (OpenWrt SDK)

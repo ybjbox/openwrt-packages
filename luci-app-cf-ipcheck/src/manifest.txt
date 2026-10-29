@@ -1,0 +1,17 @@
+# 拼接顺序 = 依赖方向。一行一个文件；改顺序要同时想清楚加载期求值。
+# JS 在前、CSS 在后，两类各自按出现顺序拼接。
+js 00-pre.js
+js 10-core.js
+js 20-ipc.js
+js 30-store.js
+js 40-domain.js
+js 50-ui.js
+js 55-form-schema.js
+js 56-form-sources.js
+js 57-form-dns.js
+js 60-run.js
+js 70-diag.js
+js 80-set.js
+js 90-shell.js
+js 99-view.js
+css style/00-app.css
