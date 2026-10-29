@@ -13,10 +13,13 @@
 
 ## 五条最关键的
 
-1. **不要拆 `luci-app-cf-ipcheck/htdocs/luci-static/resources/view/cf_ipcheck/settings.js`。**
-   它 4000+ 行，但必须是单文件：`tests/viewtest.mjs` 在同一作用域用 `new Function`
-   导出 60+ 个私有函数，`tests/lint.sh` 的 `VIEW=` 是单路径，路由器 uhttpd 每多一个 JS
-   就多一次请求。拆文件 = 重写 2720 行测试。想强制依赖方向请加 lint 断言。
+1. **运行时只装一个 `settings.js`，但源码不写在那里面。**
+   源码在 `luci-app-cf-ipcheck/view-src/`，按 `manifest.txt` 顺序由
+   `sh tools/build-view.sh` 拼成 `htdocs/.../settings.js` 与 `settings.css`。
+   **产物永远不手改**；改完源码必须重新构建，`--check` 会校验产物与源逐字节一致。
+   ⚠️ 源目录不能叫 `src/`：luci.mk 看到包内 `src/` 会把它当编译型源码包，多调一次
+   `Build/Install/Default` 并复制空的 `PKG_INSTALL_DIR`，构建直接失败（2026-10-29 踩过）。
+   运行时仍是单文件（uhttpd 每多一个 JS 就多一次请求）。
 
 2. **前端没有一处语义所有权。** 所有功能语义在 `root/usr/bin/cf-ipcheck` 里定义
    （uci 键名、判定链路、JSON 键、状态枚举），视图只是把它画出来。**先改引擎，再改页面。**
@@ -32,9 +35,14 @@
 ## 改完必须跑（仓库根）
 
 ```sh
-sh tests/lint.sh          # 期望：all lint checks passed
-node tests/viewtest.mjs   # 期望：view 渲染断言全部通过
+sh tools/build-view.sh --check   # 产物与源一致（改完源码先跑 build）
+sh tests/lint.sh                 # 期望：all lint checks passed
+node --test tests/unit/*.test.mjs  # 纯逻辑：六态/格式化/dns 往返/hash 迁移/指纹
+node tests/contract.mjs          # 引擎↔ucode↔ACL↔uci↔字段表↔产物 156 条
+node tests/smoke.mjs             # 最小 DOM 里跑一遍 render
 ```
+
+`tests/viewtest.mjs` 是 r120 及以前的旧桩测，**CI 已不再运行它**，只作行为参考。
 
 引擎的离线回归（`tests/test_cf_ipcheck.sh` 与 `cf-ipcheck selftest`）在 Windows 开发机上
 会挂住（busybox 语义差异），**由 CI 覆盖**。别把本地超时当成回归。
