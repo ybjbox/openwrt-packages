@@ -100,6 +100,8 @@
 				open = saved === '1';
 		}
 		var box = el('div', { class: cls + (open ? ' open' : '') }, [ head, body ]);
+		if (p.group)
+			box.setAttribute('data-group', p.group);
 		function apply(v) {
 			box.className = cls + (v ? ' open' : '');
 			head.setAttribute('aria-expanded', v ? 'true' : 'false');

@@ -37,6 +37,7 @@
 				return;
 			var c = CFI.ui.Collapse({
 				cls: 'grp',
+				group: g.id,
 				title: T(g.title),
 				hint: T(g.hint),
 				body: body,
@@ -51,7 +52,7 @@
 		if (left.length) {
 			var lb = el('div', { class: 'fold-b' });
 			left.forEach(function (r) { lb.appendChild(r); });
-			var lc = CFI.ui.Collapse({ cls: 'grp', title: T('其它'), hint: T('未归类字段'), body: lb, defaultOpen: true });
+			var lc = CFI.ui.Collapse({ cls: 'grp', group: 'other', title: T('其它'), hint: T('未归类字段'), body: lb, defaultOpen: true });
 			boxes.push(lc);
 			wrap.appendChild(lc.node);
 		}
