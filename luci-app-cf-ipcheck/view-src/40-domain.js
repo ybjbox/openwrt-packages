@@ -164,39 +164,11 @@
 		return { shown: shown, title: ln.slice(0, m[0].length), rest: ln.slice(m[0].length).replace(/^[ \t]+/, '') };
 	}
 
-	/* ---- 皮肤：自动 / 纸 / 夜（蓝图） ---------------------------------- */
-	function hostDark() {
-		try {
-			var bg = window.getComputedStyle && document.body ?
-				window.getComputedStyle(document.body).backgroundColor : '';
-			var m = /rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?/.exec(String(bg || ''));
-			if (m) {
-				var alpha = m[4] === undefined ? 1 : Number(m[4]);
-				if (alpha > 0.1) {
-					var lum = 0.299 * Number(m[1]) + 0.587 * Number(m[2]) + 0.114 * Number(m[3]);
-					return lum < 120;
-				}
-			}
-		} catch (e) {}
-		try {
-			return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
-		} catch (e2) {
-			return false;
-		}
-	}
-
-	function skinResolve(mode) {
-		if (mode === 'paper' || mode === 'night')
-			return mode;
-		return hostDark() ? 'night' : 'paper';
-	}
-
 	CFI.nav = { ZONES: ZONES, parseRoute: parseRoute, routeHash: routeHash, writeRoute: writeRoute };
 	CFI.prefs = {
 		NS: NS, get: lsGet, set: lsSet, getBool: getBool,
 		savedZone: savedZone, rememberZone: rememberZone
 	};
 	CFI.dns = { LIMIT: DNS_LIMIT, linesOf: dnsLinesOf, textOf: dnsTextOf };
-	CFI.skin = { hostDark: hostDark, resolve: skinResolve };
 	CFI.log = { tone: logTone, stamp: logStamp, TS_RE: LOG_TS_RE };
 })(CFI);

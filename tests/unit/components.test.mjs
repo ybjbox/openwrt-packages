@@ -234,38 +234,14 @@ test('日志：错误态用 notice 占位，之后来的正常文本能恢复', 
 	assert.doesNotMatch(lv.box.textContent, /读不到日志/);
 });
 
-/* ---- 3. 抽屉焦点 ------------------------------------------------------- */
-test('抽屉：打开抢焦点、轮询刷新不夺焦、关闭归还并回调', () => {
-	let closed = 0;
-	const d = CFI.ui.Drawer({ onClose: () => { closed++; } });
-	const opener = makeEl('button');
-	documentStub.activeElement = opener;
-
-	d.open('1.1.1.1', CFI.dom.el('div', { text: 'x' }));
-	assert.ok(d.isOpen());
-	assert.equal(documentStub.body.className.indexOf('cfi-drawer-open') >= 0, true, '锁 body 滚动');
-	assert.notEqual(documentStub.activeElement, opener, '打开时焦点进抽屉');
-	const panel = d.node.childNodes[1];
-	assert.equal(panel.getAttribute('aria-modal'), 'true');
-
-	const inside = makeEl('button');
-	documentStub.activeElement = inside;
-	d.open('1.1.1.1', CFI.dom.el('div', { text: 'y' }));
-	assert.equal(documentStub.activeElement, inside, '轮询只更新读数，不许把焦点抢回抽屉');
-
-	d.close();
-	assert.equal(closed, 1);
-	assert.equal(documentStub.activeElement, opener, '关闭后焦点回原行');
-	assert.equal(d.node.className.indexOf('open'), -1);
-});
-
-test('抽屉：重复 close 不重复回调', () => {
-	let closed = 0;
-	const d = CFI.ui.Drawer({ onClose: () => { closed++; } });
-	d.open('x', CFI.dom.el('div'));
-	d.close();
-	d.close();
-	assert.equal(closed, 1);
+/* ---- 3. 详情弹窗适配器 ------------------------------------------------ */
+test('弹窗：没有官方 ui.showModal 时安全降级，不抛错', () => {
+	const m = CFI.ui.Modal({ onClose: () => {} });
+	assert.equal(typeof m.open, 'function');
+	assert.equal(m.open('1.1.1.1', CFI.dom.el('div', { text: 'x' })), false);
+	assert.equal(m.isOpen(), false);
+	m.close();
+	m.destroy();
 });
 
 /* ---- 4. DNS 机房下拉：候选后到也要能用 -------------------------------- */

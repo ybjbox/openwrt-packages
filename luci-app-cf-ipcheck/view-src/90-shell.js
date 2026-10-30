@@ -37,7 +37,6 @@
 		var busyTick = false;
 		var shell = null;
 		var closed = false;
-		var skinMq = null;
 
 		/* ---- 状态读取 -------------------------------------------------- */
 		function afterMiss(prev, hung, manual) {
@@ -358,6 +357,13 @@
 		}
 
 		function flash(tone, title, text) {
+			try {
+				if (typeof ui !== 'undefined' && ui && typeof ui.addTimeLimitedNotification === 'function') {
+					var kids = text ? [ el('p', { text: text }) ] : [];
+					ui.addTimeLimitedNotification(title, kids, 6000);
+					return;
+				}
+			} catch (e) {}
 			var box = el('div', { class: 'flash ' + tone }, [
 				el('b', { text: title }), text ? el('span', { text: text }) : null,
 				el('button', { class: 'flash-x', type: 'button', text: '×', 'aria-label': CFI.T('关闭提示'), on: { click: function () {
@@ -375,57 +381,8 @@
 		}
 
 		/* ---- 外壳 ------------------------------------------------------ */
-		function scheduleLine(st) {
-			if (st.enabled == null)
-				return '';
-			if (Number(st.enabled) === 0)
-				return CFI.T('定时实测：关闭');
-			var s = CFI.T('定时实测：每 %s 小时').format(st.interval != null ? st.interval : '?');
-			if (st.next_run != null && isFinite(Number(st.next_run))) {
-				var d = new Date(Number(st.next_run) * 1000);
-				s += CFI.T('，下一轮约 %s').format(F.pad2(d.getHours()) + ':' + F.pad2(d.getMinutes()));
-			}
-			return s;
-		}
-
-		function currentIp(st) {
-			var it = (st.items || [])[0];
-			return it && it.ip ? String(it.ip) : F.DASH;
-		}
-
-		function applySkin() {
-			if (!shell || !shell.root)
-				return;
-			shell.root.setAttribute('data-skin',
-				CFI.skin.resolve(CFI.prefs.get(CFI.prefs.NS + 'skin', 'auto')));
-		}
-
 		function build() {
 			var root = el('div', { class: 'cfp' });
-			root.setAttribute('data-skin',
-				CFI.skin.resolve(CFI.prefs.get(CFI.prefs.NS + 'skin', 'auto')));
-			var lampT = el('span', { class: 'lamp-t' });
-			var lamp = el('span', { class: 'lamp' }, [ el('i', { class: 'dot', 'aria-hidden': 'true' }), lampT ]);
-			var ip = el('span', { class: 'rail-ip mono', text: F.DASH });
-			var sched = el('span', { class: 'rail-note' });
-			var buildTag = el('span', { class: 'build mono', text: VIEW_BUILD });
-			var btnRun = CFI.ui.Button({ kind: 'primary', icon: 'play', label: CFI.T('立即测速'), onClick: actRun });
-			var btnStop = CFI.ui.Button({ kind: 'danger', icon: 'stop', label: CFI.T('停止'), hidden: true, onClick: actStop });
-			var btnRefresh = CFI.ui.Button({ kind: 'quiet', icon: 'refresh', label: CFI.T('刷新'), onClick: function () { refresh(true); } });
-			var tbRound = el('dd');
-			var tbDur = el('dd');
-			var tbEng = el('dd', { text: 'cf-ipcheck' });
-			var titleblock = el('dl', { class: 'titleblock', 'aria-hidden': 'true' }, [
-				el('dt', { text: 'BUILD' }), el('dd', { text: VIEW_BUILD }),
-				el('dt', { text: CFI.T('本轮') }), tbRound,
-				el('dt', { text: CFI.T('耗时') }), tbDur,
-				el('dt', { text: CFI.T('引擎') }), tbEng
-			]);
-			var rail = el('div', { class: 'rail' }, [
-				el('div', { class: 'rail-main' }, [ lamp, ip, sched ]),
-				el('div', { class: 'rail-acts' }, [ btnRun.node, btnStop.node, btnRefresh.node, buildTag ]),
-				titleblock
-			]);
 
 			var flashHost = el('div', { class: 'flashes', role: 'status', 'aria-live': 'polite' });
 			var tabs = CFI.ui.Tabs([
@@ -434,7 +391,7 @@
 				{ id: 'set', label: CFI.T('设置') }
 			], 'run', function (z) { goto(z); });
 
-			var drawer = CFI.ui.Drawer({ onClose: function () {
+			var drawer = CFI.ui.Modal({ onClose: function () {
 				if (runPane && runPane.onDrawerClosed)
 					runPane.onDrawerClosed();
 				if (store.get().tab)
@@ -444,6 +401,9 @@
 			var runPane = CFI.panels.run.mount({
 				gotoDiag: function () { goto('diag'); },
 				gotoSet: function () { goto('set'); },
+				run: actRun,
+				stop: actStop,
+				refresh: function () { refresh(true); },
 				copy: actCopy, csv: actCsv, dns: actDns, copyText: copyText,
 				onSelect: function (ip) {
 					if (ip)
@@ -494,10 +454,6 @@
 				setSrcPending: function (n) {
 					if (n !== store.get().srcPending)
 						store.patch({ srcPending: n });
-				},
-				setSkin: function (mode) {
-					CFI.prefs.set(CFI.prefs.NS + 'skin', mode);
-					applySkin();
 				}
 			});
 
@@ -507,44 +463,23 @@
 				set: el('section', { class: 'pane', id: 'cfi-pane-set', role: 'tabpanel', 'aria-labelledby': 'cfi-zone-set' }, setPane.node)
 			};
 
-			root.appendChild(rail);
 			root.appendChild(flashHost);
 			root.appendChild(tabs.node);
 			root.appendChild(panes.run);
 			root.appendChild(panes.diag);
 			root.appendChild(panes.set);
-			root.appendChild(drawer.node);
 
 			shell = {
 				root: root, flashHost: flashHost, tabs: tabs, panes: panes,
 				drawer: drawer, diagPane: diagPane, setPane: setPane, runPane: runPane
 			};
 
-			function paintHeader(state) {
-				var st = state.status || {};
-				var busy = state.busy || {};
-				lampT.textContent = CFI.sem.stateWord(st);
-				lamp.className = 'lamp t-' + CFI.sem.tone(st);
-				var t0 = Date.parse(st.started);
-				var t1 = Date.parse(st.finished);
-				tbRound.textContent = st.finished ? F.clock(st.finished)
-					: (st.started ? F.clock(st.started) : F.DASH);
-				tbDur.textContent = isFinite(t0) && isFinite(t1) && t1 >= t0
-					? String(Math.round((t1 - t0) / 1000)) + ' s' : F.DASH;
-				tbEng.textContent = 'cf-ipcheck' + (st.port ? ' :' + st.port : '');
-				ip.textContent = currentIp(st);
-				sched.textContent = scheduleLine(st);
-				var running = st.state === 'running';
-				btnRun.node.hidden = running;
-				btnStop.node.hidden = !running;
-				btnRun.update({ disabled: !!busy.run, busy: !!busy.run });
-				btnStop.update({ disabled: !!busy.stop, busy: !!busy.stop });
-				btnRefresh.update({ disabled: !!busy.refresh, busy: !!busy.refresh });
-			}
-
 			store.select(function (s) {
 				return CFI.store.headerKey((s.status || {}), s.busy || {});
-			}, paintHeader);
+			}, function (s) {
+				if (runPane && runPane.updateHeader)
+					runPane.updateHeader(s.status || {}, s.busy || {});
+			});
 
 			store.select(function (s) {
 				var st = s.status || {};
@@ -562,14 +497,6 @@
 			}, function (s) { diagPane.update(s); });
 
 			store.select(function (s) { return CFI.store.setKey(s); }, function (s) { setPane.update(s); });
-
-			try {
-				if (window.matchMedia) {
-					skinMq = window.matchMedia('(prefers-color-scheme: dark)');
-					if (skinMq.addEventListener)
-						skinMq.addEventListener('change', applySkin);
-				}
-			} catch (e) {}
 
 			/* 配置表单异步渲染；失败不吞：整页仍可用，只报一句。 */
 			try {
@@ -603,7 +530,7 @@
 		function scrollSetGroup() {
 			if (!pendingGroup || !shell || store.get().tab !== 'set')
 				return;
-			var box = shell.panes.set.querySelector('.fold[data-group="' + pendingGroup + '"]');
+			var box = shell.panes.set.querySelector('.cbi-section[data-group="' + pendingGroup + '"]');
 			if (box && box.scrollIntoView)
 				box.scrollIntoView({ block: 'start' });
 		}
@@ -669,11 +596,6 @@
 			}
 			if (shell && shell.drawer)
 				shell.drawer.destroy();
-			try {
-				if (skinMq && skinMq.removeEventListener)
-					skinMq.removeEventListener('change', applySkin);
-			} catch (e) {}
-			skinMq = null;
 			store.destroy();
 			inflight = null;
 			shell = null;

@@ -587,7 +587,7 @@ if [ -n "$CSS_REL" ]; then
     # 名单来源：真机 grep —— Argon 只有 --primary / --dark-primary，
     # bootstrap 另有 --primary-color-high / --font-mono / --on-primary-color /
     # --border-color-medium（Argon 里 grep 这三个都是 0 命中，所以必须带兜底值）。
-    THEME_VARS="--primary --dark-primary --primary-color-high --font-mono --on-primary-color --border-color-medium"
+    THEME_VARS="--primary --dark-primary --primary-color-high --font-mono --on-primary-color --border-color-medium --background-color"
     if [ -f "$CSS_FILE" ]; then
         grep -o '^[[:space:]]*--[A-Za-z0-9-]*' "$CSS_FILE" | tr -d ' \t' | sort -u > "$TMP_DEF"
         grep -oE 'var\(--[A-Za-z0-9-]+' "$CSS_FILE" | sed 's/^var(//' | sort -u > "$TMP_USE"

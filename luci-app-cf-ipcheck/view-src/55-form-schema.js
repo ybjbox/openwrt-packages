@@ -144,11 +144,6 @@ o = field(s, 'basic', form.Value, 'log_max_kb',
 		var src = m.section(form.TypedSection, 'global', _('候选池来源'));
 		src.anonymous = true;
 
-o = field(src, 'sources', form.DynamicList, 'community_sources',
-	_('社区优选源 URL'), _('每行一个 HTTPS 文本地址；改完点页面底部「保存并应用」。'),
-	_('这些地址返回纯文本，里面夹着一堆 IPv4；引擎逐行提取、去重后进候选池，没有格式要求。'
-			+ '改完必须点页面底部的「保存并应用」才会写进配置文件 —— LuCI 的「保存」只把改动留在 rpcd 进程内存里，引擎读不到。'));
-
 o = field(src, 'pool', form.Flag, 'use_official_ranges',
 	_('Cloudflare 官方网段'), _('抽稀后加进候选池。默认关。'),
 	_('打开后会把 Cloudflare 官方公布的网段抽稀后并进候选池。官方网段有几百万个地址，全测不现实，所以只随机取样一部分。默认关是因为社区源通常已经把近期好用的段捞过一遍了；只有当社区源集体失效、或你想自己从头趟一遍时才有必要打开。'));
@@ -169,24 +164,32 @@ o = field(src, 'pool', form.Flag, 'neighbor_expand',
 		 * 用户一动页面点保存，就会把默认开的功能静默写成关。 */
 		o.default = '1';
 
-		/* community_sources 也在这一节，group=sources，界面上单独成组。 */
+		var srclist = m.section(form.TypedSection, 'global', _('源清单'));
+		srclist.anonymous = true;
+
+o = field(srclist, 'sources', form.DynamicList, 'community_sources',
+	_('社区优选源 URL'), _('每行一个 HTTPS 文本地址；改完点页面底部「保存并应用」。'),
+	_('这些地址返回纯文本，里面夹着一堆 IPv4；引擎逐行提取、去重后进候选池，没有格式要求。'
+			+ '改完必须点页面底部的「保存并应用」才会写进配置文件 —— LuCI 的「保存」只把改动留在 rpcd 进程内存里，引擎读不到。'));
 
 		var thr = m.section(form.TypedSection, 'global', _('测速与判定'));
 		thr.anonymous = true;
+		var adv = m.section(form.TypedSection, 'global', _('测速高级项'));
+		adv.anonymous = true;
 
-o = field(thr, 'probeAdv', form.Value, 'candidate_budget',
+o = field(adv, 'probeAdv', form.Value, 'candidate_budget',
 	_('单轮候选上限'), _('去重后最多测多少个。'),
 	_('一轮里最多探测多少个候选 IP（去重之后）。这个数乘上并发数、乘上单 IP 超时，决定了最坏情况下这一轮要跑多久。256 配合并发 8 与超时 5 秒，最坏约 160 秒。'));
 		o.datatype = 'and(uinteger,min(8),max(4096))';
 		o.default = '256';
 
-o = field(thr, 'probeAdv', form.Value, 'concurrency',
+o = field(adv, 'probeAdv', form.Value, 'concurrency',
 	_('并发探测数'), _('软路由上 8~16 比较稳。'),
 	_('同时探测的 IP 数。调高能把一轮跑得更快，但每个连接都要占一个 socket 与一份内存；软路由的内存和连接跟踪表（conntrack）通常很紧张，超过 16 容易在测速期间把正常上网也拖慢。'));
 		o.datatype = 'and(uinteger,min(1),max(64))';
 		o.default = '8';
 
-o = field(thr, 'probeAdv', form.Value, 'probe_timeout',
+o = field(adv, 'probeAdv', form.Value, 'probe_timeout',
 	_('单 IP 超时（秒）'), _('连接与整请求共用。'),
 	_('同时作为 TCP 连接超时与整个请求的超时。设得太短会把网络抖动误判成不达标；设得太长则一轮里只要有几个坏 IP，整体耗时就明显拉长。'));
 		o.datatype = 'and(uinteger,min(1),max(30))';
@@ -220,7 +223,7 @@ o = field(thr, 'probe', form.Value, 'keep_count',
 		o.datatype = 'and(uinteger,min(1),max(100))';
 		o.default = '10';
 
-o = field(thr, 'probeAdv', form.Value, 'verify_top',
+o = field(adv, 'probeAdv', form.Value, 'verify_top',
 	_('多样本验证个数'), _('初榜前 N 个各测 3 次取中位数。'),
 	_('对初榜前 N 个 IP 各再串行探测 2 次（连同首次共 3 个样本），用中位数参与最终排名，顺带得到丢包率与抖动。家宽上单次采样的抖动有 ±50~100 毫秒，比榜单相邻名次的差距还大 —— 不验证的话"谁排第一"基本是运气，每次轮次的第一名都可能换人。填 0 关闭（回到单次采样）。'));
 		o.datatype = 'and(uinteger,min(0),max(100))';
@@ -243,12 +246,12 @@ o = field(thr, 'probe', form.Value, 'dc_show',
 			+ '它只影响这块汇总的显示，不会改变榜单保留了谁 —— 要让榜单只留某个机房，用上面的「只留某个机房」。'));
 		o.placeholder = 'NRT 3; SIN 2';
 
-o = field(thr, 'probeAdv', form.Flag, 'speed_probe',
+o = field(adv, 'probeAdv', form.Flag, 'speed_probe',
 	_('进榜后再测下载速度'), _('串行拉大文件测 MB/s。'),
 	_('对进榜的那几条 IP 逐个（串行，不并发）拉一个较大的文件，算出吞吐。这一步很费流量，所以默认只测前若干个 IP。测出来的 MB/s 只作参考，不参与排序。'));
 		o.rmempty = false;
 
-o = field(thr, 'probeAdv', form.Value, 'speed_count',
+o = field(adv, 'probeAdv', form.Value, 'speed_count',
 	_('测吞吐的 IP 个数'), _('N × 单次字节数 = 每轮流量。'),
 	_('只对榜单前 N 个测吞吐。流量 = N × 单次下载字节数，按默认值算就是 10 × 10485760 字节 ≈ 104.86MB/轮。填 0 等于关掉吞吐测试（但仍保留那一列，显示为 —）。'));
 		o.datatype = 'and(uinteger,min(0),max(100))';
@@ -274,37 +277,37 @@ o = field(thr, 'probe', form.Value, 'speed_rel_min',
 		o.datatype = 'and(uinteger,min(0),max(100))';
 		o.default = '25';
 
-o = field(thr, 'probeAdv', form.Value, 'speed_screen_count',
+o = field(adv, 'probeAdv', form.Value, 'speed_screen_count',
 	_('先测速的 IP 个数'), _('只测前 N 个，控制流量与时间。'),
 	_('只对排在前面的 N 个做初筛测速，后面的不再测，省流量也省时间。这个数必须大于「榜单保留条数」，否则被门槛淘汰之后没有替补，榜单会填不满。'));
 		o.datatype = 'and(uinteger,min(1),max(100))';
 		o.default = '20';
 
-o = field(thr, 'probeAdv', form.Value, 'speed_screen_bytes',
+o = field(adv, 'probeAdv', form.Value, 'speed_screen_bytes',
 	_('初筛下载字节数'), _('默认 4194304 字节（4.19MB）。'),
 	_('初筛时每个 IP 下载这么多字节。默认配合 8 秒超时，等价于「8 秒内下完 4.19MB 至少需要 0.52 MB/s」；比这更慢的会被超时截断，不会一直干等。'));
 		o.datatype = 'and(uinteger,min(131072))';
 		o.default = '4194304';
 
-o = field(thr, 'probeAdv', form.Value, 'speed_screen_timeout',
+o = field(adv, 'probeAdv', form.Value, 'speed_screen_timeout',
 	_('初筛超时（秒）'), _('默认 8 秒。'),
 	_('初筛阶段单个 IP 最多等这么久。它和初筛字节数是一对：8 秒内下完 4.19MB 需要至少 0.52 MB/s，慢的会被自动截断，不会白等。'));
 		o.datatype = 'and(uinteger,min(1),max(120))';
 		o.default = '8';
 
-o = field(thr, 'probeAdv', form.Value, 'speed_confirm_top',
+o = field(adv, 'probeAdv', form.Value, 'speed_confirm_top',
 	_('复测前几名'), _('给前 N 名用大文件复测。'),
 	_('给排在前面的几个 IP 用更大的文件再测一次，避免小样本的偶然误差决定名次。填 0 就关闭复测。'));
 		o.datatype = 'and(uinteger,min(0),max(20))';
 		o.default = '3';
 
-o = field(thr, 'probeAdv', form.Value, 'speed_confirm_bytes',
+o = field(adv, 'probeAdv', form.Value, 'speed_confirm_bytes',
 	_('复测下载字节数'), _('默认 10485760 字节（10.49MB）。'),
 	_('复测阶段每个 IP 下载这么多字节。文件越大越接近稳定速度，但流量与耗时也按倍数涨。'));
 		o.datatype = 'and(uinteger,min(131072))';
 		o.default = '10485760';
 
-o = field(thr, 'probeAdv', form.Value, 'speed_confirm_timeout',
+o = field(adv, 'probeAdv', form.Value, 'speed_confirm_timeout',
 	_('复测超时（秒）'), _('默认 25 秒。'),
 	_('复测阶段单个 IP 最多等这么久。10.49MB 的文件在慢线路上也要留足时间，所以比初筛宽松得多。'));
 		o.datatype = 'and(uinteger,min(1),max(300))';
@@ -325,54 +328,57 @@ o = field(thr, 'probe', form.ListValue, 'speed_unit',
 		o.value('mb', _('MB/s（1 MB = 1000000 字节）'));
 		o.value('mib', _('MiB/s（1 MiB = 1048576 字节）'));
 
-o = field(thr, 'probeAdv', form.Value, 'speed_bytes',
+o = field(adv, 'probeAdv', form.Value, 'speed_bytes',
 	_('单次下载字节数'), _('默认 10485760 字节（10.49MB）。'),
 	_('每次测速下载多少字节，这一项是可配置的 —— 按你的线路和准确度要求调。样本太小，测到的全是刚起步的爬坡（TCP 慢启动），数字抖；大一些更接近稳态、轮间也更稳，代价是流量与耗时按倍数涨，并且要同时把下面的「单次吞吐测试超时」调大（10.49MB 用 25 秒够，50MB 建议 60 秒）。实测：speed.cloudflare.com 在 ≥100MB 时直接回 403（只有 1 字节），别贴着 104857600 的上限填；想更稳用 50000000（50MB）就够，再大收益递减。默认 10485760（10.49MB）是折中。最小 131072 字节（约 131.07KB）。'));
 		o.datatype = 'and(uinteger,min(131072),max(104857600))';
 		o.default = '10485760';
 
-o = field(thr, 'probeAdv', form.Value, 'speed_timeout',
+o = field(adv, 'probeAdv', form.Value, 'speed_timeout',
 	_('单次吞吐测试超时（秒）'), _('比单 IP 超时大得多。'),
 	_('吞吐测试单独用的超时。下载一个 10.49MB（10485760 字节）文件本来就比一次握手慢几个数量级，所以不能复用单 IP 超时，否则每个 IP 都会被判超时。'));
 		o.datatype = 'and(uinteger,min(5),max(120))';
 		o.default = '25';
 
-o = field(thr, 'probeAdv', form.Value, 'speed_domain',
+o = field(adv, 'probeAdv', form.Value, 'speed_domain',
 	_('吞吐测试地址'), _('同样用 --resolve 钉到候选 IP。'),
 	_('用来拉大文件的域名。默认 speed.cloudflare.com，它会返回一个够大的响应体。换成自己的大文件地址也可以，但要确认它同样经由 Cloudflare，否则测的是另一条路径。'));
 		o.default = 'speed.cloudflare.com';
 
-o = field(thr, 'probeAdv', form.Value, 'speed_path',
+o = field(adv, 'probeAdv', form.Value, 'speed_path',
 	_('吞吐请求路径'), _('一般保持 /__down?bytes={bytes}。'),
 	_('拉大文件时请求的那个路径。两个占位符：{bytes} 换成原始字节数（如 /10485760），{size} 换成带十进制单位（如 /10m、/50m，单位口径 k=1000、m=1000000）。之所以做成模板：有些端点把大小写在路径里、根本不看查询参数（比如 cmliu/CF-Workers-SpeedTestURL，它只认 /10m 这种路径）—— 那种端点把这里填成 /{bytes} 或 /{size} 就能接上。模板里一个占位符都没有时，引擎会自动在后面补 ?bytes=N，不会静默失效。必须以 / 开头。'));
 		o.default = '/__down?bytes={bytes}';
 		o.placeholder = '/__down?bytes={bytes}';
 
 
-o = field(thr, 'probeAdv', form.Flag, 'colo_probe',
+o = field(adv, 'probeAdv', form.Flag, 'colo_probe',
 	_('识别落地机房'), _('取 cdn-cgi/trace 的 colo。'),
 	_('对进榜的那几条 IP 请求一次 /cdn-cgi/trace，取里面的 colo= 字段，就知道这个 IP 实际把你带到哪个 Cloudflare 机房。多花一次请求，但能一眼看出你的流量是不是绕道了。'));
 		o.rmempty = false;
 
-o = field(thr, 'probeAdv', form.Value, 'colo_domain',
+o = field(adv, 'probeAdv', form.Value, 'colo_domain',
 	_('机房查询兜底域名'), _('取不到时换一个再试。'),
 	_('如果探测域名（probe_domains）取不到 colo 字段，就换这个域名再取一次。有些被墙或改过配置的域名不会返回 trace 内容，留一个干净的兜底域名能保证机房那一列不至于整列空着。'));
 		o.default = 'www.cloudflare.com';
 
-o = field(thr, 'probeAdv', form.Flag, 'canary_check',
+o = field(adv, 'probeAdv', form.Flag, 'canary_check',
 	_('每轮先自检出口是否被接管'), _('拿保留地址探一次。'),
 	_('每轮开始前，用 RFC 保留（不可路由）地址走一遍与真实探测完全相同的路径。正常情况下请求根本发不出去；拿到响应就说明本机出口被透明代理接管了 —— 这一轮的耗时其实是「本机 → 代理 → CF」，不能用来判断 IP 好坏。检测到接管时本页出红条，并跳过机房与吞吐两列。想不再报：在代理里把探测域名和 Cloudflare 网段设为直连/绕过（本插件不改代理），或临时停掉代理再跑一轮。'));
 		o.rmempty = false;
 
-o = field(thr, 'probeAdv', form.Value, 'probe_user',
+o = field(adv, 'probeAdv', form.Value, 'probe_user',
 	_('探测发起身份'), _('默认 nobody，别轻易改。'),
 	_('探测以哪个用户身份发起。默认 nobody 是刻意的：透明代理通常放行了本机 root 发起的连接（iptables mangle 链里的那条例外），那种流量根本没走代理；换成 nobody 后走的路线和真实转发流量一致，测出来的才是你的实际体验。除非你非常清楚自己在做什么，否则保持默认。'));
 		o.default = 'nobody';
 
-o = field(thr, 'probeAdv', form.Value, 'annotate',
+o = field(adv, 'probeAdv', form.Value, 'annotate',
 	_('ip.txt 注释模板'), _('{colo} / {total} / {speed} 三个占位符。'),
 	_('决定写出的 ip.txt 里每个 IP 后面跟的那串注释长什么样。三个占位符分别会被替换成机房、总耗时、下载速度。IP 与注释之间那个 # 由引擎自动补上（模板里不用写，写了会变成两个），客户端才认得出后半段是注释；注释填成空就是一行纯 IP，连 # 都不留。客户端里如果对注释内容有要求（有些把注释当成标签），在这里改。'));
 		o.default = 'cf-ipcheck | {colo} | {total}ms';
+
+		var dns = m.section(form.TypedSection, 'global', _('DNS 解析'));
+		dns.anonymous = true;
 
 		var gs = m.section(form.TypedSection, 'global', _('Gist 上传'));
 		gs.anonymous = true;
@@ -407,9 +413,6 @@ o = field(gs, 'gist', form.Value, 'token_file',
 		 * 出事最多是解析不对、删记录就还原。
 		 * dns_proxied 故意不暴露：橙云会让 CF 返回它自己的 anycast 地址，客户端根本
 		 * 解析不到我们优选的那颗 IP，开关摆在这里只会让人误以为可以切。 */
-		var dns = m.section(form.TypedSection, 'global', _('DNS 解析'));
-		dns.anonymous = true;
-
 o = field(dns, 'dns', form.Flag, 'dns_sync',
 	_('同步到 Cloudflare DNS'), _('每轮跑完把优选 IP 写进这些 A 记录。'),
 	_('打开后，每轮正常跑完（出口没被代理接管、也没被你叫停）就把榜单前几名写进下面清单里的每个记录名。只发真正有差异的写请求 —— 记录内容已经一致就直接跳过，免得每 6 小时白刷一次记录 TTL。这条路径不修改路由器上任何配置文件。想立刻同步一次：先点页面底部的「保存并应用」（没保存时引擎读不到这些配置），再切到「榜单」页点「立即写一次 DNS」—— 那颗按钮不管这个开关开没开都会执行。'));

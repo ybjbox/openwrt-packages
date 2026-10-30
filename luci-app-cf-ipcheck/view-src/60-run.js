@@ -40,6 +40,19 @@
 		return bits.join(' · ');
 	}
 
+	function scheduleLine(st) {
+		if (st.enabled == null)
+			return '';
+		if (Number(st.enabled) === 0)
+			return CFI.T('定时实测：关闭');
+		var s = CFI.T('定时实测：每 %s 小时').format(st.interval != null ? st.interval : '?');
+		if (st.next_run != null && isFinite(Number(st.next_run))) {
+			var d = new Date(Number(st.next_run) * 1000);
+			s += CFI.T('，下一轮约 %s').format(F.pad2(d.getHours()) + ':' + F.pad2(d.getMinutes()));
+		}
+		return s;
+	}
+
 	function mount(actions, drawer) {
 		var bui = {
 			sort: JSON.parse(CFI.prefs.get(CFI.prefs.NS + 'board.sort', '') || 'null') || { key: 'ttfb', dir: 'asc' },
@@ -88,10 +101,35 @@
 		var roFail = CFI.ui.Readout({ label: CFI.T('未达标'), value: F.DASH, tone: 'warn' });
 		var roDom = CFI.ui.Readout({ label: CFI.T('探测域名'), value: F.DASH, wide: true });
 		var roDone = CFI.ui.Readout({ label: CFI.T('完成于'), value: F.DASH });
-		var strip = el('div', { class: 'readouts' }, [
+		var strip = el('div', { class: 'cfp-readouts' }, [
 			roPool.node, roQual.node, roBoard.node, roFail.node, roDom.node, roDone.node
 		]);
-		var ruler = el('div', { class: 'ruler', 'aria-hidden': 'true' });
+
+		/* 状态与主操作：放在运行区自己的 section 里，不再占用左轨 */
+		var lampT = el('span', { class: 'cfp-lamp-t' });
+		var lamp = el('span', { class: 'cfp-lamp' }, [
+			el('i', { class: 'dot', 'aria-hidden': 'true' }), lampT
+		]);
+		var pickIp = el('span', { class: 'cfp-pick mono', text: F.DASH });
+		var sched = el('span', { class: 'cfp-sched dim' });
+		var buildTag = el('span', { class: 'cfp-build dim mono', text: VIEW_BUILD });
+		var btnRun = CFI.ui.Button({ kind: 'primary', icon: 'play', label: CFI.T('立即测速'), onClick: actions.run });
+		var btnStop = CFI.ui.Button({ kind: 'danger', icon: 'stop', label: CFI.T('停止'), hidden: true, onClick: actions.stop });
+		var btnRefresh = CFI.ui.Button({ kind: 'quiet', icon: 'refresh', label: CFI.T('刷新'), onClick: actions.refresh });
+		var statusSec = el('section', { class: 'cbi-section cfp-status' }, [
+			el('h3', { text: CFI.T('本轮状态') }),
+			el('div', { class: 'cfp-status-line' }, [
+				lamp,
+				el('span', { class: 'cfp-pick-wrap' }, [
+					el('span', { class: 'cfp-k', text: CFI.T('首选 IP') }),
+					pickIp
+				]),
+				sched,
+				buildTag,
+				el('div', { class: 'cfp-status-acts' }, [ btnRefresh.node, btnRun.node, btnStop.node ])
+			]),
+			strip
+		]);
 
 		var sortSel = el('select', { class: 'ctl', 'aria-label': CFI.T('排序') }, [
 			el('option', { value: 'ttfb', text: CFI.T('按 TTFB') }),
@@ -166,17 +204,17 @@
 		}
 
 		var boardWrap = el('div', { class: 'board-wrap' });
-		var boardSec = el('section', { class: 'sec', hidden: true }, [
-			el('div', { class: 'sec-h' }, [
-				el('h2', { class: 'sec-t', text: CFI.T('榜单') }),
+		var boardSec = el('section', { class: 'cbi-section', hidden: true }, [
+			el('div', { class: 'cfp-sec-h' }, [
+				el('h3', { text: CFI.T('榜单') }),
 				el('div', { class: 'board-tools' }, [ sortSel, filterSel, search, colMenu ])
 			]),
 			boardWrap
 		]);
 
 		var dcList = CFI.ui.DcList();
-		var dcSec = el('section', { class: 'sec', hidden: true }, [
-			el('h2', { class: 'sec-t', text: CFI.T('机房分布') }),
+		var dcSec = el('section', { class: 'cbi-section', hidden: true }, [
+			el('h3', { text: CFI.T('机房分布') }),
 			dcList.node
 		]);
 
@@ -185,7 +223,8 @@
 		var btnDns = CFI.ui.Button({ kind: 'quiet', label: CFI.T('立即写一次 DNS'), onClick: actions.dns });
 		var foot = el('div', { class: 'run-foot' }, [ btnCopy.node, btnCsv.node, btnDns.node ]);
 
-		var body = el('div', { class: 'run-body' }, [ bannerHost, progressHost, strip, ruler, boardSec, dcSec, foot ]);
+		statusSec.insertBefore(progressHost, strip);
+		var body = el('div', { class: 'run-body' }, [ bannerHost, statusSec, boardSec, dcSec, foot ]);
 
 		/* ---- 行与单元格 ---------------------------------------------- */
 		function maxSpeedOf(items) {
@@ -401,9 +440,15 @@
 
 		/* 抽屉关闭（Esc / 遮罩 / Back / 切区）后由外壳回调：清选中，不碰路由 */
 		function onDrawerClosed() {
+			var ip = bui.sel;
 			bui.sel = null;
-			if (table)
+			if (table) {
 				table.update({ rows: sortedFiltered(lastItems), sort: bui.sort, selected: null, hidden: hiddenCols });
+				if (ip && table.focusKey && typeof setTimeout === 'function')
+					setTimeout(function () { table.focusKey(ip); }, 0);
+				else if (ip && table.focusKey)
+					table.focusKey(ip);
+			}
 		}
 
 		/* ---- 状态 ---------------------------------------------------- */
@@ -504,6 +549,21 @@
 			btnDns.update({ disabled: !!busy.dns, busy: !!busy.dns });
 		}
 
+		function updateHeader(st, busy) {
+			st = st || {};
+			busy = busy || {};
+			lampT.textContent = CFI.sem.stateWord(st);
+			lamp.className = 'cfp-lamp t-' + CFI.sem.tone(st);
+			pickIp.textContent = (st.items && st.items[0] && st.items[0].ip) ? String(st.items[0].ip) : F.DASH;
+			sched.textContent = scheduleLine(st);
+			var running = st.state === 'running';
+			btnRun.node.hidden = running;
+			btnStop.node.hidden = !running;
+			btnRun.update({ disabled: !!busy.run, busy: !!busy.run });
+			btnStop.update({ disabled: !!busy.stop, busy: !!busy.stop });
+			btnRefresh.update({ disabled: !!busy.refresh, busy: !!busy.refresh });
+		}
+
 		function update(state) {
 			var st = state.status || {};
 			var busy = state.busy || {};
@@ -554,9 +614,11 @@
 		}
 
 		update({ status: { items: [] }, busy: {} });
+		updateHeader({}, {});
 		return {
 			node: body,
 			update: update,
+			updateHeader: updateHeader,
 			select: function (ip) {
 				if (ip)
 					openDrawer(ip, true);

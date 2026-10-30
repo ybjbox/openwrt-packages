@@ -112,39 +112,44 @@
 			logView.setFilter(bui.logFilter);
 		});
 
-		var logFold = CFI.ui.Collapse({
-			title: CFI.T('日志'),
-			hint: CFI.T('引擎写的过程记录；出问题先看这里'),
-			defaultOpen: false,
-			persistKey: CFI.prefs.NS + 'logs.open',
-			onToggle: function (v) { if (actions.logToggle) actions.logToggle(v); },
-			body: el('div', { class: 'fold-b' }, [
-				el('div', { class: 'log-bar' }, [ autoBtn.node, fullBtn.node, pauseBtn.node, followBtn.node, refreshBtn.node, copyBtn.node, filterSel ]),
-				pausedNote,
-				logView.node
-			])
+		var logDetails = el('details', { class: 'cbi-section cfp-log' });
+		if (CFI.prefs.get(CFI.prefs.NS + 'logs.open', '0') === '1')
+			logDetails.open = true;
+		logDetails.appendChild(el('summary', {}, [
+			el('h3', { text: CFI.T('日志') }),
+			el('span', { class: 'cfp-hint dim', text: CFI.T('引擎写的过程记录；出问题先看这里') })
+		]));
+		logDetails.appendChild(el('div', { class: 'cfp-log-body' }, [
+			el('div', { class: 'log-bar' }, [ autoBtn.node, fullBtn.node, pauseBtn.node, followBtn.node, refreshBtn.node, copyBtn.node, filterSel ]),
+			pausedNote,
+			logView.node
+		]));
+		logDetails.addEventListener('toggle', function () {
+			CFI.prefs.set(CFI.prefs.NS + 'logs.open', logDetails.open ? '1' : '0');
+			if (actions.logToggle)
+				actions.logToggle(logDetails.open);
 		});
 
 		var body = el('div', { class: 'diag-body' }, [
 			traceHost,
-			el('section', { class: 'sec' }, [
-				el('div', { class: 'sec-h' }, [
-					el('h2', { class: 'sec-t', text: CFI.T('源与候选') }),
-					el('div', { class: 'sec-a' }, [ btnCheck.node, btnPool.node ])
+			el('section', { class: 'cbi-section' }, [
+				el('div', { class: 'cfp-sec-h' }, [
+					el('h3', { text: CFI.T('源与候选') }),
+					el('div', { class: 'cfp-sec-a' }, [ btnCheck.node, btnPool.node ])
 				]),
 				pendingHost,
 				srcTableNode,
 				poolHost
 			]),
-			el('section', { class: 'sec' }, [
-				el('div', { class: 'sec-h' }, [
-					el('h2', { class: 'sec-t', text: CFI.T('诊断快照') }),
-					el('div', { class: 'sec-a' }, btnDiag.node)
+			el('section', { class: 'cbi-section' }, [
+				el('div', { class: 'cfp-sec-h' }, [
+					el('h3', { text: CFI.T('诊断快照') }),
+					el('div', { class: 'cfp-sec-a' }, btnDiag.node)
 				]),
 				diagPending,
 				diagHost
 			]),
-			logFold.node
+			logDetails
 		]);
 
 		function paintTrace(st) {
@@ -299,14 +304,15 @@
 		}
 
 		function openLogs() {
-			logFold.apply(true);
+			logDetails.open = true;
+			CFI.prefs.set(CFI.prefs.NS + 'logs.open', '1');
 			try { logView.box.scrollTop = logView.box.scrollHeight; } catch (e) {}
 			try { logView.box.focus(); } catch (e2) {}
 		}
 
 		return {
 			node: body, update: update, openLogs: openLogs, logBox: logView.box,
-			logOpen: function () { return logFold.isOpen(); }
+			logOpen: function () { return !!logDetails.open; }
 		};
 	}
 

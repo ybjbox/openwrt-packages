@@ -62,7 +62,7 @@ function load() {
 const CFI = load();
 
 test('构建版本与包版本一致', () => {
-	assert.equal(CFI.build, 'r136');
+	assert.equal(CFI.build, 'r139');
 });
 
 test('IPC：9 个方法与超时预算', () => {
@@ -219,13 +219,6 @@ test('store：run 指纹覆盖进度与机房', () => {
 	const k3 = CFI.store.runKey({ state: 'done', items: [], dc_summary: [{ dc: 'NRT' }] });
 	const k4 = CFI.store.runKey({ state: 'done', items: [], dc_summary: [{ dc: 'SIN' }] });
 	assert.notEqual(k3, k4, '机房分布变了必须重画');
-});
-
-test('皮肤：显式选择直通，自动按宿主亮度回落', () => {
-	assert.equal(CFI.skin.resolve('paper'), 'paper');
-	assert.equal(CFI.skin.resolve('night'), 'night');
-	/* 单测的 window 桩没有 getComputedStyle/matchMedia → 按浅色处理 */
-	assert.equal(CFI.skin.resolve('auto'), 'paper');
 });
 
 test('字段表：54 个字段 + dc_show 归组，短句与分组双向可查', () => {

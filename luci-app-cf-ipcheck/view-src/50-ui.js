@@ -6,8 +6,19 @@
 
 	/* 按钮：节点只建一次，update 只改文案/禁用/忙碌 —— 真实鼠标的 down/up
 	 * 落在同一颗节点上，浏览器才会合成 click。 */
+	function btnClass(kind) {
+		kind = kind || 'quiet';
+		if (kind === 'primary')
+			return 'btn primary cbi-button cbi-button-action important';
+		if (kind === 'danger')
+			return 'btn danger cbi-button cbi-button-negative';
+		if (kind === 'link')
+			return 'btn link';
+		return 'btn ' + kind + ' cbi-button';
+	}
+
 	function Button(p) {
-		var b = el('button', { class: 'btn ' + (p.kind || 'quiet'), type: 'button' });
+		var b = el('button', { class: btnClass(p.kind), type: 'button' });
 		if (p.ariaLabel)
 			b.setAttribute('aria-label', p.ariaLabel);
 		var ic = p.icon ? icon(p.icon) : null;
@@ -23,7 +34,7 @@
 				label.textContent = String(q.label);
 			if (q.disabled !== undefined)
 				b.disabled = !!q.disabled;
-			b.className = 'btn ' + (q.kind || p.kind || 'quiet') + (q.busy ? ' busy' : '');
+			b.className = btnClass(q.kind || p.kind || 'quiet') + (q.busy ? ' busy spinning' : '');
 			b.setAttribute('aria-busy', q.busy ? 'true' : 'false');
 			if (q.title !== undefined) {
 				if (q.title)
@@ -71,7 +82,7 @@
 		var caption = el('caption', { class: 'sr-only', text: p.caption || '' });
 		var thead = el('thead');
 		var tbody = el('tbody');
-		var table = el('table', { class: 'tbl' + (p.dense ? ' dense' : '') }, [ caption, thead, tbody ]);
+		var table = el('table', { class: 'tbl table cbi-section-table' + (p.dense ? ' dense' : '') }, [ caption, thead, tbody ]);
 		var scroll = el('div', { class: 'tbl-scroll' }, table);
 		var cols = p.cols || [];
 		var map = {};
@@ -82,9 +93,9 @@
 
 		function buildHead() {
 			CFI.dom.clear(thead);
-			var tr = el('tr');
+			var tr = el('tr', { class: 'tr table-titles' });
 			cols.forEach(function (c) {
-				var th = el('th', { class: c.cls || '', scope: 'col', text: c.h });
+				var th = el('th', { class: 'th ' + (c.cls || ''), scope: 'col', text: c.h });
 				if (c.sortable && p.onSort) {
 					th.tabIndex = 0;
 					th.setAttribute('aria-sort', 'none');
@@ -555,128 +566,85 @@
 		};
 	}
 
-	/* 详情抽屉：桌面右侧 sheet，移动端 bottom sheet；焦点陷阱与归还。 */
-	function Drawer(p) {
-		var overlay = el('div', { class: 'drawer-mask', hidden: true });
-		var panel = el('div', { class: 'drawer', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'cfi-drawer-t', tabindex: '-1' });
-		var title = el('h2', { class: 'drawer-t', id: 'cfi-drawer-t' });
-		var body = el('div', { class: 'drawer-b' });
-		var closeBtn = el('button', { class: 'drawer-x btn quiet', type: 'button', 'aria-label': CFI.T('关闭') }, '×');
-		panel.appendChild(el('div', { class: 'drawer-h' }, [ title, closeBtn ]));
-		panel.appendChild(body);
-		var host = el('div', { class: 'drawer-host' }, [ overlay, panel ]);
-		var lastFocus = null;
+	/* 详情弹窗：官方 ui.showModal / ui.hideModal 的薄适配。
+	 * - 只有一个实例；轮询更新时只替换 body，不重复 showModal；
+	 * - Esc 由官方 cancelModal 点击 .button-row 里的按钮；
+	 * - 关闭后把焦点还给打开前的元素。 */
+	function Modal(p) {
+		var bodyHost = el('div', { class: 'cfp-modal-body' });
+		var closeBtn = el('button', { class: 'btn cbi-button', type: 'button', text: CFI.T('关闭') });
+		var row = el('div', { class: 'button-row' }, closeBtn);
+		var root = el('div', { class: 'cfp cfp-modal' }, [ bodyHost, row ]);
 		var openFlag = false;
-
-		function onKey(ev) {
-			if (!openFlag)
-				return;
-			if (ev.key === 'Escape') {
-				ev.preventDefault();
-				close();
-				return;
-			}
-			if (ev.key !== 'Tab')
-				return;
-			var f = panel.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
-			if (!f.length)
-				return;
-			var first = f[0], last = f[f.length - 1];
-			if (ev.shiftKey && document.activeElement === first) {
-				ev.preventDefault();
-				last.focus();
-			} else if (!ev.shiftKey && document.activeElement === last) {
-				ev.preventDefault();
-				first.focus();
-			}
-		}
-
-		function open(heading, content) {
-			var wasOpen = openFlag;
-			/* 轮询只更新读数时，焦点不许被抽屉抢走；归还得回到打开前那颗元素 */
-			if (!wasOpen)
-				lastFocus = document.activeElement;
-			title.textContent = heading || '';
-			CFI.dom.clear(body);
-			body.appendChild(content);
-			overlay.hidden = false;
-			panel.hidden = false;
-			host.className = 'drawer-host open';
-			openFlag = true;
-			try { document.body.classList.add('cfi-drawer-open'); } catch (e) {}
-			if (!wasOpen) {
-				try { panel.focus(); } catch (e2) {}
-			}
-		}
+		var lastFocus = null;
+		var hasUi = typeof ui !== 'undefined' && ui && typeof ui.showModal === 'function';
 
 		function close() {
 			if (!openFlag)
 				return;
 			openFlag = false;
-			host.className = 'drawer-host';
-			panel.hidden = true;
-			overlay.hidden = true;
-			try { document.body.classList.remove('cfi-drawer-open'); } catch (e) {}
-			try { if (lastFocus && lastFocus.focus) lastFocus.focus(); } catch (e2) {}
+			try {
+				if (hasUi && typeof ui.hideModal === 'function')
+					ui.hideModal();
+			} catch (e) {}
+			var lf = lastFocus;
+			lastFocus = null;
+			if (typeof setTimeout === 'function')
+				setTimeout(function () {
+					try { if (lf && lf.focus) lf.focus(); } catch (e2) {}
+				}, 0);
+			else {
+				try { if (lf && lf.focus) lf.focus(); } catch (e3) {}
+			}
 			if (p.onClose)
 				p.onClose();
 		}
 
+		function open(title, content) {
+			var wasOpen = openFlag;
+			if (!wasOpen)
+				lastFocus = document.activeElement;
+			CFI.dom.clear(bodyHost);
+			bodyHost.appendChild(content);
+			if (!hasUi)
+				return false;
+			if (!wasOpen) {
+				ui.showModal(title, root, 'cbi-modal', 'cfi-modal');
+				openFlag = true;
+			} else {
+				var dlg = document.getElementById('modal_overlay');
+				var h = dlg && dlg.querySelector ? dlg.querySelector('.modal > h4') : null;
+				if (h)
+					h.textContent = title || '';
+			}
+			return true;
+		}
+
+		function onOverlay(ev) {
+			if (ev && ev.target && ev.target.id === 'modal_overlay')
+				close();
+		}
+
 		closeBtn.addEventListener('click', close);
-		overlay.addEventListener('click', close);
-		document.addEventListener('keydown', onKey);
-		panel.hidden = true;
-		overlay.hidden = true;
+		try {
+			var ov = document.getElementById('modal_overlay');
+			if (ov && ov.addEventListener)
+				ov.addEventListener('click', onOverlay);
+		} catch (e3) {}
 
 		return {
-			node: host,
+			node: root,
 			open: open,
 			close: close,
-			body: body,
 			isOpen: function () { return openFlag; },
-			destroy: function () { document.removeEventListener('keydown', onKey); close(); }
-		};
-	}
-
-	/* 折叠盒：只接管交互与 aria；内容宿主由调用方给 */
-	function Collapse(p) {
-		var cls = 'fold' + (p.cls ? ' ' + p.cls : '');
-		var body = p.body || el('div');
-		var head = el('div', { class: 'fold-h', tabindex: '0', role: 'button' }, [
-			el('span', { class: 'chev', 'aria-hidden': 'true' }),
-			el('span', { class: 'fold-t', text: p.title || '' }),
-			el('span', { class: 'fold-x', text: p.hint || '' })
-		]);
-		var open = !!p.defaultOpen;
-		if (p.persistKey) {
-			var saved = CFI.prefs.get(p.persistKey, '');
-			if (saved === '0' || saved === '1')
-				open = saved === '1';
-		}
-		var box = el('div', { class: cls + (open ? ' open' : '') }, [ head, body ]);
-		if (p.group)
-			box.setAttribute('data-group', p.group);
-		function apply(v) {
-			box.className = cls + (v ? ' open' : '');
-			head.setAttribute('aria-expanded', v ? 'true' : 'false');
-			if (p.persistKey)
-				CFI.prefs.set(p.persistKey, v ? '1' : '0');
-			if (p.onToggle)
-				p.onToggle(v);
-		}
-		function toggle() { apply(!(box.className.indexOf('open') >= 0)); }
-		head.addEventListener('click', toggle);
-		head.addEventListener('keydown', function (ev) {
-			var k = ev && ev.key;
-			if (k === 'Enter' || k === ' ' || k === 'Spacebar') {
-				ev.preventDefault();
-				toggle();
+			destroy: function () {
+				close();
+				try {
+					var ov = document.getElementById('modal_overlay');
+					if (ov && ov.removeEventListener)
+						ov.removeEventListener('click', onOverlay);
+				} catch (e4) {}
 			}
-		});
-		apply(open);
-		return {
-			node: box, apply: apply, body: body,
-			isOpen: function () { return box.className.indexOf('open') >= 0; }
 		};
 	}
 
@@ -764,22 +732,29 @@
 		return { node: node, update: paint };
 	}
 
-	/* 分段控件：roving tabindex + 方向键；只改 class/aria，不换节点 */
+	/* 三段导航：外观用 cbi-tabmenu，键盘与 aria 由我们维护 */
 	function Tabs(defs, current, onPick) {
-		var bar = el('div', { class: 'zones', role: 'tablist' });
-		var btns = [];
+		var bar = el('div', { class: 'cfp-tabs' });
+		var list = el('ul', { class: 'cbi-tabmenu', role: 'tablist' });
+		var links = [];
+		var items = [];
 		defs.forEach(function (d, i) {
-			var b = el('button', {
-				class: 'zone' + (d.id === current ? ' on' : ''),
-				type: 'button',
+			var a = el('a', {
+				href: '#',
 				id: 'cfi-zone-' + d.id,
 				role: 'tab',
 				'aria-selected': d.id === current ? 'true' : 'false',
 				'aria-controls': 'cfi-pane-' + d.id,
-				tabindex: d.id === current ? '0' : '-1'
-			}, el('span', { text: d.label }));
-			b.addEventListener('click', function () { onPick(d.id); });
-			b.addEventListener('keydown', function (ev) {
+				tabindex: d.id === current ? '0' : '-1',
+				text: d.label
+			});
+			var li = el('li', { class: 'cbi-tab' + (d.id === current ? ' cbi-tab-active' : '') }, a);
+			a.addEventListener('click', function (ev) {
+				if (ev && ev.preventDefault)
+					ev.preventDefault();
+				onPick(d.id);
+			});
+			a.addEventListener('keydown', function (ev) {
 				var n = null;
 				if (ev.key === 'ArrowRight')
 					n = (i + 1) % defs.length;
@@ -793,17 +768,19 @@
 					return;
 				ev.preventDefault();
 				onPick(defs[n].id);
-				btns[n].focus();
+				links[n].focus();
 			});
-			btns.push(b);
-			bar.appendChild(b);
+			links.push(a);
+			items.push(li);
+			list.appendChild(li);
 		});
+		bar.appendChild(list);
 		function select(id) {
 			defs.forEach(function (d, i) {
 				var on = d.id === id;
-				btns[i].className = 'zone' + (on ? ' on' : '');
-				btns[i].setAttribute('aria-selected', on ? 'true' : 'false');
-				btns[i].setAttribute('tabindex', on ? '0' : '-1');
+				items[i].className = 'cbi-tab' + (on ? ' cbi-tab-active' : '');
+				links[i].setAttribute('aria-selected', on ? 'true' : 'false');
+				links[i].setAttribute('tabindex', on ? '0' : '-1');
 			});
 		}
 		return { node: bar, select: select };
@@ -815,8 +792,7 @@
 		Table: Table,
 		DcList: DcList,
 		LogView: LogView,
-		Drawer: Drawer,
-		Collapse: Collapse,
+		Modal: Modal,
 		Empty: Empty,
 		Msg: Msg,
 		Progress: Progress,
