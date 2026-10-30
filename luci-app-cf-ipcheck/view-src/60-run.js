@@ -7,26 +7,15 @@
 	/* 运行区：卡片式读数 + 可排序/筛选的榜单 + 行详情抽屉 + 机房分布。
 	 * 所有交互宿主（工具栏、按钮、表格容器）只建一次，之后只做 update。 */
 	function colsOf(st) {
-		var cols = [
+		return [
 			{ key: 'rk', h: '#', cls: 'r' },
 			{ key: 'ip', h: 'IP', cls: 'l' },
+			{ key: 'colo', h: '机房', cls: 'l c-colo', sortable: true },
 			{ key: 'code', h: 'HTTP', cls: 'r' },
-			{ key: 'tcp', h: 'TCP', cls: 'r c-tcp' },
-			{ key: 'tls', h: 'TLS', cls: 'r c-tls' },
-			{ key: 'ttfb', h: st.probe_metric === 'tcp' ? 'TCP' : 'TTFB', cls: 'r', sortable: true },
-			{ key: 'total', h: '总计', cls: 'r c-total' },
-			{ key: 'colo', h: '机房', cls: 'r c-colo', sortable: true },
-			{ key: 'spd', h: st.speed_unit === 'mib' ? 'MiB/s' : 'MB/s', cls: 'r', sortable: true },
+			{ key: 'ttfb', h: st.probe_metric === 'tcp' ? 'TCP' : 'TTFB', cls: 'r c-ttfb', sortable: true },
+			{ key: 'spd', h: st.speed_unit === 'mib' ? 'MiB/s' : 'MB/s', cls: 'r c-spd', sortable: true },
 			{ key: 'q', h: '质量', cls: 'l c-q' }
 		];
-		var domains = {};
-		var n = 0;
-		(st.items || []).forEach(function (it) {
-			if (it && it.domain && !domains[it.domain]) { domains[it.domain] = 1; n++; }
-		});
-		if (n > 1)
-			cols.splice(4, 0, { key: 'domain', h: '胜出域名', cls: 'l c-domain' });
-		return cols;
 	}
 
 	function quality(it) {
@@ -66,12 +55,9 @@
 		var snap = null;
 
 		var OPT_COLS = [
-			{ key: 'tcp', label: CFI.T('TCP 建连') },
-			{ key: 'tls', label: CFI.T('TLS') },
-			{ key: 'total', label: CFI.T('总耗时') },
 			{ key: 'colo', label: CFI.T('机房') },
-			{ key: 'q', label: CFI.T('质量') },
-			{ key: 'domain', label: CFI.T('胜出域名') }
+			{ key: 'spd', label: CFI.T('吞吐') },
+			{ key: 'q', label: CFI.T('质量') }
 		];
 		var hiddenCols = (function () {
 			var v = [];
@@ -95,40 +81,27 @@
 		var progressHost = el('div', { class: 'run-progress', hidden: true });
 		var progress = null;
 
-		var roPool = CFI.ui.Readout({ label: CFI.T('候选池'), value: F.DASH });
-		var roQual = CFI.ui.Readout({ label: CFI.T('达标'), value: F.DASH, primary: true });
-		var roBoard = CFI.ui.Readout({ label: CFI.T('榜单'), value: F.DASH });
-		var roFail = CFI.ui.Readout({ label: CFI.T('未达标'), value: F.DASH, tone: 'warn' });
-		var roDom = CFI.ui.Readout({ label: CFI.T('探测域名'), value: F.DASH, wide: true });
-		var roDone = CFI.ui.Readout({ label: CFI.T('完成于'), value: F.DASH });
-		var strip = el('div', { class: 'cfp-readouts' }, [
-			roPool.node, roQual.node, roBoard.node, roFail.node, roDom.node, roDone.node
+		function statNode(label, warn) {
+			var v = el('b', { class: 'n', text: F.DASH });
+			var node = el('div', { class: 'stat' + (warn ? ' warn' : '') }, [
+				el('span', { text: label }), v
+			]);
+			return { node: node, set: function (x) { v.textContent = x; }, hide: function (h) { node.hidden = !!h; } };
+		}
+		var stPool = statNode(CFI.T('候选池'));
+		var stQual = statNode(CFI.T('达标'));
+		var stBoard = statNode(CFI.T('榜单'));
+		var stFail = statNode(CFI.T('未达标'), true);
+		var statGrid = el('div', { class: 'stat-grid' }, [
+			stPool.node, stQual.node, stBoard.node, stFail.node
 		]);
-
-		/* 状态与主操作：放在运行区自己的 section 里，不再占用左轨 */
-		var lampT = el('span', { class: 'cfp-lamp-t' });
-		var lamp = el('span', { class: 'cfp-lamp' }, [
-			el('i', { class: 'dot', 'aria-hidden': 'true' }), lampT
-		]);
-		var pickIp = el('span', { class: 'cfp-pick mono', text: F.DASH });
-		var sched = el('span', { class: 'cfp-sched dim' });
-		var buildTag = el('span', { class: 'cfp-build dim mono', text: VIEW_BUILD });
-		var btnRun = CFI.ui.Button({ kind: 'primary', icon: 'play', label: CFI.T('立即测速'), onClick: actions.run });
-		var btnStop = CFI.ui.Button({ kind: 'danger', icon: 'stop', label: CFI.T('停止'), hidden: true, onClick: actions.stop });
-		var btnRefresh = CFI.ui.Button({ kind: 'quiet', icon: 'refresh', label: CFI.T('刷新'), onClick: actions.refresh });
-		var statusSec = el('section', { class: 'cbi-section cfp-status' }, [
-			el('h3', { text: CFI.T('本轮状态') }),
-			el('div', { class: 'cfp-status-line' }, [
-				lamp,
-				el('span', { class: 'cfp-pick-wrap' }, [
-					el('span', { class: 'cfp-k', text: CFI.T('首选 IP') }),
-					pickIp
-				]),
-				sched,
-				buildTag,
-				el('div', { class: 'cfp-status-acts' }, [ btnRefresh.node, btnRun.node, btnStop.node ])
-			]),
-			strip
+		var sumSub = el('span', { class: 'sub' });
+		var sumDomain = el('span');
+		var sumDuration = el('span');
+		var summaryCard = el('article', { class: 'card' }, [
+			el('div', { class: 'card-h' }, [ el('h2', { text: CFI.T('本轮概况') }), sumSub ]),
+			statGrid,
+			el('div', { class: 'footnote' }, [ sumDomain, sumDuration ])
 		]);
 
 		var sortSel = el('select', { class: 'ctl', 'aria-label': CFI.T('排序') }, [
@@ -204,27 +177,37 @@
 		}
 
 		var boardWrap = el('div', { class: 'board-wrap' });
-		var boardSec = el('section', { class: 'cbi-section', hidden: true }, [
-			el('div', { class: 'cfp-sec-h' }, [
-				el('h3', { text: CFI.T('榜单') }),
-				el('div', { class: 'board-tools' }, [ sortSel, filterSel, search, colMenu ])
+		var boardSub = el('span', { class: 'sub' });
+		var boardSec = el('article', { class: 'card cfp-board', hidden: true }, [
+			el('div', { class: 'card-h' }, [
+				el('h2', { text: CFI.T('榜单') }), boardSub,
+				el('div', { class: 'right board-tools' }, [ sortSel, filterSel, search, colMenu ])
 			]),
+			progressHost,
 			boardWrap
 		]);
 
 		var dcList = CFI.ui.DcList();
-		var dcSec = el('section', { class: 'cbi-section', hidden: true }, [
-			el('h3', { text: CFI.T('机房分布') }),
+		var dcSec = el('article', { class: 'card', hidden: true }, [
+			el('div', { class: 'card-h' }, [ el('h2', { text: CFI.T('机房分布') }), el('span', { class: 'sub', text: CFI.T('按中位 TTFB') }) ]),
 			dcList.node
 		]);
 
 		var btnCopy = CFI.ui.Button({ kind: 'quiet', icon: 'copy', label: CFI.T('复制榜单 IP'), onClick: actions.copy });
 		var btnCsv = CFI.ui.Button({ kind: 'quiet', label: CFI.T('下载 CSV'), onClick: actions.csv });
 		var btnDns = CFI.ui.Button({ kind: 'quiet', label: CFI.T('立即写一次 DNS'), onClick: actions.dns });
-		var foot = el('div', { class: 'run-foot' }, [ btnCopy.node, btnCsv.node, btnDns.node ]);
+		var actionsCard = el('article', { class: 'card' }, [
+			el('div', { class: 'card-h' }, [ el('h2', { text: CFI.T('动作') }) ]),
+			el('div', { class: 'action-list' }, [ btnCopy.node, btnCsv.node, btnDns.node ])
+		]);
 
-		statusSec.insertBefore(progressHost, strip);
-		var body = el('div', { class: 'run-body' }, [ bannerHost, statusSec, boardSec, dcSec, foot ]);
+		var body = el('div', { class: 'run-body' }, [
+			bannerHost,
+			el('div', { class: 'cfp-main' }, [
+				boardSec,
+				el('aside', { class: 'cfp-side' }, [ summaryCard, dcSec, actionsCard ])
+			])
+		]);
 
 		/* ---- 行与单元格 ---------------------------------------------- */
 		function maxSpeedOf(items) {
@@ -240,8 +223,12 @@
 		function cellOf(it, i, c, st) {
 			if (c.key === 'rk')
 				return el('span', { class: 'rk n', text: String(i + 1) });
-			if (c.key === 'ip')
-				return el('span', { class: 'ip mono', text: it.ip || '?' });
+			if (c.key === 'ip') {
+				var ipKids = [ el('span', { text: it.ip || '?' }) ];
+				if (i === 0)
+					ipKids.push(el('span', { class: 'lead', text: CFI.T('首选') }));
+				return el('span', { class: 'ip mono' }, ipKids);
+			}
 			if (c.key === 'code') {
 				var ok = it.code != null && it.code >= 200 && it.code < 300;
 				return el('span', { class: (ok ? 'ok' : 'warn') + ' n', text: it.code != null ? String(it.code) : F.DASH });
@@ -271,7 +258,7 @@
 				return el('span', { class: 'n' }, txt);
 			}
 			var q = quality(it);
-			return el('span', { class: q ? 'warn' : 'dim', text: q || F.DASH });
+			return el('span', { class: q ? 'q' : 'q none', text: q || F.DASH });
 		}
 
 		function sortedFiltered(items) {
@@ -465,22 +452,18 @@
 					}
 				}
 			}
-			roPool.update({ value: F.num(st.pool), sub: CFI.T('本轮去重后参与探测的 IP 数') });
-			roQual.update({ value: F.num(st.qualified), sub: CFI.T('TTFB 与总耗时两道门槛都过') });
-			roBoard.update({ value: F.num(st.usable != null ? st.usable : (st.items || []).length), sub: CFI.T('按 TTFB 排序保留的条数') });
-			roFail.node.hidden = !(fail > 0);
+			stPool.set(F.num(st.pool));
+			stQual.set(F.num(st.qualified));
+			stBoard.set(F.num(st.usable != null ? st.usable : (st.items || []).length));
+			stFail.hide(!(fail > 0));
 			if (fail > 0)
-				roFail.update({ value: F.num(fail), sub: parts.join(' · ') });
-			roDom.node.hidden = !st.domains;
-			if (st.domains)
-				roDom.update({ value: String(st.domains) });
-			roDone.node.hidden = !(st.finished || st.started);
-			if (st.finished || st.started)
-				roDone.update({
-					value: F.ago(st.finished || st.started),
-					sub: F.clock(st.finished || st.started),
-					tone: st.state === 'running' ? null : (st.staleFor ? 'warn' : null)
-				});
+				stFail.set(F.num(fail));
+			sumSub.textContent = st.finished ? F.clock(st.finished) : (st.started ? F.clock(st.started) : '');
+			sumDomain.textContent = st.domains ? (CFI.T('探测域名 %s').format(String(st.domains))) : '';
+			var t0 = Date.parse(st.started), t1 = Date.parse(st.finished);
+			sumDuration.textContent = isFinite(t0) && isFinite(t1) && t1 >= t0
+				? CFI.T('耗时 %s s').format(String(Math.round((t1 - t0) / 1000))) : '';
+			boardSub.textContent = lastItems.length ? CFI.T('%s 条可用').format(String(lastItems.length)) : '';
 		}
 
 		function paintBanner(st) {
@@ -549,21 +532,6 @@
 			btnDns.update({ disabled: !!busy.dns, busy: !!busy.dns });
 		}
 
-		function updateHeader(st, busy) {
-			st = st || {};
-			busy = busy || {};
-			lampT.textContent = CFI.sem.stateWord(st);
-			lamp.className = 'cfp-lamp t-' + CFI.sem.tone(st);
-			pickIp.textContent = (st.items && st.items[0] && st.items[0].ip) ? String(st.items[0].ip) : F.DASH;
-			sched.textContent = scheduleLine(st);
-			var running = st.state === 'running';
-			btnRun.node.hidden = running;
-			btnStop.node.hidden = !running;
-			btnRun.update({ disabled: !!busy.run, busy: !!busy.run });
-			btnStop.update({ disabled: !!busy.stop, busy: !!busy.stop });
-			btnRefresh.update({ disabled: !!busy.refresh, busy: !!busy.refresh });
-		}
-
 		function update(state) {
 			var st = state.status || {};
 			var busy = state.busy || {};
@@ -592,7 +560,7 @@
 			var kb = CFI.store.boardKey(st);
 			if (kb !== last.board) {
 				last.board = kb;
-				boardSec.hidden = !lastItems.length;
+				boardSec.hidden = !lastItems.length && st.state !== 'running';
 				paintBoard(true);
 				if (bui.sel && drawer.isOpen && drawer.isOpen()) {
 					var cur = itemOf(bui.sel);
@@ -614,11 +582,9 @@
 		}
 
 		update({ status: { items: [] }, busy: {} });
-		updateHeader({}, {});
 		return {
 			node: body,
 			update: update,
-			updateHeader: updateHeader,
 			select: function (ip) {
 				if (ip)
 					openDrawer(ip, true);

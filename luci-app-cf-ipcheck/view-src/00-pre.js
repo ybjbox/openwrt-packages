@@ -16,7 +16,7 @@
  * 编号小的不得调用编号大的；面板不直接碰 IPC，只能经 store 的动作层。
  */
 
-var VIEW_BUILD = 'r139';
+var VIEW_BUILD = 'r140';
 var CMD = '/usr/bin/cf-ipcheck';
 
 var CFI = {

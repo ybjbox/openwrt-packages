@@ -381,9 +381,38 @@
 		}
 
 		/* ---- 外壳 ------------------------------------------------------ */
+		function scheduleLine(st) {
+			if (st.enabled == null)
+				return '';
+			if (Number(st.enabled) === 0)
+				return CFI.T('定时实测：关闭');
+			var s = CFI.T('定时实测：每 %s 小时').format(st.interval != null ? st.interval : '?');
+			if (st.next_run != null && isFinite(Number(st.next_run))) {
+				var d = new Date(Number(st.next_run) * 1000);
+				s += CFI.T('，下一轮约 %s').format(F.pad2(d.getHours()) + ':' + F.pad2(d.getMinutes()));
+			}
+			return s;
+		}
+
 		function build() {
 			var root = el('div', { class: 'cfp' });
+			var btnRun = CFI.ui.Button({ kind: 'primary', icon: 'play', label: CFI.T('立即测速'), onClick: actRun });
+			var btnStop = CFI.ui.Button({ kind: 'danger', icon: 'stop', label: CFI.T('停止'), hidden: true, onClick: actStop });
+			var btnRefresh = CFI.ui.Button({ kind: 'quiet', icon: 'refresh', label: CFI.T('刷新'), onClick: function () { refresh(true); } });
 
+			var headWord = el('span', { class: 'cfp-chip-t' });
+			var headChip = el('span', { class: 'cfp-chip' }, [ el('i', { class: 'dot', 'aria-hidden': 'true' }), headWord ]);
+			var headSub = el('p', { class: 'cfp-sub' });
+			var head = el('header', { class: 'cfp-head' }, [
+				el('div', { class: 'cfp-title' }, [
+					el('h1', { text: CFI.T('Cloudflare IP 优选') }),
+					headSub
+				]),
+				el('div', { class: 'cfp-head-acts' }, [
+					headChip,
+					btnRefresh.node, btnRun.node, btnStop.node
+				])
+			]);
 			var flashHost = el('div', { class: 'flashes', role: 'status', 'aria-live': 'polite' });
 			var tabs = CFI.ui.Tabs([
 				{ id: 'run', label: CFI.T('运行') },
@@ -463,6 +492,7 @@
 				set: el('section', { class: 'pane', id: 'cfi-pane-set', role: 'tabpanel', 'aria-labelledby': 'cfi-zone-set' }, setPane.node)
 			};
 
+			root.appendChild(head);
 			root.appendChild(flashHost);
 			root.appendChild(tabs.node);
 			root.appendChild(panes.run);
@@ -477,8 +507,19 @@
 			store.select(function (s) {
 				return CFI.store.headerKey((s.status || {}), s.busy || {});
 			}, function (s) {
-				if (runPane && runPane.updateHeader)
-					runPane.updateHeader(s.status || {}, s.busy || {});
+				var st = s.status || {}, busy = s.busy || {};
+				headWord.textContent = CFI.sem.stateWord(st);
+				headChip.className = 'cfp-chip t-' + CFI.sem.tone(st);
+				var line = scheduleLine(st);
+				if (st.finished || st.started)
+					line += (line ? ' · ' : '') + CFI.T('上次 %s %s').format(F.ago(st.finished || st.started), F.clock(st.finished || st.started));
+				headSub.textContent = line;
+				var running = st.state === 'running';
+				btnRun.node.hidden = running;
+				btnStop.node.hidden = !running;
+				btnRun.update({ disabled: !!busy.run, busy: !!busy.run });
+				btnStop.update({ disabled: !!busy.stop, busy: !!busy.stop });
+				btnRefresh.update({ disabled: !!busy.refresh, busy: !!busy.refresh });
 			});
 
 			store.select(function (s) {
