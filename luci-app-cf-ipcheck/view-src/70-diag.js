@@ -30,7 +30,7 @@
 	}
 
 	function mount(actions) {
-		var last = { trace: '', src: '', pool: '', diag: '', busy: '' };
+		var last = { trace: '', src: '', pool: '', busy: '' };
 
 		var traceHost = el('div', { class: 'trace' });
 
@@ -63,21 +63,6 @@
 		var pendingHost = el('div', { class: 'pending' });
 		var poolHost = el('div', { class: 'pool-result' });
 
-		var btnDiag = CFI.ui.Button({ kind: 'quiet', label: CFI.T('取诊断'), onClick: actions.diag });
-		var diagTable = CFI.ui.Table({
-			cols: [ { h: CFI.T('项'), cls: 'l' }, { h: CFI.T('值'), cls: 'l' } ],
-			caption: CFI.T('诊断快照'),
-			keyOf: function (r) { return r[0]; },
-			rowSig: function (r) { return String(r[1]); },
-			cell: function (r) {
-				return [ el('span', { class: 'mono', text: String(r[0]) }), el('span', { class: 'mono', text: String(r[1]) }) ];
-			}
-		});
-		var diagHost = el('div');
-		diagHost.appendChild(diagTable.node);
-		var diagPending = el('p', { class: 'note' },
-			CFI.T('还没取过。点「取诊断」拿一份当前状态快照（不改配置）。'));
-
 		var body = el('div', { class: 'diag-body' }, [
 			traceHost,
 			el('section', { class: 'cbi-section' }, [
@@ -88,14 +73,6 @@
 				pendingHost,
 				srcTableNode,
 				poolHost
-			]),
-			el('section', { class: 'cbi-section' }, [
-				el('div', { class: 'cfp-sec-h' }, [
-					el('h3', { text: CFI.T('诊断快照') }),
-					el('div', { class: 'cfp-sec-a' }, btnDiag.node)
-				]),
-				diagPending,
-				diagHost
 			])
 		]);
 
@@ -174,23 +151,6 @@
 			}
 		}
 
-		function paintDiag(state) {
-			var d = state.diag;
-			if (!d || d.state !== 'ok') {
-				diagTable.update({ rows: [] });
-				diagHost.hidden = true;
-				diagPending.hidden = false;
-				return;
-			}
-			var rows = [];
-			for (var k in d.data || {})
-				if (Object.prototype.hasOwnProperty.call(d.data, k))
-					rows.push([ k, d.data[k] ]);
-			diagTable.update({ rows: rows });
-			diagHost.hidden = !rows.length;
-			diagPending.hidden = rows.length > 0;
-		}
-
 		function busyLabel(meta, base) {
 			if (!meta) return base;
 			var sec = Math.floor((Date.now() - (meta.at || Date.now())) / 1000);
@@ -201,7 +161,6 @@
 			var busy = (state && state.busy) || {};
 			btnCheck.update({ disabled: !!busy.check, busy: !!busy.check, label: busyLabel(busy.check, CFI.T('检测源可用性')) });
 			btnPool.update({ disabled: !!busy.pool, busy: !!busy.pool, label: busyLabel(busy.pool, CFI.T('预览候选池')) });
-			btnDiag.update({ disabled: !!busy.diag, busy: !!busy.diag, label: busyLabel(busy.diag, CFI.T('取诊断')) });
 		}
 
 		function update(state) {
@@ -213,8 +172,6 @@
 			if (k !== last.src) { last.src = k; paintSources(state); }
 			k = JSON.stringify(state.pool || null);
 			if (k !== last.pool) { last.pool = k; paintPool(state); }
-			k = JSON.stringify(state.diag || null);
-			if (k !== last.diag) { last.diag = k; paintDiag(state); }
 			k = JSON.stringify(state.busy || {}) + '|' + (state.busyTick || 0);
 			if (k !== last.busy) { last.busy = k; paintBusy(state); }
 		}

@@ -19,7 +19,6 @@
 			busy: {},
 			sources: null,
 			pool: null,
-			diag: null,
 			logs: null,
 			logFull: false,
 			logAuto: CFI.prefs.get(CFI.prefs.NS + 'logs.auto', '1') !== '0',
@@ -168,7 +167,7 @@
 		 * 用 L.poll 每秒敲一下 store，不用 setInterval（lint 红线）。 */
 		function syncBusyTicker() {
 			var b = store.get().busy || {};
-			var need = !!(b.check || b.pool || b.diag || b.dns);
+			var need = !!(b.check || b.pool || b.dns);
 			if (need && !busyTick) {
 				poll.add(busyPulse, 1);
 				poll.start();
@@ -246,18 +245,6 @@
 				store.patch({ pool: out == null ? { state: 'unreachable' } : { state: 'ok', ips: ips } });
 			}, function () {
 				store.patch({ pool: { state: 'unreachable' } });
-			});
-		}
-
-		function actDiag() {
-			act('diag', CFI.ipc.LIMIT.diag, function () { return CFI.ipc.call([ 'diag' ]); }, function (out) {
-				var data = null;
-				if (typeof out === 'string') {
-					try { data = JSON.parse(out); } catch (e) { data = null; }
-				}
-				store.patch({ diag: data ? { state: 'ok', data: data } : { state: 'parse_error' } });
-			}, function () {
-				store.patch({ diag: { state: 'unreachable' } });
 			});
 		}
 
@@ -443,7 +430,7 @@
 				}
 			}, drawer);
 			var diagPane = CFI.panels.diag.mount({
-				check: actCheck, pool: actPool, diag: actDiag,
+				check: actCheck, pool: actPool,
 				gotoRun: function () { goto('run'); },
 				gotoSrc: function () {
 					pendingSrcOpen = true;
@@ -531,7 +518,7 @@
 			store.select(function (s) {
 				var st = s.status || {};
 				return [ CFI.store.diagKey(s), CFI.store.roundKey(st),
-					JSON.stringify(s.pool || null), JSON.stringify(s.diag || null),
+					JSON.stringify(s.pool || null),
 					JSON.stringify(s.busy || {}), s.busyTick || 0, Math.floor(Date.now() / 5000) ].join('##');
 			}, function (s) { diagPane.update(s); });
 
