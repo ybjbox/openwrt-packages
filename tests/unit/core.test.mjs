@@ -62,7 +62,7 @@ function load() {
 const CFI = load();
 
 test('构建版本与包版本一致', () => {
-	assert.equal(CFI.build, 'r131');
+	assert.equal(CFI.build, 'r136');
 });
 
 test('IPC：9 个方法与超时预算', () => {
@@ -115,6 +115,13 @@ test('六态语义：灯色与状态词分开，停止不当成故障', () => {
 	assert.equal(CFI.sem.tone({ state: 'error', reason: 'interrupted' }), 'bad');
 	assert.equal(CFI.sem.stateWord({ state: 'error', reason: 'no_results' }), '跑完 · 无达标');
 	assert.match(CFI.sem.why('empty_pool'), /候选池是空的/);
+	/* unreachable 不是「跑了一半停住」：状态词与解释必须同向 */
+	assert.equal(CFI.sem.stateWord({ state: 'unreachable', reason: 'hung' }), '没有回应');
+	assert.equal(CFI.sem.stateWord({ state: 'unreachable' }), '读取失败');
+	assert.match(CFI.sem.why('hung'), /没有回应/);
+	assert.match(CFI.sem.why('unreachable'), /调不到引擎/);
+	assert.ok(!/中途停了/.test(CFI.sem.why('hung')));
+	assert.ok(!/中途停了/.test(CFI.sem.why('unreachable')));
 });
 
 test('dns_targets 文本往返：注释、怪行、尾随空行都原样', () => {
@@ -133,30 +140,75 @@ test('dns_targets 文本往返：注释、怪行、尾随空行都原样', () =>
 	assert.equal(CFI.dns.textOf(CFI.dns.linesOf('')), '');
 });
 
-test('hash：新三区直通，旧四标签全部有别名', () => {
-	assert.equal(CFI.nav.parseHash('#cf-tab=board'), 'run');
-	assert.equal(CFI.nav.parseHash('#cf-tab=sources'), 'diag');
-	assert.equal(CFI.nav.parseHash('#cf-tab=logs'), 'diag');
-	assert.equal(CFI.nav.parseHash('#cf-tab=config'), 'set');
-	assert.equal(CFI.nav.parseHash('#cf-tab=nope'), null);
-	assert.equal(CFI.nav.parseHash(''), null);
+test('dns_targets 存储形态：分号单行往返字节不变，换行输入规范成单行', () => {
+	const s = 'jp.example.com 3 @NRT; # 注释; not-a-domain; us.example.com 1 example.com';
+	const lines = CFI.dns.linesOf(s);
+	assert.equal(lines.length, 4);
+	assert.equal(lines[1].kind, 'raw');
+	assert.equal(CFI.dns.textOf(lines), s);
+	assert.equal(CFI.dns.textOf(CFI.dns.linesOf('a.example.com 1\nb.example.com 2')),
+		'a.example.com 1; b.example.com 2');
 });
 
-test('存储迁移：旧键映射到 cfi2.*，旧键保留', () => {
+test('hash：#/cfi/<zone> 直通，旧 #cf-tab= 一律不识别', () => {
+	assert.equal(CFI.nav.parseRoute('#/cfi/run').zone, 'run');
+	assert.equal(CFI.nav.parseRoute('#/cfi/diag/logs').sub, 'logs');
+	assert.equal(CFI.nav.parseRoute('#/cfi/run/ip/1.1.1.1').arg, '1.1.1.1');
+	assert.equal(CFI.nav.parseRoute('#/cfi/set/dns').sub, 'dns');
+	assert.equal(CFI.nav.parseRoute('#cf-tab=board'), null);
+	assert.equal(CFI.nav.parseRoute('#cf-tab=config'), null);
+	assert.equal(CFI.nav.parseRoute('#/cfi/nope'), null);
+	assert.equal(CFI.nav.parseRoute(''), null);
+	assert.equal(CFI.nav.routeHash('run', 'ip', '1.1.1.1'), '#/cfi/run/ip/1.1.1.1');
+});
+
+test('存储：旧键零读写，新键只在 cfi3.* 前缀下', () => {
 	const ls = CFI.prefs;
-	// 用独立命名空间验证：直接写旧键再迁移
+	assert.equal(ls.NS, 'cfi3.');
 	ls.set('cf-ipcheck.tab', 'config');
-	ls.set('cf-ipcheck.logs.auto', '0');
-	ls.set('cf-ipcheck.groups.probe', '0');
-	ls.set('cfi2.migrated', '');
-	ls.migrate();
-	assert.equal(ls.get('cfi2.tab', ''), 'set');
-	assert.equal(ls.get('cfi2.diag.auto', ''), '0');
-	assert.equal(ls.get('cfi2.groups.probe', ''), '0');
-	assert.equal(ls.get('cf-ipcheck.tab', ''), 'config', '旧键要保留一版供回滚');
+	ls.set('cfi2.tab', 'diag');
+	assert.equal(ls.savedZone(), null, '旧键不能被当成当前区');
+	ls.set('cfi3.zone', 'set');
+	assert.equal(ls.savedZone(), 'set');
+	ls.set('cfi3.zone', 'nope');
+	assert.equal(ls.savedZone(), null, '未知区回落');
 });
 
-test('store：run 指纹覆盖进度与机房，rail 指纹只认有无滞留', () => {
+test('store：切片订阅只在选择器结果变化时重画，tx 只通知一轮', () => {
+	const s = CFI.store.create({ a: 1, b: 1 });
+	let paints = 0;
+	let seen = null;
+	s.select((st) => String(st.a), (st) => { paints++; seen = st.a; });
+	assert.equal(paints, 1, '订阅时先画一次');
+	s.patch({ a: 1 });
+	assert.equal(paints, 1, '同值不重画');
+	s.patch({ a: 2 });
+	assert.equal(paints, 2, '单字段 patch 只画一次');
+	assert.equal(seen, 2);
+	paints = 0;
+	s.tx(function () {
+		s.patch({ a: 3 });
+		s.patch({ a: 4 });
+		s.patch({ b: 2 });
+	});
+	assert.equal(paints, 1, '事务内多次 patch 只画一次');
+	paints = 0;
+	s.destroy();
+	s.patch({ a: 9 });
+	assert.equal(paints, 0, 'destroy 后迟到写入不再通知');
+});
+
+test('store：header 指纹按 10 秒桶聚合滞留秒数，按钮不会每秒重建', () => {
+	const a = CFI.store.headerKey({ state: 'running', items: [], staleFor: 3 }, {});
+	const b = CFI.store.headerKey({ state: 'running', items: [], staleFor: 9 }, {});
+	assert.equal(a, b, '同一桶内不重画');
+	const c = CFI.store.headerKey({ state: 'running', items: [], staleFor: 12 }, {});
+	assert.notEqual(a, c, '跨桶要重画');
+	const d = CFI.store.headerKey({ state: 'running', items: [], staleFor: 3 }, { run: { at: 1 } });
+	assert.notEqual(a, d, 'busy 位必须进指纹');
+});
+
+test('store：run 指纹覆盖进度与机房', () => {
 	const s = CFI.store.create({});
 	assert.equal(typeof s.get, 'function');
 	s.patch({ a: 1 });
@@ -164,16 +216,23 @@ test('store：run 指纹覆盖进度与机房，rail 指纹只认有无滞留', 
 	const k1 = CFI.store.runKey({ state: 'running', stage: 'probe', stage_done: 1, stage_total: 3, items: [] });
 	const k2 = CFI.store.runKey({ state: 'running', stage: 'probe', stage_done: 2, stage_total: 3, items: [] });
 	assert.notEqual(k1, k2);
-	const r1 = CFI.store.railKey({ state: 'running', items: [], staleFor: 3 }, {});
-	const r2 = CFI.store.railKey({ state: 'running', items: [], staleFor: 9 }, {});
-	assert.equal(r1, r2, '秒数不进指纹，避免每拍重建读数条');
+	const k3 = CFI.store.runKey({ state: 'done', items: [], dc_summary: [{ dc: 'NRT' }] });
+	const k4 = CFI.store.runKey({ state: 'done', items: [], dc_summary: [{ dc: 'SIN' }] });
+	assert.notEqual(k3, k4, '机房分布变了必须重画');
 });
 
-test('字段表：53 个字段 + dc_show 归组，短句与分组双向可查', () => {
+test('皮肤：显式选择直通，自动按宿主亮度回落', () => {
+	assert.equal(CFI.skin.resolve('paper'), 'paper');
+	assert.equal(CFI.skin.resolve('night'), 'night');
+	/* 单测的 window 桩没有 getComputedStyle/matchMedia → 按浅色处理 */
+	assert.equal(CFI.skin.resolve('auto'), 'paper');
+});
+
+test('字段表：54 个字段 + dc_show 归组，短句与分组双向可查', () => {
 	const groups = CFI.form.OPTIONS;
 	let n = 0;
 	Object.keys(groups).forEach((g) => { n += groups[g].length; });
-	assert.equal(n, 53);
+	assert.equal(n, 54);
 	assert.ok(groups.probe.indexOf('dc_show') >= 0);
 	assert.equal(groups.probeAdv.length, 21);
 	const map = CFI.form.create();

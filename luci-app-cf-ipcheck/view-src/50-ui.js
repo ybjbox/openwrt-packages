@@ -21,11 +21,16 @@
 			q = q || {};
 			if (q.label != null)
 				label.textContent = String(q.label);
-			b.disabled = !!q.disabled;
+			if (q.disabled !== undefined)
+				b.disabled = !!q.disabled;
 			b.className = 'btn ' + (q.kind || p.kind || 'quiet') + (q.busy ? ' busy' : '');
 			b.setAttribute('aria-busy', q.busy ? 'true' : 'false');
-			if (q.title != null)
-				b.setAttribute('title', q.title);
+			if (q.title !== undefined) {
+				if (q.title)
+					b.setAttribute('title', q.title);
+				else
+					b.removeAttribute('title');
+			}
 			if (q.hidden !== undefined)
 				b.hidden = !!q.hidden;
 		}
@@ -60,26 +65,577 @@
 		return { node: node, update: update };
 	}
 
-	/* 表格：表头 + 行；行数变化时整表重建（表格不是点击宿主），但列头保持同一颗 */
+	/* 表格：表头只建一次；tbody 按 key 复用行节点。
+	 * 指针按下到抬起之间不替换行内容（否则 Chromium 不合成 click）。 */
 	function Table(p) {
+		var caption = el('caption', { class: 'sr-only', text: p.caption || '' });
 		var thead = el('thead');
 		var tbody = el('tbody');
-		var table = el('table', { class: 'tbl' + (p.dense ? ' dense' : '') }, [ thead, tbody ]);
+		var table = el('table', { class: 'tbl' + (p.dense ? ' dense' : '') }, [ caption, thead, tbody ]);
 		var scroll = el('div', { class: 'tbl-scroll' }, table);
 		var cols = p.cols || [];
-		function head() {
+		var map = {};
+		var sigs = {};
+		var order = [];
+		var pointerDown = 0;
+		var pending = null;
+
+		function buildHead() {
 			CFI.dom.clear(thead);
-			thead.appendChild(el('tr', {}, cols.map(function (c) {
-				return el('th', { class: c.cls || '', text: c.h });
-			})));
+			var tr = el('tr');
+			cols.forEach(function (c) {
+				var th = el('th', { class: c.cls || '', scope: 'col', text: c.h });
+				if (c.sortable && p.onSort) {
+					th.tabIndex = 0;
+					th.setAttribute('aria-sort', 'none');
+					th.addEventListener('click', function () { p.onSort(c.key); });
+					th.addEventListener('keydown', function (ev) {
+						if (ev.key === 'Enter' || ev.key === ' ') {
+							ev.preventDefault();
+							p.onSort(c.key);
+						}
+					});
+					th.__sortKey = c.key;
+				}
+				tr.appendChild(th);
+			});
+			thead.appendChild(tr);
 		}
-		function update(rows) {
-			CFI.dom.clear(tbody);
-			(p.update || function () {})(tbody, rows || []);
+
+		function paintHead(sort) {
+			sort = sort || {};
+			var ths = thead.firstChild ? thead.firstChild.childNodes : [];
+			for (var i = 0; i < ths.length; i++) {
+				var key = ths[i].__sortKey;
+				if (!key)
+					continue;
+				var dir = sort.key === key ? sort.dir : 'none';
+				ths[i].setAttribute('aria-sort', dir === 'asc' ? 'ascending' : (dir === 'desc' ? 'descending' : 'none'));
+				ths[i].className = (cols[i] && cols[i].cls ? cols[i].cls + ' ' : '') + 'sortable' +
+					(sort.key === key ? ' s-' + dir : '');
+			}
 		}
-		head();
-		update(p.rows || []);
-		return { node: scroll, update: update, table: table };
+
+		tbody.addEventListener('mousedown', function () { pointerDown = 1; });
+		tbody.addEventListener('touchstart', function () { pointerDown = 1; });
+		try {
+			window.addEventListener('mouseup', function () {
+				if (!pointerDown)
+					return;
+				pointerDown = 0;
+				if (pending) {
+					var q = pending;
+					pending = null;
+					apply(q);
+				}
+			});
+			window.addEventListener('touchend', function () {
+				if (!pointerDown)
+					return;
+				pointerDown = 0;
+				if (pending) {
+					var q = pending;
+					pending = null;
+					apply(q);
+				}
+			});
+		} catch (e) {}
+
+		if (p.onActivate) {
+			tbody.addEventListener('click', function (ev) {
+				var tr = ev.target;
+				while (tr && tr !== tbody && tr.tagName !== 'TR')
+					tr = tr.parentNode;
+				if (tr && tr !== tbody && tr.__key != null)
+					p.onActivate(tr.__key, ev);
+			});
+			tbody.addEventListener('keydown', function (ev) {
+				if (ev.key !== 'Enter' && ev.key !== ' ')
+					return;
+				var tr = ev.target;
+				if (tr && tr.tagName === 'TR' && tr.__key != null) {
+					ev.preventDefault();
+					p.onActivate(tr.__key, ev);
+				}
+			});
+		}
+
+		function cellNode(it, i, c) {
+			return p.cell(it, i, c);
+		}
+
+		function buildRow(key, it, i) {
+			var tr = el('tr', { tabindex: '0' });
+			tr.__key = key;
+			tr.__cells = [];
+			cols.forEach(function (c) {
+				var td = el('td', { class: c.cls || '', 'data-label': c.h || '' });
+				CFI.dom.append(td, cellNode(it, i, c));
+				tr.__cells.push(td);
+				tr.appendChild(td);
+			});
+			return tr;
+		}
+
+		function apply(q) {
+			q = q || {};
+			var rows = q.rows || [];
+			var keys = [];
+			/* 空态占位行在每次更新前先摘掉，否则有数据时它会一直留在表尾 */
+			var empties = tbody.querySelectorAll ? tbody.querySelectorAll('.empty-row') : [];
+			for (var e = 0; e < empties.length; e++)
+				if (empties[e].parentNode)
+					empties[e].parentNode.removeChild(empties[e]);
+			
+			var i, key, it, tr;
+			for (i = 0; i < rows.length; i++) {
+				it = rows[i];
+				key = String(p.keyOf(it, i));
+				keys.push(key);
+				var sig = String(p.rowSig ? p.rowSig(it, i) : '');
+				tr = map[key];
+				if (!tr) {
+					tr = buildRow(key, it, i);
+					map[key] = tr;
+				} else if (sigs[key] !== sig) {
+					/* 内容变了：先清空单元格再重建（行节点保留） */
+					for (var k = 0; k < tr.__cells.length; k++)
+						CFI.dom.clear(tr.__cells[k]);
+					for (var c2 = 0; c2 < cols.length; c2++) {
+						tr.__cells[c2].setAttribute('data-label', cols[c2].h || '');
+						CFI.dom.append(tr.__cells[c2], cellNode(it, i, cols[c2]));
+					}
+				}
+				sigs[key] = sig;
+				tr.className = (i === 0 ? 'top ' : '') + (q.selected === key ? 'sel' : '');
+				tr.setAttribute('aria-selected', q.selected === key ? 'true' : 'false');
+			}
+			/* 顺序与删除：只在需要时动 DOM */
+			var same = order.length === keys.length;
+			for (i = 0; same && i < keys.length; i++)
+				if (order[i] !== keys[i])
+					same = false;
+			if (!same) {
+				var cur = tbody.firstChild;
+				for (i = 0; i < keys.length; i++) {
+					tr = map[keys[i]];
+					if (cur === tr) {
+						cur = cur.nextSibling;
+					} else {
+						tbody.insertBefore(tr, cur);
+					}
+				}
+				while (cur) {
+					var next = cur.nextSibling;
+					tbody.removeChild(cur);
+					cur = next;
+				}
+				order = keys;
+			}
+			for (key in map) {
+				if (!Object.prototype.hasOwnProperty.call(map, key))
+					continue;
+				if (keys.indexOf(key) < 0) {
+					if (map[key].parentNode)
+						map[key].parentNode.removeChild(map[key]);
+					delete map[key];
+					delete sigs[key];
+				}
+			}
+			if (q.hidden && q.hidden.length) {
+				scroll.className = 'tbl-scroll hide-' + q.hidden.join(' hide-');
+			} else {
+				scroll.className = 'tbl-scroll';
+			}
+			if (!rows.length && p.empty) {
+				CFI.dom.clear(tbody);
+				var td = el('td', { colspan: String(cols.length), class: 'tbl-empty' });
+				td.appendChild(p.empty());
+				var tr2 = el('tr', { class: 'empty-row' }, td);
+				tbody.appendChild(tr2);
+				order = [];
+			}
+		}
+
+		function update(q) {
+			if (pointerDown) {
+				pending = q;
+				return;
+			}
+			apply(q);
+		}
+
+		buildHead();
+		apply({ rows: p.rows || [], sort: p.sort, selected: p.selected });
+		return {
+			node: scroll,
+			update: update,
+			paintHead: paintHead,
+			focusKey: function (key) {
+				var tr = map[String(key)];
+				if (tr && tr.focus)
+					tr.focus();
+			}
+		};
+	}
+
+	/* 机房分布：<details> 按机房 key 复用。旧实现每拍清空重建 —— 展开状态能
+	 * 靠外部记录恢复，但真实点击落在「清空到重建」之间就不会展开（同 r29 事故）。
+	 * 这里只改单元格文本，节点与 open 状态都留在 DOM 里。 */
+	function DcList(p) {
+		var host = el('div', { class: 'dcs' });
+		var nodes = {};
+		var unit = 1000000;
+
+		function span(cls, text) {
+			return el('span', { class: cls, text: text });
+		}
+
+		function fmtSpeed(bps) {
+			if (bps == null || bps === '' || !isFinite(Number(bps)))
+				return CFI.fmt.DASH;
+			return (Number(bps) / unit).toFixed(2);
+		}
+
+		function build() {
+			var d = el('details', { class: 'dc' });
+			var code = el('span', { class: 'mono' });
+			var n = {
+				d: d, code: code,
+				count: span('r mono', ''),
+				med: span('r mono', ''),
+				best: span('mono', '')
+			};
+			d.appendChild(el('summary', {}, [ code, n.count, n.med, n.best ]));
+			n.inner = el('div', { class: 'dcitems' });
+			d.appendChild(n.inner);
+			n.ss = '';
+			n.isig = '';
+			return n;
+		}
+
+		function sumSig(r) {
+			return [ r.dc, r.count, r.ttfb_med, r.best_ip, r.empty ? 1 : 0 ].join('|');
+		}
+
+		function paintSummary(n, r) {
+			CFI.dom.clear(n.code);
+			n.code.appendChild(document.createTextNode(String(r.dc)));
+			if (r.empty)
+				n.code.appendChild(el('span', { class: 'tag', text: CFI.T('本轮无') }));
+			n.count.textContent = CFI.fmt.num(r.count);
+			n.med.textContent = CFI.fmt.ms(r.ttfb_med);
+			n.best.textContent = r.best_ip ? String(r.best_ip) : CFI.fmt.DASH;
+			n.d.className = 'dc' + (r.empty ? ' dim' : '');
+		}
+
+		function innerSig(r) {
+			var items = r.items || [];
+			var out = [ r.cap || 12, r.items_total || '', items.length ];
+			for (var i = 0; i < items.length; i++) {
+				var x = items[i] || {};
+				out.push(x.ip, x.ttfb_ms, x.speed_bps);
+			}
+			return out.join(',');
+		}
+
+		function paintInner(n, r) {
+			CFI.dom.clear(n.inner);
+			var items = (r.items || []).filter(function (x) { return x && typeof x === 'object'; });
+			var cap = Number(r.cap) > 0 ? Number(r.cap) : 12;
+			items.slice(0, cap).forEach(function (x) {
+				n.inner.appendChild(el('div', { class: 'dcitem' }, [
+					span('mono', x.ip ? String(x.ip) : CFI.fmt.DASH),
+					span('r mono', CFI.fmt.ms(x.ttfb_ms)),
+					span('r mono', fmtSpeed(x.speed_bps))
+				]));
+			});
+			var total = Number(r.items_total);
+			if (items.length > cap || (isFinite(total) && total > items.length))
+				n.inner.appendChild(el('div', { class: 'dc-note dim' },
+					CFI.T('这一块共 %s 条，这里列前 %s 条').format(String(items.length), String(Math.min(cap, items.length)))));
+		}
+
+		function update(rows, u) {
+			if (u != null)
+				unit = u;
+			var list = rows || [];
+			var keys = [];
+			var map = {};
+			for (var i = 0; i < list.length; i++) {
+				var r = list[i];
+				if (!r)
+					continue;
+				var code = String(r.dc);
+				keys.push(code);
+				map[code] = r;
+			}
+			for (var code2 in nodes) {
+				if (!Object.prototype.hasOwnProperty.call(nodes, code2))
+					continue;
+				if (keys.indexOf(code2) < 0) {
+					if (nodes[code2].d.parentNode)
+						nodes[code2].d.parentNode.removeChild(nodes[code2].d);
+					delete nodes[code2];
+				}
+			}
+			for (var k = 0; k < keys.length; k++) {
+				var key = keys[k];
+				var row = map[key];
+				var n = nodes[key];
+				if (!n) {
+					n = build();
+					nodes[key] = n;
+				}
+				var ss = sumSig(row);
+				if (n.ss !== ss) {
+					n.ss = ss;
+					paintSummary(n, row);
+				}
+				var isig = innerSig(row);
+				if (n.isig !== isig) {
+					n.isig = isig;
+					paintInner(n, row);
+				}
+			}
+			/* 只调整顺序与归属，不动已存在的节点 */
+			var cur = host.firstChild;
+			for (var j = 0; j < keys.length; j++) {
+				var node = nodes[keys[j]].d;
+				if (cur === node) {
+					cur = cur.nextSibling;
+				} else {
+					host.insertBefore(node, cur);
+				}
+			}
+			while (cur) {
+				var next = cur.nextSibling;
+				host.removeChild(cur);
+				cur = next;
+			}
+		}
+
+		return {
+			node: host,
+			update: update,
+			openSet: function () {
+				var out = [];
+				for (var k in nodes)
+					if (Object.prototype.hasOwnProperty.call(nodes, k) && nodes[k].d.open)
+						out.push(k);
+				return out;
+			},
+			nodeFor: function (code) { return nodes[String(code)] ? nodes[String(code)].d : null; }
+		};
+	}
+
+	/* 日志：增量追加 + 滚动锚点 + 过滤/暂停。 */
+	function LogView(p) {
+		var box = el('div', { class: 'logbox', 'aria-live': 'off', tabindex: '0' });
+		var meta = el('span', { class: 'log-meta dim' });
+		var pill = el('button', { class: 'log-pill btn link', type: 'button', hidden: true });
+		var cap = p && p.cap ? p.cap : 600;
+		var prev = '';
+		var rows = 0;
+		var filter = 'all';
+		var full = false;
+		var stick = true;
+
+		function nearBottom() {
+			return box.scrollHeight - box.scrollTop - (box.clientHeight || 0) < 24;
+		}
+
+		function appendLine(line) {
+			var st = CFI.log.stamp(line, full);
+			var tone = CFI.log.tone(line);
+			var row = el('div', { class: 'lline' + (tone ? ' ' + tone : '') }, [
+				el('span', { class: 'lts', text: st ? st.shown : '', title: st ? st.title : '' }),
+				el('span', { class: 'lmsg', text: st ? st.rest : line })
+			]);
+			box.appendChild(row);
+			rows++;
+			if (rows > cap) {
+				var h = box.scrollHeight;
+				while (rows > cap && box.firstChild) {
+					box.removeChild(box.firstChild);
+					rows--;
+				}
+				box.scrollTop = Math.max(0, box.scrollTop - (h - box.scrollHeight));
+			}
+		}
+
+		function rebuild(text) {
+			CFI.dom.clear(box);
+			rows = 0;
+			var lines = String(text).split(/\r?\n/);
+			for (var i = 0; i < lines.length; i++) {
+				if (lines[i])
+					appendLine(lines[i]);
+			}
+		}
+
+		function ingest(text) {
+			text = String(text || '');
+			var follow = nearBottom();
+			if (text === prev)
+				return;
+			if (prev && text.indexOf(prev) === 0) {
+				var tail = text.slice(prev.length).split(/\r?\n/);
+				for (var i = 0; i < tail.length; i++) {
+					if (tail[i])
+						appendLine(tail[i]);
+				}
+			} else if (prev && (prev.indexOf(text) === 0 ||
+					(text.length < prev.length && prev.slice(-text.length) === text))) {
+				/* 日志被轮转/截断：新文本只是旧文本的一段（掐头或去尾）。 */
+				rebuild(text);
+				if (rows)
+					appendLine(CFI.T('日志已截断：较早的内容被丢弃'));
+			} else {
+				rebuild(text);
+			}
+			prev = text;
+			if (stick && nearBottom()) {
+				box.scrollTop = box.scrollHeight;
+			} else {
+				pill.hidden = false;
+				pill.textContent = CFI.T('有新日志 ↓');
+			}
+			meta.textContent = CFI.T('%s 行').format(String(rows));
+		}
+
+		pill.addEventListener('click', function () {
+			box.scrollTop = box.scrollHeight;
+			pill.hidden = true;
+		});
+
+		function setFilter(f) {
+			filter = f;
+			box.className = 'logbox f-' + f;
+		}
+
+		function setFull(b) {
+			full = !!b;
+			var text = prev;
+			rebuild(text);
+			if (text)
+				prev = text;
+		}
+
+		function setPaused(b) {
+			box.className = 'logbox f-' + filter + (b ? ' paused' : '');
+		}
+
+		function setFollow(b) {
+			stick = !!b;
+			if (stick) {
+				box.scrollTop = box.scrollHeight;
+				pill.hidden = true;
+			}
+		}
+
+		function notice(text) {
+			CFI.dom.clear(box);
+			rows = 0;
+			prev = '';
+			meta.textContent = '';
+			box.appendChild(el('p', { class: 'log-notice dim', text: String(text || '') }));
+		}
+
+		return {
+			node: el('div', { class: 'logwrap' }, [ meta, box, pill ]),
+			ingest: ingest,
+			notice: notice,
+			setFilter: setFilter,
+			setFull: setFull,
+			setPaused: setPaused,
+			setFollow: setFollow,
+			box: box,
+			count: function () { return rows; }
+		};
+	}
+
+	/* 详情抽屉：桌面右侧 sheet，移动端 bottom sheet；焦点陷阱与归还。 */
+	function Drawer(p) {
+		var overlay = el('div', { class: 'drawer-mask', hidden: true });
+		var panel = el('div', { class: 'drawer', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'cfi-drawer-t', tabindex: '-1' });
+		var title = el('h2', { class: 'drawer-t', id: 'cfi-drawer-t' });
+		var body = el('div', { class: 'drawer-b' });
+		var closeBtn = el('button', { class: 'drawer-x btn quiet', type: 'button', 'aria-label': CFI.T('关闭') }, '×');
+		panel.appendChild(el('div', { class: 'drawer-h' }, [ title, closeBtn ]));
+		panel.appendChild(body);
+		var host = el('div', { class: 'drawer-host' }, [ overlay, panel ]);
+		var lastFocus = null;
+		var openFlag = false;
+
+		function onKey(ev) {
+			if (!openFlag)
+				return;
+			if (ev.key === 'Escape') {
+				ev.preventDefault();
+				close();
+				return;
+			}
+			if (ev.key !== 'Tab')
+				return;
+			var f = panel.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+			if (!f.length)
+				return;
+			var first = f[0], last = f[f.length - 1];
+			if (ev.shiftKey && document.activeElement === first) {
+				ev.preventDefault();
+				last.focus();
+			} else if (!ev.shiftKey && document.activeElement === last) {
+				ev.preventDefault();
+				first.focus();
+			}
+		}
+
+		function open(heading, content) {
+			var wasOpen = openFlag;
+			/* 轮询只更新读数时，焦点不许被抽屉抢走；归还得回到打开前那颗元素 */
+			if (!wasOpen)
+				lastFocus = document.activeElement;
+			title.textContent = heading || '';
+			CFI.dom.clear(body);
+			body.appendChild(content);
+			overlay.hidden = false;
+			panel.hidden = false;
+			host.className = 'drawer-host open';
+			openFlag = true;
+			try { document.body.classList.add('cfi-drawer-open'); } catch (e) {}
+			if (!wasOpen) {
+				try { panel.focus(); } catch (e2) {}
+			}
+		}
+
+		function close() {
+			if (!openFlag)
+				return;
+			openFlag = false;
+			host.className = 'drawer-host';
+			panel.hidden = true;
+			overlay.hidden = true;
+			try { document.body.classList.remove('cfi-drawer-open'); } catch (e) {}
+			try { if (lastFocus && lastFocus.focus) lastFocus.focus(); } catch (e2) {}
+			if (p.onClose)
+				p.onClose();
+		}
+
+		closeBtn.addEventListener('click', close);
+		overlay.addEventListener('click', close);
+		document.addEventListener('keydown', onKey);
+		panel.hidden = true;
+		overlay.hidden = true;
+
+		return {
+			node: host,
+			open: open,
+			close: close,
+			body: body,
+			isOpen: function () { return openFlag; },
+			destroy: function () { document.removeEventListener('keydown', onKey); close(); }
+		};
 	}
 
 	/* 折叠盒：只接管交互与 aria；内容宿主由调用方给 */
@@ -118,7 +674,10 @@
 			}
 		});
 		apply(open);
-		return { node: box, apply: apply, body: body };
+		return {
+			node: box, apply: apply, body: body,
+			isOpen: function () { return box.className.indexOf('open') >= 0; }
+		};
 	}
 
 	function Empty(p) {
@@ -138,43 +697,47 @@
 		]);
 	}
 
-	/* 进度：阶段清单 + 两帧起跳的进度条 */
+	/* 进度：阶段清单 + 两帧起跳的进度条；只改节点，不重建 */
 	function Progress(st) {
 		var stages = [
-			{ id: 'fetch', label: T('拉取社区源') },
-			{ id: 'canary', label: T('出口自检') },
-			{ id: 'probe', label: T('探测候选') },
-			{ id: 'verify', label: T('多样本验证') },
-			{ id: 'colo', label: T('识别机房') },
-			{ id: 'speed', label: T('测吞吐') },
-			{ id: 'publish', label: T('写产物') }
+			{ id: 'fetch', label: CFI.T('拉取社区源') },
+			{ id: 'canary', label: CFI.T('出口自检') },
+			{ id: 'probe', label: CFI.T('探测候选') },
+			{ id: 'verify', label: CFI.T('多样本验证') },
+			{ id: 'colo', label: CFI.T('识别机房') },
+			{ id: 'speed', label: CFI.T('测吞吐') },
+			{ id: 'publish', label: CFI.T('写产物') }
 		];
 		var bar = el('i', { class: 'pbar-fill' });
 		var pct = el('span', { class: 'pbar-n n', text: '0%' });
 		var wrap = el('div', { class: 'pbar' }, [ el('div', { class: 'pbar-track' }, bar), pct ]);
 		var list = el('ol', { class: 'steps' });
 		var node = el('div', { class: 'prog' }, [ wrap, list ]);
+		var items = [];
+		stages.forEach(function (sg) {
+			var row = el('li', { class: 'step' }, [
+				el('span', { class: 'step-l', text: sg.label }),
+				el('span', { class: 'step-n n', text: '' })
+			]);
+			items.push(row);
+			list.appendChild(row);
+		});
 		var lastPct = -1;
 
 		function paint(s) {
+			s = s || {};
 			var ids = stages.map(function (x) { return x.id; });
 			var cur = ids.indexOf(s.stage);
-			CFI.dom.clear(list);
 			stages.forEach(function (sg, i) {
 				var state = 'todo';
-				if (cur < 0)
-					state = 'todo';
-				else if (i < cur)
-					state = 'done';
-				else if (i === cur)
-					state = 'now';
-				if (sg.id === 'publish' && s.upload && cur === ids.length - 1 && i === ids.length - 1)
-					state = 'now';
-				var n = i === cur ? (s.stage_done || 0) + '/' + (s.stage_total || 0) : '';
-				list.appendChild(el('li', { class: 'step ' + state }, [
-					el('span', { class: 'step-l', text: sg.label }),
-					el('span', { class: 'step-n n', text: n })
-				]));
+				if (cur >= 0) {
+					if (i < cur)
+						state = 'done';
+					else if (i === cur)
+						state = 'now';
+				}
+				items[i].className = 'step ' + state;
+				items[i].lastChild.textContent = i === cur ? (s.stage_done || 0) + '/' + (s.stage_total || 0) : '';
 			});
 			var p = 0;
 			if (s.stage_total > 0)
@@ -185,8 +748,6 @@
 				lastPct = p;
 				pct.textContent = p + '%';
 			}
-			/* 两帧起跳：面板每次按指纹重建时新节点没有"改之前"，直接写终值
-			 * transition 不会动（r55 的坑）。先写上一帧比例，下一帧再改目标。 */
 			if (typeof requestAnimationFrame === 'function') {
 				var prev = bar.__p == null ? 0 : bar.__p;
 				bar.style.transform = 'scaleX(' + (prev / 100) + ')';
@@ -252,6 +813,9 @@
 		Button: Button,
 		Readout: Readout,
 		Table: Table,
+		DcList: DcList,
+		LogView: LogView,
+		Drawer: Drawer,
 		Collapse: Collapse,
 		Empty: Empty,
 		Msg: Msg,

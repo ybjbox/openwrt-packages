@@ -1,29 +1,49 @@
 (function (CFI) {
 	'use strict';
 
-	/* ---- 导航：3 区 + 旧 hash 别名 ------------------------------------- */
+	/* ---- 导航：只认 #/cfi/<zone>[/<sub>[/<arg>]] --------------------------
+	 * 旧版 #cf-tab= 前缀一律不识别（2026-10-29 重设计时明确重置），
+	 * 落默认区。开抽屉用 pushState（Back 即关），切区用 replaceState。 */
 	var ZONES = [ 'run', 'diag', 'set' ];
-	var HASH_ALIAS = {
-		board: 'run', sources: 'diag', logs: 'diag', config: 'set',
-		run: 'run', diag: 'diag', set: 'set'
-	};
 
-	function parseHash(hash) {
-		var m = /#cf-tab=([a-z]+)/.exec(String(hash || ''));
-		if (!m)
+	function parseRoute(hash) {
+		var h = String(hash || '').replace(/^#\/?/, '');
+		var parts = h.split('/').filter(function (x) { return x !== ''; });
+		if (!parts.length || parts[0] !== 'cfi')
 			return null;
-		return HASH_ALIAS[m[1]] || null;
+		var zone = parts[1];
+		if (ZONES.indexOf(zone) < 0)
+			return null;
+		return {
+			zone: zone,
+			sub: parts[2] || '',
+			arg: parts[3] ? decodeURIComponent(parts[3]) : ''
+		};
 	}
 
-	function writeHash(zone) {
+	function routeHash(zone, sub, arg) {
+		var h = '#/cfi/' + zone;
+		if (sub)
+			h += '/' + sub;
+		if (arg)
+			h += '/' + encodeURIComponent(arg);
+		return h;
+	}
+
+	function writeRoute(zone, sub, arg, push) {
 		try {
-			if (window.history && window.history.replaceState)
-				window.history.replaceState(null, '', '#cf-tab=' + zone);
+			var h = routeHash(zone, sub, arg);
+			if (window.location && window.location.hash === h)
+				return;
+			if (push && window.history && window.history.pushState)
+				window.history.pushState(null, '', h);
+			else if (window.history && window.history.replaceState)
+				window.history.replaceState(null, '', h);
 		} catch (e) {}
 	}
 
-	/* ---- 本地偏好：旧键一次性迁移，旧键保留一版（回滚可用） ------------ */
-	var NS = 'cfi2.';
+	/* ---- 本地偏好：新前缀 cfi3.*；旧键一律不读不删 ---------------------- */
+	var NS = 'cfi3.';
 
 	function lsGet(key, def) {
 		try {
@@ -38,38 +58,26 @@
 		try { window.localStorage.setItem(key, String(val)); } catch (e) {}
 	}
 
-	function migrate() {
-		if (lsGet(NS + 'migrated', '') === '1')
-			return;
-		var tab = lsGet('cf-ipcheck.tab', '');
-		if (tab && HASH_ALIAS[tab])
-			lsSet(NS + 'tab', HASH_ALIAS[tab]);
-		var auto = lsGet('cf-ipcheck.logs.auto', '');
-		if (auto === '0' || auto === '1')
-			lsSet(NS + 'diag.auto', auto);
-		try {
-			var i, k;
-			for (i = 0; i < window.localStorage.length; i++) {
-				k = window.localStorage.key(i);
-				if (k && k.indexOf('cf-ipcheck.groups.') === 0) {
-					var tail = k.slice('cf-ipcheck.groups.'.length);
-					lsSet(NS + 'groups.' + tail, window.localStorage.getItem(k));
-				}
-			}
-		} catch (e2) {}
-		lsSet(NS + 'migrated', '1');
+	function getBool(key, def) {
+		var v = lsGet(key, '');
+		if (v === '1') return true;
+		if (v === '0') return false;
+		return !!def;
 	}
 
 	function savedZone() {
-		var z = lsGet(NS + 'tab', '');
-		return HASH_ALIAS[z] ? HASH_ALIAS[z] : null;
+		var z = lsGet(NS + 'zone', '');
+		return ZONES.indexOf(z) >= 0 ? z : null;
 	}
 
 	function rememberZone(zone) {
-		lsSet(NS + 'tab', zone);
+		lsSet(NS + 'zone', zone);
 	}
 
-	/* ---- dns_targets：uci 单行文本 ⇄ 行清单 ---------------------------- */
+	/* ---- dns_targets：uci 单行文本（; 分隔）⇄ 行清单 --------------------
+	 * uci 的 option 值不能含换行（写进去会坏配置文件），所以存储形态是
+	 * a 1; b 2 这种单行。解析同时接受分号与换行（手工编辑/环境变量），
+	 * 回写统一用分号加空格 —— 往返字节不变。 */
 	var DNS_LIMIT = 10;
 
 	function dnsLinesOf(text) {
@@ -77,10 +85,10 @@
 		var all = String(text || '');
 		if (all === '')
 			return out;
-		all.split(/\r?\n/).forEach(function (line) {
+		all.split(/\r?\n|;/).forEach(function (line) {
 			var t = String(line).replace(/^\s+|\s+$/g, '');
 			if (!t || t.charAt(0) === '#' || t.indexOf('.') < 0) {
-				out.push({ kind: 'raw', text: String(line) });
+				out.push({ kind: 'raw', text: t });
 				return;
 			}
 			var tok = t.split(/\s+/);
@@ -117,7 +125,7 @@
 				s += ' @' + r.code;
 			(Array.isArray(r.rest) ? r.rest : []).forEach(function (x) { s += ' ' + x; });
 			return s.replace(/\s+$/, '');
-		}).join('\n');
+		}).join('; ');
 	}
 
 	/* ---- 日志 ---------------------------------------------------------- */
@@ -148,7 +156,7 @@
 		if (ymd === today)
 			shown = hmss;
 		else if (ymd === yesterday)
-			shown = T('昨天') + ' ' + hmss;
+			shown = CFI.T('昨天') + ' ' + hmss;
 		else if (m[1] === String(now.getFullYear()))
 			shown = m[2] + '-' + m[3] + ' ' + hmss;
 		else
@@ -156,11 +164,39 @@
 		return { shown: shown, title: ln.slice(0, m[0].length), rest: ln.slice(m[0].length).replace(/^[ \t]+/, '') };
 	}
 
-	CFI.nav = { ZONES: ZONES, alias: HASH_ALIAS, parseHash: parseHash, writeHash: writeHash };
+	/* ---- 皮肤：自动 / 纸 / 夜（蓝图） ---------------------------------- */
+	function hostDark() {
+		try {
+			var bg = window.getComputedStyle && document.body ?
+				window.getComputedStyle(document.body).backgroundColor : '';
+			var m = /rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?/.exec(String(bg || ''));
+			if (m) {
+				var alpha = m[4] === undefined ? 1 : Number(m[4]);
+				if (alpha > 0.1) {
+					var lum = 0.299 * Number(m[1]) + 0.587 * Number(m[2]) + 0.114 * Number(m[3]);
+					return lum < 120;
+				}
+			}
+		} catch (e) {}
+		try {
+			return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+		} catch (e2) {
+			return false;
+		}
+	}
+
+	function skinResolve(mode) {
+		if (mode === 'paper' || mode === 'night')
+			return mode;
+		return hostDark() ? 'night' : 'paper';
+	}
+
+	CFI.nav = { ZONES: ZONES, parseRoute: parseRoute, routeHash: routeHash, writeRoute: writeRoute };
 	CFI.prefs = {
-		NS: NS, get: lsGet, set: lsSet, migrate: migrate,
+		NS: NS, get: lsGet, set: lsSet, getBool: getBool,
 		savedZone: savedZone, rememberZone: rememberZone
 	};
 	CFI.dns = { LIMIT: DNS_LIMIT, linesOf: dnsLinesOf, textOf: dnsTextOf };
+	CFI.skin = { hostDark: hostDark, resolve: skinResolve };
 	CFI.log = { tone: logTone, stamp: logStamp, TS_RE: LOG_TS_RE };
 })(CFI);

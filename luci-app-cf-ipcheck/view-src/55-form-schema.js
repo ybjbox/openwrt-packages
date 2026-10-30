@@ -16,7 +16,9 @@
 		return o;
 	}
 
-	/* 渲染完成后把完整解释贴到字段行的悬停里；找不到说明节点的字段跳过。 */
+	/* 渲染完成后把完整解释挂到字段旁：悬停保留 title，另加一个「?」按钮
+	 * 可点开/收起（触屏可达）。按钮挂在 .cbi-value-description 里，
+	 * 不在 .cbi-value-field 内 —— 后者会让 CBI 取值读错（r107 事故）。 */
 	function applyHelp(root) {
 		if (!root || !root.querySelectorAll)
 			return;
@@ -31,13 +33,37 @@
 			if (!key || !HELP[key])
 				continue;
 			var desc = rows[i].querySelector('.cbi-value-description');
-			if (desc && desc.setAttribute)
+			if (!desc || !desc.appendChild)
+				continue;
+			if (desc.setAttribute)
 				desc.setAttribute('title', HELP[key]);
+			if (desc.__cfiHelp)
+				continue;
+			desc.__cfiHelp = true;
+			var id = 'cfi-help-' + key;
+			var body = CFI.dom.el('div', { class: 'help-body', id: id, hidden: true, text: HELP[key] });
+			var btn = CFI.dom.el('button', {
+				class: 'help-q', type: 'button',
+				'aria-expanded': 'false', 'aria-controls': id,
+				'aria-label': T('展开说明')
+			}, '?');
+			btn.addEventListener('click', (function (b, box) {
+				return function (ev) {
+					if (ev && ev.preventDefault)
+						ev.preventDefault();
+					var open = box.hidden;
+					box.hidden = !open;
+					b.setAttribute('aria-expanded', open ? 'true' : 'false');
+				};
+			})(btn, body));
+			desc.appendChild(btn);
+			desc.appendChild(body);
 		}
 	}
 var GROUPS = [
 	{ id: 'basic',  title: '基本设置',   hint: '开关、周期与日志' },
-	{ id: 'pool',   title: '候选池来源', hint: '候选从哪来；源清单在「源与检测」页编辑' },
+	{ id: 'pool',   title: '候选池来源', hint: '候选从哪来' },
+	{ id: 'sources', title: '源清单',    hint: '每行一个 HTTPS 地址；改完点页面底部「保存并应用」' },
 	/* r98 P1-1：原来「测速与判定」一个组装了 31 个字段（占全部配置的 62%）。
 	 * 一屏 31 个数字的结果是所有人都不改、全用默认 —— 等于这些旋钮白给。
 	 * 现在按「你会不会改」重新切：门槛与口径留在这一组，机制细节挪到下一组并默认收起。 */
@@ -50,6 +76,7 @@ var GROUPS = [
 var GROUP_OPTIONS = {
 	basic: [ 'enabled', 'interval_hours', 'probe_domains', 'probe_port', 'log_max_kb' ],
 	pool:  [ 'use_official_ranges', 'reuse_last', 'neighbor_expand' ],
+	sources: [ 'community_sources' ],
 	/* 常驻 10 项 = 门槛 3 + 读数口径 3 + 吞吐判定 4。
 	 * 挑的标准只有一条：这几项改了会立刻改变「你看到什么结果」；
 	 * 其余 21 项改的是「怎么测」，属于调线路的人才需要的，
@@ -74,8 +101,9 @@ var GROUP_OPTIONS = {
 	gist:  [ 'upload_gist', 'gist_id', 'gist_file', 'gist_token', 'token_file' ]
 };
 
-	/* 54 个字段里 53 个在这里；第 54 个 community_sources 由源清单那张独立 Map
-	 * 声明（全文只能有一处 DynamicList）。 */
+	/* 54 个字段全在这一张 Map 里（含 community_sources）。
+	 * 全页只有一张 CBI Map：两张 Map 会各自刷一次共享的 uci 变更，
+	 * 清空一个文本字段时第二次 delete 会 404 并中断整批应用（r136 实测）。 */
 	function create() {
 		var m = new form.Map('cf_ipcheck', _('实测参数'),
 			_('用带真实 SNI 的 HTTPS 探测实测。'));
@@ -116,6 +144,11 @@ o = field(s, 'basic', form.Value, 'log_max_kb',
 		var src = m.section(form.TypedSection, 'global', _('候选池来源'));
 		src.anonymous = true;
 
+o = field(src, 'sources', form.DynamicList, 'community_sources',
+	_('社区优选源 URL'), _('每行一个 HTTPS 文本地址；改完点页面底部「保存并应用」。'),
+	_('这些地址返回纯文本，里面夹着一堆 IPv4；引擎逐行提取、去重后进候选池，没有格式要求。'
+			+ '改完必须点页面底部的「保存并应用」才会写进配置文件 —— LuCI 的「保存」只把改动留在 rpcd 进程内存里，引擎读不到。'));
+
 o = field(src, 'pool', form.Flag, 'use_official_ranges',
 	_('Cloudflare 官方网段'), _('抽稀后加进候选池。默认关。'),
 	_('打开后会把 Cloudflare 官方公布的网段抽稀后并进候选池。官方网段有几百万个地址，全测不现实，所以只随机取样一部分。默认关是因为社区源通常已经把近期好用的段捞过一遍了；只有当社区源集体失效、或你想自己从头趟一遍时才有必要打开。'));
@@ -136,9 +169,7 @@ o = field(src, 'pool', form.Flag, 'neighbor_expand',
 		 * 用户一动页面点保存，就会把默认开的功能静默写成关。 */
 		o.default = '1';
 
-		/* community_sources 不在这里声明 —— 它由 sourcesMap() 单开一张 Map，
-		 * 渲染进「源与检测」页的宿主（原因与真机取证见 6b 的注释）。
-		 * 这一节剩下的开关仍是候选池的一部分。 */
+		/* community_sources 也在这一节，group=sources，界面上单独成组。 */
 
 		var thr = m.section(form.TypedSection, 'global', _('测速与判定'));
 		thr.anonymous = true;

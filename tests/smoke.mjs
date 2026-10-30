@@ -48,7 +48,9 @@ const documentStub = {
 	body: makeEl('body'),
 	createElement: makeEl,
 	createElementNS: makeEl,
-	createTextNode: (t) => ({ nodeType: 3, textContent: String(t) })
+	createTextNode: (t) => ({ nodeType: 3, textContent: String(t) }),
+	addEventListener() {},
+	removeEventListener() {}
 };
 
 const mapNode = makeEl('div');

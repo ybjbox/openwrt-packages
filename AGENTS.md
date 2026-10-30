@@ -37,12 +37,10 @@
 ```sh
 sh tools/build-view.sh --check   # 产物与源一致（改完源码先跑 build）
 sh tests/lint.sh                 # 期望：all lint checks passed
-node --test tests/unit/*.test.mjs  # 纯逻辑：六态/格式化/dns 往返/hash 迁移/指纹
+node --test tests/unit/*.test.mjs  # 纯逻辑 + 组件：六态/格式化/dns 往返/切片订阅/表格复用/日志增量/抽屉焦点
 node tests/contract.mjs          # 引擎↔ucode↔ACL↔uci↔字段表↔产物 156 条
 node tests/smoke.mjs             # 最小 DOM 里跑一遍 render
 ```
-
-`tests/viewtest.mjs` 是 r120 及以前的旧桩测，**CI 已不再运行它**，只作行为参考。
 
 引擎的离线回归（`tests/test_cf_ipcheck.sh` 与 `cf-ipcheck selftest`）在 Windows 开发机上
 会挂住（busybox 语义差异），**由 CI 覆盖**。别把本地超时当成回归。
@@ -69,6 +67,10 @@ git ls-files -s luci-app-cf-ipcheck/root/usr/libexec/cf-ipcheck/apply-dns.sh   #
 - **不加 `po/`**：`i18n-scan.pl` 对 `.js` 只认 `_()` / `N_()`，不认自定义包装 `T()`，
   加了会造成"半翻译"（页面主体永远中文）。
 - **吞吐单位固定十进制 MB/s**（`speed_mbytes`），lint 里 `speed_mbps` / `speed_mibs` 出现即红。
+- **全页只允许一张 CBI Map**：两张会各刷一次共享的 uci 变更，清空文本字段时第二次
+  `uci delete` 返回 404 并中断整批保存（r136 真机复现）。`community_sources` 是普通分组字段。
+- **URL 与本地存储已重置**：只认 `#/cfi/...` 与 `cfi3.*`；旧 `#cf-tab=`、`cf-ipcheck.*`、
+  `cfi2.*` 一律不读不删，旧 hash 落「运行」。
 - **新增断言要做反向验证**：把对应的代码改坏，确认测试真的会红，否则断言可能空转。
 - **前端出包后过一道关卡**：把设备上已安装的压缩版取回来做语法检查
   （jsmin 可能压坏新写法，本地测试发现不了）。

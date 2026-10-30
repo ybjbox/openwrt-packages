@@ -244,7 +244,7 @@ if [ -f "$ENGINE" ] && [ -f "$VIEW" ]; then
     # 为什么不直接正则扫引擎全文：Gist 载荷、Cloudflare /ips 的响应、自检里的
     # 样例 JSON 也都是 "key": 形状，扫全文会把它们误当契约（files/content/result）。
     STATUS_KEYS="state started finished pool qualified usable intercepted counts domains items reason budget port enabled interval stage stage_done stage_total upload dc_show"
-    ITEM_KEYS="ip code connect_ms tls_ms ttfb_ms total_ms colo speed_mbytes domain loss jitter_ms net_ttfb_ms ray_ok"
+    ITEM_KEYS="ip code connect_ms tls_ms ttfb_ms total_ms colo speed_mbytes speed_mib domain loss jitter_ms net_ttfb_ms ray_ok"
     SOURCE_KEYS="url http rc ips cf_in"
 
     # 先把反斜杠去掉：顶层 JSON 写 "key":，items 那串写 \"key\":，去斜杠后同形。
@@ -332,9 +332,6 @@ if [ -f "$VIEW" ] && [ -f "$ENGINE" ]; then
         ' | sort -u > "$TMP_GROUPS"
     grep -oE "field\([a-z]+, '[A-Za-z]+', form\.[A-Za-z]+, '[a-z_]+'" "$VIEW" |
         sed -E "s/.*, '([a-z_]+)'$/\1/" | sort > "$TMP_OPT"
-    # 源清单那张独立 Map 仍是手写 option（不在配置页的分组里），单独并进字段集
-    printf '%s\n' community_sources >> "$TMP_OPT"
-    sort -o "$TMP_OPT" "$TMP_OPT"
 
     # 空集合必须红：下面都是「对提取到的每一条做判断」，提取失败时一条都不跑，
     # 脚本会打印 PASS —— 改声明形状时最容易掉进去的坑。
@@ -760,61 +757,47 @@ if [ -f "$VIEW" ]; then
 fi
 
 # --- RED LINE 15: 源清单编辑只有一个出处，且「检测之前必先保存」 --------------------
-# r41 把源清单的编辑行从「配置」搬进「源与检测」。两个会静默坏掉的点：
-#   1) 同一份 DynamicList 若在两个面板各渲染一遍，就是两个出处（同 cbid 两份控件），
-#      改一处、存另一处 —— 页面显示的和引擎读到的不是一份清单；
+# r41 把源清单的编辑行从「配置」搬进「源与检测」。会静默坏掉的点：
+#   1) 同一份 DynamicList 若声明两次，就是两个出处（改一处、存另一处）；
 #   2) 引擎的 check_sources 从 UCI 读清单，所以没保存就检测 = 拿旧清单的结果骗人。
-# 这两条都是"看起来好好的、数值却对不上"的类型，静态钉住。
+# r136 起全页只有一张 CBI Map：两张 Map 会各自刷一次共享的 uci 变更，
+# 清空一个文本字段时第二次 delete 会 404 并中断整批应用（真机复现）。
 echo "=== [15/15] Red line 15: source editor has one home; the check never writes ==="
 if [ -f "$VIEW" ]; then
     rl15=0
-    # 这一项在全文只能声明一次（两张 Map 各一份 = 两个出处，改一处存另一处）
-    decl=$(grep -c "option(form.DynamicList, 'community_sources'" "$VIEW")
+    decl=$(grep -c "form.DynamicList, 'community_sources'" "$VIEW")
     if [ "$decl" = "1" ]; then
-        echo "[PASS] edit: community_sources 全文只声明一次（在源页那张只含它的 Map 里）"
+        echo "[PASS] edit: community_sources 全文只声明一次"
     else
-        echo "[FAIL] edit: community_sources 被声明了 $decl 次 —— 必须恰好 1 次（源页那张 Map）"
+        echo "[FAIL] edit: community_sources 被声明了 $decl 次 —— 必须恰好 1 次"
         rl15=1
     fi
-    # 配置页那张 Map 不该再分组它，否则会出现第二个输入区
     grp=$(sed -n '/^var GROUP_OPTIONS = {/,/^};/p' "$VIEW" | grep -c "community_sources")
-    if [ "$grp" = "0" ]; then
-        echo "[PASS] edit: 配置页的分组表里没有它（不会出现第二份）"
+    if [ "$grp" = "1" ]; then
+        echo "[PASS] edit: 源清单在分组表里出现且仅出现一次（界面上单独成组）"
     else
-        echo "[FAIL] edit: GROUP_OPTIONS 里还列着 community_sources（$grp 处）"
+        echo "[FAIL] edit: GROUP_OPTIONS 里 community_sources 出现 $grp 次，应为 1"
         rl15=1
     fi
-    # 必须整张 map 节点被挂进源页宿主（搬【行】这条路真机证明存不进，见视图 6b 注释）
-    mount=$(grep -c "CFI.form.sources.mount(srcNode, srcHost" "$VIEW")
-    if [ "$mount" = "1" ]; then
-        echo "[PASS] edit: 源表单是整张 map 节点挂进设置区宿主（不是搬单行）"
+    nmap=$(grep -c "new form.Map(" "$VIEW")
+    if [ "$nmap" = "1" ]; then
+        echo "[PASS] save: 全页只有一张 CBI Map（不会把同一批 uci 变更刷两遍）"
     else
-        echo "[FAIL] edit: 没看到 CFI.form.sources.mount(srcNode, srcHost —— 搬单行会「看得见、存不进」"
+        echo "[FAIL] save: 有 $nmap 张 CBI Map —— 清空字段会触发重复 delete 并中断应用"
         rl15=1
     fi
-    # drawSources 只许清结果宿主；清整个面板会把输入区一起抹掉（打字中途丢字 + 吞点击）
-    if grep -q "src-edit-host" "$VIEW"; then
-        echo "[PASS] edit: 源清单编辑宿主独立（重画不碰它）"
-    else
-        echo "[FAIL] edit: 源清单没有独立宿主 —— 输入框会被重画连带换掉（r29 的吞点机制）"
-        rl15=1
-    fi
-    # 检测这一步必须【只读不写】：真机量过 rpcd 的 uci.set 留在自己进程内存里，
-    # 引擎（独立进程）读不到 —— "先保存再检测"检到的一定是旧清单，等于骗人。
     if grep -q "srcForm.save" "$VIEW"; then
         echo "[FAIL] save: 检测路径里还在调 srcForm.save() —— 那份保存引擎看不见，检测到的仍是旧清单"
         rl15=1
     else
         echo "[PASS] save: 检测不写配置（提交只走页面底部标准的保存并应用）"
     fi
-    # 两条路不一致时必须说出来
     if grep -q "pendingSourceEdits" "$VIEW"; then
         echo "[PASS] diff: 编辑框与已应用清单不一致时页面会点名哪几条还没生效"
     else
         echo "[FAIL] diff: 缺了 pendingSourceEdits —— 用户会以为检的是自己刚敲的那份"
         rl15=1
     fi
-    # 文案里不能再出现"保存并检测"这种承诺
     if grep -q "保存并检测" "$VIEW"; then
         echo "[FAIL] copy: 视图里还留着「保存并检测」字样（这条承诺做不到）"
         rl15=1

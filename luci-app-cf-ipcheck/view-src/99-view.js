@@ -16,16 +16,11 @@ function linkStyle() {
 }
 
 var CFI_SHELL = null;
-var CFI_HASH_STOP = null;
-
-function cfiInitialZone() {
-	return CFI.nav.parseHash(window.location ? window.location.hash : '') ||
-		CFI.prefs.savedZone() || 'run';
-}
+var CFI_ROUTE_SYNC = null;
 
 return view.extend({
 	load: function () {
-		CFI.prefs.migrate();
+		/* 首帧只取一次状态；render 直接用这份结果，不再二次请求。 */
 		return CFI.ipc.call([ 'status' ]);
 	},
 
@@ -34,22 +29,51 @@ return view.extend({
 		var sh = CFI.shell.create(raw);
 		CFI_SHELL = sh;
 		var root = sh.build().root;
-		sh.goto(cfiInitialZone(), false);
+
+		var startHash = String(window.location ? window.location.hash : '');
+		var r = CFI.nav.parseRoute(startHash);
+		if (r) {
+			sh.goto(r.zone, r.sub, r.arg, false);
+		} else {
+			/* 旧 hash（#cf-tab=…）不再识别：显式落「运行」，不迁移、不提示。
+			 * 只有空 hash 才回到上次的区。 */
+			var z0 = startHash ? 'run' : (CFI.prefs.savedZone() || 'run');
+			sh.goto(z0, '', '', false);
+			CFI.nav.writeRoute(z0, '', '', false);
+		}
+		var lastHash = '';
+
+		/* hashchange 与 popstate 会为同一次 Back 各触发一次：用 lastHash 去重。 */
+		var sync = function () {
+			var h = String(window.location ? window.location.hash : '');
+			if (h === lastHash)
+				return;
+			lastHash = h;
+			var cur = CFI.nav.parseRoute(h);
+			if (!cur) {
+				if (CFI_SHELL) {
+					var z = h ? 'run' : (CFI.prefs.savedZone() || 'run');
+					CFI_SHELL.goto(z, '', '', false);
+					CFI.nav.writeRoute(z, '', '', false);
+					lastHash = String(window.location.hash);
+				}
+				return;
+			}
+			if (CFI_SHELL)
+				CFI_SHELL.goto(cur.zone, cur.sub, cur.arg, false);
+		};
+		lastHash = String(window.location ? window.location.hash : '');
 
 		try {
-			var on = function () {
-				var z = CFI.nav.parseHash(window.location.hash);
-				if (z && CFI_SHELL)
-					CFI_SHELL.goto(z, false);
+			window.addEventListener('hashchange', sync);
+			window.addEventListener('popstate', sync);
+			CFI_ROUTE_SYNC = function () {
+				window.removeEventListener('hashchange', sync);
+				window.removeEventListener('popstate', sync);
 			};
-			window.addEventListener('hashchange', on);
-			CFI_HASH_STOP = function () { window.removeEventListener('hashchange', on); };
 		} catch (e) {}
 
-		/* 首帧若读到的是「正在跑」，直接把轮询接上；否则主动取一次状态。 */
-		if (!sh.store.get().status || sh.store.get().status.state !== 'running')
-			sh.refresh(true);
-		else
+		if (sh.store.get().status && sh.store.get().status.state === 'running')
 			sh.startPoll();
 
 		try { window.__cfi__ = CFI; } catch (e2) {}
@@ -61,10 +85,10 @@ return view.extend({
 			CFI_SHELL.destroy();
 		CFI_SHELL = null;
 		try {
-			if (CFI_HASH_STOP)
-				CFI_HASH_STOP();
+			if (CFI_ROUTE_SYNC)
+				CFI_ROUTE_SYNC();
 		} catch (e) {}
-		CFI_HASH_STOP = null;
+		CFI_ROUTE_SYNC = null;
 		return true;
 	}
 });

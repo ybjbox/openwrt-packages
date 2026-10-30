@@ -78,12 +78,13 @@ const confKeys = [...conf.matchAll(/^\toption\s+([a-z_]+)/gm)].map((m) => m[1]);
 ok('默认配置 55 个 option', confKeys.length === 55, String(confKeys.length));
 const fields = [...view.matchAll(/field\([a-z]+, '[A-Za-z]+', form\.[A-Za-z]+, '([a-z_]+)'/g)]
 	.map((m) => m[1]);
-ok('视图 field() 声明 53 个字段', fields.length === 53, String(fields.length));
+ok('视图 field() 声明 54 个字段', fields.length === 54, String(fields.length));
 for (const k of fields)
-	ok('字段 ' + k + ' 在默认配置里', confKeys.includes(k));
+	ok('字段 ' + k + ' 在默认配置里', confKeys.includes(k) || conf.indexOf('	list ' + k + ' ') >= 0);
 ok('隐藏兼容键保留但不在界面', confKeys.includes('dns_record') && confKeys.includes('dns_proxied') &&
 	!fields.includes('dns_record') && !fields.includes('dns_proxied'));
-ok('源清单单独声明且只有一处', (view.match(/option\(form\.DynamicList, 'community_sources'/g) || []).length === 1);
+ok('源清单只声明一处', (view.match(/form\.DynamicList, 'community_sources'/g) || []).length === 1);
+ok('全页只有一张 CBI Map', (view.match(/new form\.Map\(/g) || []).length === 1);
 
 /* ---- 版本 ------------------------------------------------------------- */
 const mk = read(MK);
