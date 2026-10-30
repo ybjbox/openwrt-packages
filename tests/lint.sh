@@ -650,6 +650,14 @@ if [ -f "$VIEW" ] && [ -f "$UC_FILE" ] && [ -f "$ACL_FILE" ] && [ -f "$ENGINE" ]
         echo "[FAIL] ucode: 从引擎里提不出分派标签，这条检查本身失效了"
         rl12=1
     fi
+    # rpcd 的 ucode 沙箱里正则字面量会在调用时抛异常（r146 真机：Unknown error，
+    # 日志一个字都没有）。插件里的校验一律用逐字符/宿主侧，出现 .test( 直接判红。
+    if grep -q '\.test(' "$UC_FILE"; then
+        echo "[FAIL] ucode: 插件里用了正则 .test（rpcd 沙箱会抛 Unknown error）"
+        rl12=1
+    else
+        echo "[PASS] ucode: 没有正则 .test 调用"
+    fi
     npairs=$(grep -c . "$TMP_PAIRS" 2>/dev/null)
     [ -n "$npairs" ] || npairs=0
     if [ "$npairs" -lt 9 ]; then
