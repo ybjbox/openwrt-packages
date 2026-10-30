@@ -248,6 +248,30 @@
 			});
 		}
 
+		/* 单 IP 复测：页面只拿结果，不碰 store；整轮在跑时直接拒绝，
+		 * 避免两路同时抢带宽把结果测歪（引擎侧也会再挡一次）。 */
+		function actTestIp(ip, mode) {
+			var okIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(String(ip || ''));
+			if (!okIp || (mode !== 'delay' && mode !== 'speed'))
+				return Promise.resolve({ ok: false, error: 'invalid_ip' });
+			if ((store.get().status || {}).state === 'running')
+				return Promise.resolve({ ok: false, error: 'running' });
+			return CFI.ipc.call([ 'test-ip', ip, mode ]).then(function (out) {
+				if (out === CFI.ipc.HUNG)
+					return { ok: false, error: 'hung' };
+				if (out === null || out === undefined)
+					return { ok: false, error: 'unreachable' };
+				try {
+					var o = JSON.parse(out);
+					return (o && typeof o === 'object') ? o : { ok: false, error: 'parse_error' };
+				} catch (e) {
+					return { ok: false, error: 'parse_error' };
+				}
+			}, function () {
+				return { ok: false, error: 'unreachable' };
+			});
+		}
+
 		function logsRefresh() {
 			if (closed || store.get().busy.logs)
 				return Promise.resolve(null);
@@ -422,6 +446,7 @@
 				stop: actStop,
 				refresh: function () { refresh(true); },
 				copy: actCopy, csv: actCsv, dns: actDns, copyText: copyText,
+				testIp: actTestIp,
 				onSelect: function (ip) {
 					if (ip)
 						CFI.nav.writeRoute('run', 'ip', ip, true);
@@ -561,6 +586,8 @@
 
 		function scrollSetGroup() {
 			if (!pendingGroup || !shell || store.get().tab !== 'set')
+				return;
+			if (shell.setPane && shell.setPane.expandGroup && shell.setPane.expandGroup(pendingGroup))
 				return;
 			var box = shell.panes.set.querySelector('.cbi-section[data-group="' + pendingGroup + '"]');
 			if (box && box.scrollIntoView)

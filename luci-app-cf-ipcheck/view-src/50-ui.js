@@ -294,9 +294,15 @@
 	 * 靠外部记录恢复，但真实点击落在「清空到重建」之间就不会展开（同 r29 事故）。
 	 * 这里只改单元格文本，节点与 open 状态都留在 DOM 里。 */
 	function DcList(p) {
+		p = p || {};
 		var host = el('div', { class: 'dcs' });
 		var nodes = {};
 		var unit = 1000000;
+		var onTest = p.onTest || null;
+		var tests = {};
+		var busy = null;
+		var blocked = false;
+		var epoch = 0;
 
 		function span(cls, text) {
 			return el('span', { class: cls, text: text });
@@ -306,6 +312,58 @@
 			if (bps == null || bps === '' || !isFinite(Number(bps)))
 				return CFI.fmt.DASH;
 			return (Number(bps) / unit).toFixed(2);
+		}
+
+		function speedUnit() {
+			return unit === 1048576 ? ' MiB/s' : ' MB/s';
+		}
+
+		function errText(d) {
+			if (d.ok === false) {
+				if (d.error === 'running')
+					return CFI.T('整轮还在跑，结束后再试。');
+				if (d.error === 'hung')
+					return CFI.T('引擎没有回应。');
+				if (d.error === 'unreachable')
+					return CFI.T('调不到引擎。');
+				if (d.error === 'invalid_ip')
+					return CFI.T('IP 不合法。');
+				return CFI.T('没测到。');
+			}
+			if (d.err && d.err !== 'none') {
+				var e = CFI.T('连不上：%s').format(CFI.sem.errKindName(d.err));
+				if (d.code)
+					e += ' · HTTP ' + String(d.code);
+				return e;
+			}
+			return '';
+		}
+
+		function resultText(ip, mode) {
+			var t = tests[ip] && tests[ip][mode];
+			if (!t)
+				return '';
+			if (t.state === 'busy')
+				return mode === 'speed' ? CFI.T('测速中…') : CFI.T('延迟测量中…');
+			var d = t.data || {};
+			var err = errText(d);
+			if (err)
+				return err;
+			var parts = [];
+			if (d.code != null)
+				parts.push('HTTP ' + String(d.code));
+			if (d.ttfb_ms != null)
+				parts.push('TTFB ' + CFI.fmt.ms(d.ttfb_ms) + ' ms');
+			if (mode === 'speed') {
+				if (d.speed_bps != null && Number(d.speed_bps) > 0) {
+					parts.push(fmtSpeed(d.speed_bps) + speedUnit());
+					if (Number(d.speed_truncated))
+						parts.push(CFI.T('截断'));
+				} else {
+					parts.push(CFI.T('吞吐未测到'));
+				}
+			}
+			return (mode === 'speed' ? CFI.T('测速：') : CFI.T('延迟：')) + parts.join(' · ');
 		}
 
 		function build() {
@@ -322,6 +380,7 @@
 			d.appendChild(n.inner);
 			n.ss = '';
 			n.isig = '';
+			n.refs = {};
 			return n;
 		}
 
@@ -342,7 +401,7 @@
 
 		function innerSig(r) {
 			var items = r.items || [];
-			var out = [ r.cap || 12, r.items_total || '', items.length ];
+			var out = [ r.items_total || '', items.length ];
 			for (var i = 0; i < items.length; i++) {
 				var x = items[i] || {};
 				out.push(x.ip, x.ttfb_ms, x.speed_bps);
@@ -350,26 +409,111 @@
 			return out.join(',');
 		}
 
-		function paintInner(n, r) {
-			CFI.dom.clear(n.inner);
-			var items = (r.items || []).filter(function (x) { return x && typeof x === 'object'; });
-			var cap = Number(r.cap) > 0 ? Number(r.cap) : 12;
-			items.slice(0, cap).forEach(function (x) {
-				n.inner.appendChild(el('div', { class: 'dcitem' }, [
-					span('mono', x.ip ? String(x.ip) : CFI.fmt.DASH),
-					span('r mono', CFI.fmt.ms(x.ttfb_ms)),
-					span('r mono', fmtSpeed(x.speed_bps))
-				]));
-			});
-			var total = Number(r.items_total);
-			if (items.length > cap || (isFinite(total) && total > items.length))
-				n.inner.appendChild(el('div', { class: 'dc-note dim' },
-					CFI.T('这一块共 %s 条，这里列前 %s 条').format(String(items.length), String(Math.min(cap, items.length)))));
+		function syncRef(n, ip) {
+			var r = n.refs && n.refs[ip];
+			if (!r)
+				return;
+			var dis = blocked || !!busy;
+			var dRun = busy && busy.ip === ip && busy.mode === 'delay';
+			var sRun = busy && busy.ip === ip && busy.mode === 'speed';
+			r.delay.update({ disabled: dis, label: dRun ? CFI.T('延迟中…') : CFI.T('延迟') });
+			r.speed.update({ disabled: dis, label: sRun ? CFI.T('测速中…') : CFI.T('测速') });
+			r.delay.node.setAttribute('title', blocked ? CFI.T('本轮测速进行中，结束后再试') : CFI.T('只测这一次，不下载大文件'));
+			r.speed.node.setAttribute('title', blocked ? CFI.T('本轮测速进行中，结束后再试') : CFI.T('会下载最多 10MB 样本'));
+			var lines = [];
+			var dl = resultText(ip, 'delay');
+			var sl = resultText(ip, 'speed');
+			if (dl)
+				lines.push(dl);
+			if (sl)
+				lines.push(sl);
+			r.res.textContent = lines.join('\n');
+			r.res.hidden = !lines.length;
 		}
 
-		function update(rows, u) {
+		function syncAll() {
+			for (var code in nodes) {
+				if (!Object.prototype.hasOwnProperty.call(nodes, code))
+					continue;
+				for (var ip in nodes[code].refs) {
+					if (Object.prototype.hasOwnProperty.call(nodes[code].refs, ip))
+						syncRef(nodes[code], ip);
+				}
+			}
+		}
+
+		function startTest(ip, mode) {
+			if (blocked || busy || !onTest || !ip)
+				return;
+			var my = epoch;
+			busy = { ip: ip, mode: mode };
+			tests[ip] = tests[ip] || {};
+			tests[ip][mode] = { state: 'busy' };
+			syncAll();
+			onTest(ip, mode).then(function (d) {
+				if (my !== epoch)
+					return;
+				tests[ip][mode] = { state: 'done', data: d || { ok: false, error: 'unreachable' } };
+				busy = null;
+				syncAll();
+			}, function () {
+				if (my !== epoch)
+					return;
+				tests[ip][mode] = { state: 'done', data: { ok: false, error: 'unreachable' } };
+				busy = null;
+				syncAll();
+			});
+		}
+
+		function addItem(n, x) {
+			var ip = x.ip ? String(x.ip) : '';
+			var db = CFI.ui.Button({
+				kind: 'link', label: CFI.T('延迟'),
+				ariaLabel: CFI.T('单独测延迟 %s').format(ip),
+				onClick: function () { startTest(ip, 'delay'); }
+			});
+			var sb = CFI.ui.Button({
+				kind: 'link', label: CFI.T('测速'),
+				ariaLabel: CFI.T('单独测速 %s').format(ip),
+				onClick: function () { startTest(ip, 'speed'); }
+			});
+			var res = el('span', { class: 'dcres mono', hidden: true });
+			var row = el('div', { class: 'dcitem' }, [
+				span('mono', ip || CFI.fmt.DASH),
+				span('r mono', CFI.fmt.ms(x.ttfb_ms)),
+				span('r mono', fmtSpeed(x.speed_bps)),
+				el('span', { class: 'dcacts' }, [ db.node, sb.node ]),
+				res
+			]);
+			n.inner.appendChild(row);
+			n.refs[ip] = { row: row, delay: db, speed: sb, res: res };
+		}
+
+		function paintInner(n, r) {
+			CFI.dom.clear(n.inner);
+			n.refs = {};
+			var items = (r.items || []).filter(function (x) { return x && typeof x === 'object'; });
+			if (!items.length) {
+				n.inner.appendChild(el('div', { class: 'dc-note dim' }, CFI.T('本轮这个机房没有可用 IP。')));
+			} else {
+				items.forEach(function (x) {
+					addItem(n, x);
+				});
+				var total = Number(r.items_total);
+				if (isFinite(total) && total > items.length)
+					n.inner.appendChild(el('div', { class: 'dc-note dim' },
+						CFI.T('这一块共 %s 条，引擎最多给 100 条，这里显示前 %s 条。').format(String(total), String(items.length))));
+			}
+			for (var ip in n.refs) {
+				if (Object.prototype.hasOwnProperty.call(n.refs, ip))
+					syncRef(n, ip);
+			}
+		}
+
+		function update(rows, u, dis) {
 			if (u != null)
 				unit = u;
+			blocked = !!dis;
 			var list = rows || [];
 			var keys = [];
 			var map = {};
@@ -424,11 +568,20 @@
 				host.removeChild(cur);
 				cur = next;
 			}
+			syncAll();
+		}
+
+		function clearTests() {
+			epoch++;
+			tests = {};
+			busy = null;
+			syncAll();
 		}
 
 		return {
 			node: host,
 			update: update,
+			clearTests: clearTests,
 			openSet: function () {
 				var out = [];
 				for (var k in nodes)

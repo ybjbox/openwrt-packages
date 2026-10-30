@@ -37,24 +37,30 @@ const view = read(VIEW);
 const labels = [...engine.matchAll(/^\t([a-z][a-z_-]*)\)/gm)].map((m) => m[1]);
 ok('引擎分派表至少 15 个公开子命令', labels.length >= 15, String(labels.length));
 for (const cmd of [ 'status', 'logs', 'show', 'csv', 'pool', 'canary', 'check-sources',
-	'dns-sync', 'colo', 'stop', 'run', 'run-now', 'daemon', 'diag', 'selftest' ])
+	'dns-sync', 'colo', 'stop', 'run', 'run-now', 'daemon', 'diag', 'selftest', 'test-ip' ])
 	ok('引擎有子命令 ' + cmd, labels.includes(cmd));
 
 /* ---- ucode ↔ 引擎 ↔ ACL ------------------------------------------------ */
-const pairs = [...uc.matchAll(/([a-z_]+):\s*\{[^}]*=>\s*sh\('([a-z-]+)'\)/g)]
-	.map((m) => [ m[1], m[2] ]);
-ok('ucode 插件 9 个方法', pairs.length === 9, String(pairs.length));
+/* 按顶层方法切块再找块内的 sh('子命令')：参数化调用写成
+ * sh('test-ip ' + ip + ...)，不能再用「方法名到 sh(」一条正则跨块匹配。 */
+const pairs = [...uc.matchAll(/^\t([a-z_]+):\s*\{([\s\S]*?)(?=^\t[a-z_]+:\s*\{|^\};)/gm)]
+	.map((m) => {
+		const hit = m[2].match(/sh\('([a-z-]+)/);
+		return hit ? [ m[1], hit[1] ] : null;
+	})
+	.filter(Boolean);
+ok('ucode 插件 10 个方法', pairs.length === 10, String(pairs.length));
 for (const [ method, sub ] of pairs) {
 	ok(`${method} → 引擎子命令 ${sub}`, labels.includes(sub));
 	ok(`ACL 放开 ${method}`, new RegExp('"' + method + '"').test(acl));
 }
 ok('ACL 读 6 个方法', /"read"[\s\S]*?"ubus"[\s\S]*?"status"/.test(acl));
-ok('ACL 写 3 个方法（run/stop/dns_sync）',
-	[ 'run', 'stop', 'dns_sync' ].every((m) => new RegExp('"' + m + '"').test(acl)));
+ok('ACL 写 4 个方法（run/stop/dns_sync/test_ip）',
+	[ 'run', 'stop', 'dns_sync', 'test_ip' ].every((m) => new RegExp('"' + m + '"').test(acl)));
 
 /* ---- 视图声明的方法与 ACL/ucode 对齐（从构建产物里读声明表） ---------- */
 const viewMethods = [...view.matchAll(/method:\s*'([a-z_]+)'/g)].map((m) => m[1]).sort();
-ok('视图声明 9 个方法', viewMethods.length === 9, viewMethods.join(','));
+ok('视图声明 10 个方法', viewMethods.length === 10, viewMethods.join(','));
 for (const [ method ] of pairs)
 	ok('视图声明了 ' + method, viewMethods.includes(method));
 ok('RPC 对象名一致', /var RPC_OBJECT = 'luci\.cf-ipcheck'/.test(view) && /luci\.cf-ipcheck/.test(uc));

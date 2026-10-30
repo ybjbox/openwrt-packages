@@ -62,12 +62,12 @@ function load() {
 const CFI = load();
 
 test('构建版本与包版本一致', () => {
-	assert.equal(CFI.build, 'r143');
+	assert.equal(CFI.build, 'r146');
 });
 
-test('IPC：9 个方法与超时预算', () => {
+test('IPC：10 个方法与超时预算', () => {
 	assert.deepEqual(Object.keys(CFI.ipc.METHODS).sort(), [
-		'check-sources', 'csv', 'diag', 'dns-sync', 'logs', 'pool', 'run-now', 'status', 'stop'
+		'check-sources', 'csv', 'diag', 'dns-sync', 'logs', 'pool', 'run-now', 'status', 'stop', 'test-ip'
 	]);
 	assert.equal(CFI.ipc.OBJECT, 'luci.cf-ipcheck');
 	assert.ok(CFI.ipc.LIMIT.logs < CFI.ipc.LIMIT.status, 'logs 必须小于 status');

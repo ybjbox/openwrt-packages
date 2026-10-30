@@ -1939,6 +1939,81 @@ speed_of() {
 	printf '%s %s %s %s %s\n' "$sp_bps" "$sp_code" "$sp_size" "$sp_want" "$sp_tr"
 }
 
+# 单 IP 复测（页面「延迟 / 测速」）：只管这一颗，不写 status / 榜单 / Gist。
+# $1=IPv4  $2=delay|speed
+# 输出一行 JSON。ok=false 只表示请求本身没做成（IP 非法 / 整轮在跑）；
+# 探测失败放在 err / code 里，页面照样能把「连不上」说清楚。
+# 单测流量封顶 10485760 字节（与默认 speed_bytes 一致，配置更大也不跟），
+# 超时封顶 30 秒：这是交互动作，不该让一次点击挂上一两分钟。
+test_one_ip() {
+	ti=${1:-}
+	tmode=${2:-delay}
+	case "$tmode" in delay|speed) ;; *)
+		printf '{"ok":false,"error":"bad_mode"}\n'
+		return 0
+		;;
+	esac
+	if ! valid_ip4 "$ti"; then
+		printf '{"ok":false,"error":"invalid_ip"}\n'
+		return 0
+	fi
+	if lock_live; then
+		printf '{"ok":false,"error":"running"}\n'
+		return 0
+	fi
+	tdom=$(printf '%s' "$C_DOMAINS" | cut -d, -f1 | tr -d ' ')
+	[ -n "$tdom" ] || tdom=www.cloudflare.com
+	tline=$(probe_one "$ti" "$tdom")
+	set -- $tline
+	tcode=${2:-0}
+	tconn=${3:-0}
+	ttls=${4:-0}
+	ttf=${5:-0}
+	ttot=${6:-0}
+	terr=${7:-transport}
+	tdom2=${8:-$tdom}
+	case "$tcode" in ''|*[!0-9]*) tcode=0 ;; esac
+	case "$tconn" in ''|*[!0-9.]*) tconn=0 ;; esac
+	case "$ttls" in ''|*[!0-9.]*) ttls=0 ;; esac
+	case "$ttf" in ''|*[!0-9.]*) ttf=0 ;; esac
+	case "$ttot" in ''|*[!0-9.]*) ttot=0 ;; esac
+	case "$terr" in ''|*[!a-z_]*) terr=transport ;; esac
+	tspeed=''
+	if [ "$tmode" = speed ]; then
+		if [ "$terr" = none ] && [ "$tcode" -lt 400 ]; then
+			tbytes=$C_SPEEDKB
+			[ "$tbytes" -gt 10485760 ] && tbytes=10485760
+			tto=$C_SPEEDTO
+			[ "$tto" -gt 30 ] && tto=30
+			tsp=$(speed_of "$ti" "$tbytes" "$tto")
+			set -- $tsp
+			tbps=${1:-0}
+			tscode=${2:-0}
+			tsize=${3:-0}
+			twant=${4:-$tbytes}
+			ttr=${5:-0}
+			case "$tbps" in ''|*[!0-9]*) tbps=0 ;; esac
+			case "$tscode" in ''|*[!0-9]*) tscode=0 ;; esac
+			case "$tsize" in ''|*[!0-9]*) tsize=0 ;; esac
+			case "$twant" in ''|*[!0-9]*) twant=$tbytes ;; esac
+			case "$ttr" in ''|*[!0-9]*) ttr=0 ;; esac
+			if [ "$tbps" -gt 0 ]; then
+				tspeed=",\"speed_bps\":$tbps,\"speed_code\":$tscode,\"speed_bytes\":$tsize,\"speed_want\":$twant,\"speed_truncated\":$ttr"
+				log "单 IP 测速 $ti：HTTP $tcode / TTFB ${ttf}ms / 吞吐 $tbps B/s"
+			else
+				tspeed=",\"speed_bps\":null,\"speed_code\":$tscode,\"speed_bytes\":$tsize,\"speed_want\":$twant,\"speed_truncated\":$ttr"
+				log "单 IP 测速 $ti：HTTP $tcode / TTFB ${ttf}ms / 吞吐未测到"
+			fi
+		else
+			log "单 IP 测速 $ti：HTTP $tcode / TTFB ${ttf}ms / $terr（不测吞吐）"
+		fi
+	else
+		log "单 IP 延迟 $ti：HTTP $tcode / TTFB ${ttf}ms / $terr"
+	fi
+	printf '{"ok":true,"ip":"%s","mode":"%s","domain":"%s","port":%s,"code":%s,"connect_ms":%s,"tls_ms":%s,"ttfb_ms":%s,"total_ms":%s,"err":"%s"%s}\n' \
+		"$ti" "$tmode" "$(json_str "$tdom2")" "$C_PORT" "$tcode" "$tconn" "$ttls" "$ttf" "$ttot" "$(json_str "$terr")" "$tspeed"
+}
+
 # $1=speed.tsv 路径 $2=IP $3=字节数 $4=超时 $5=stage(screen|confirm)
 # speed_of 的五段结果 + IP + stage => speed.tsv 的七列。
 speed_measure() {
@@ -3375,6 +3450,8 @@ selftest() {
 	check 'colo 非纯 IPv4 参数直接拒绝，不拼进 shell 字符串' "$got" '1'
 	sh "$0" colo 'x' >/dev/null 2>&1
 	check 'colo 参数非法时退出码 2' "$?" '2'
+	check 'test-ip：非法 IP 直接拒绝（不联网）' "$(test_one_ip '1.2.3' delay)" '{"ok":false,"error":"invalid_ip"}'
+	check 'test-ip：非法 mode 直接拒绝（不联网）' "$(test_one_ip '1.1.1.1' fast)" '{"ok":false,"error":"bad_mode"}'
 	# find_bin：rpcd 给子进程的 PATH 可能没有 /sbin，所以 uci/su/curl/jq 一律
 	# 按绝对路径找、找不到再退回 command -v。这两条钉住它的两级行为。
 	got=$(find_bin sh /nonexistent-dir-for-test/sh 2>/dev/null || true)
@@ -4371,6 +4448,7 @@ usage() {
   dns-sync  把当前优选 IP 写进 Cloudflare DNS 的目标记录（可多个记录名、每个可挂多条 A；
             手工触发，绕开关但仍走缓存）
   colo IP   查询单个 IP 的落地机房代码（如 SIN/NRT/HKG）
+  test-ip IP delay|speed  页面单测：只测这一颗 IP（delay 只测延迟；speed 另下最多 10MB）
   stop      请求当前这一轮尽快收尾
   daemon    常驻，按 interval_hours 循环
   diag      打印引擎实际读到的配置与找到的可执行文件路径（排查"配置没生效"用）
@@ -4427,6 +4505,9 @@ case "${1:-}" in
 			 fi
 			 load_config; colo_of "${2:-}"
 			 printf '\n' ;;
+	# 页面「机房明细 → 延迟 / 测速」的单 IP 复测。只测这一颗，不启动轮次、
+	# 不写状态与产物；整轮在跑时直接拒绝（避免并发抢带宽把两个结果都测歪）。
+	test-ip) load_config; test_one_ip "${2:-}" "${3:-delay}" ;;
 	stop)    log '收到页面指令：停止本轮'
 	         : >"$STOP"; echo '已请求停止（当前这一轮结束后不再继续探测）' ;;
 	daemon)  while :; do

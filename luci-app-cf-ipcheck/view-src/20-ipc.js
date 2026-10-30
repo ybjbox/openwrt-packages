@@ -14,7 +14,8 @@
 		'dns-sync': rpc.declare({ object: RPC_OBJECT, method: 'dns_sync' }),
 		csv: rpc.declare({ object: RPC_OBJECT, method: 'csv' }),
 		diag: rpc.declare({ object: RPC_OBJECT, method: 'diag' }),
-		pool: rpc.declare({ object: RPC_OBJECT, method: 'pool' })
+		pool: rpc.declare({ object: RPC_OBJECT, method: 'pool' }),
+		'test-ip': rpc.declare({ object: RPC_OBJECT, method: 'test_ip', params: [ 'ip', 'mode' ] })
 	};
 
 	/* 三种结果各说各的事：字符串 = 成功（空串是跑完没结果）、null = 被拒、
@@ -31,6 +32,8 @@
 		csv: 8000,
 		diag: 8000,
 		pool: 45000,
+		/* 单测：探测最长 30 秒 + 前置一次探测；留 45 秒。 */
+		'test-ip': 45000,
 		/* logs 必须小于 status：LuCI 会把同一拍的 rpc 并进一个 POST，
 		 * 一次慢日志会把 status 一起拖成「没有回应」。 */
 		logs: 6000
@@ -38,7 +41,7 @@
 
 	function call(args, ms) {
 		var fn = RPC_METHODS[args && args[0]];
-		var p = fn ? fn().then(function (obj) {
+		var p = fn ? fn.apply(null, (args || []).slice(1)).then(function (obj) {
 			return (obj && obj.ok !== false && typeof obj.text === 'string') ? obj.text : null;
 		}, function () {
 			return null;

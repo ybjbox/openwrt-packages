@@ -34,43 +34,135 @@
 		});
 	}
 
+	function sectionsOf(node) {
+		return Array.prototype.slice.call(node.querySelectorAll('.cbi-section'));
+	}
+
+	function directH3(sec) {
+		for (var n = sec.firstElementChild; n; n = n.nextElementSibling) {
+			if (String(n.tagName).toUpperCase() === 'H3')
+				return n;
+		}
+		return null;
+	}
+
 	function mount(actions) {
 		var host = el('div', { class: 'set-body' });
 		var mapnode = null;
 		var dnsEditor = null;
 
-		var search = el('input', {
-			class: 'ctl search', type: 'search',
-			placeholder: CFI.T('搜字段 / 值'), 'aria-label': CFI.T('搜索设置项')
-		});
 		var onlyChanged = el('label', { class: 'chk' }, [
 			el('input', { type: 'checkbox' }),
 			el('span', { text: CFI.T('只看已改') })
 		]);
 		onlyChanged.firstChild.addEventListener('change', applyFilter);
-		search.addEventListener('input', applyFilter);
 		var bar = el('div', { class: 'groups-bar' }, [
-			search,
 			onlyChanged,
 			el('span', { class: 'bar-gap' }),
+			CFI.ui.Button({ kind: 'link', label: CFI.T('全部展开'), onClick: function () { setAllFold(false); } }).node,
+			CFI.ui.Button({ kind: 'link', label: CFI.T('全部收起'), onClick: function () { setAllFold(true); } }).node,
 			CFI.ui.Button({ kind: 'link', label: CFI.T('去诊断检测'), onClick: actions.gotoDiag }).node
 		]);
 
+		/* ---- 分组折叠：状态存在 cfi3.set.fold（逗号分隔的组名） ---------- */
+		var folded = {};
+
+		function loadFolded() {
+			folded = {};
+			String(CFI.prefs.get(CFI.prefs.NS + 'set.fold', '') || '').split(',').forEach(function (g) {
+				if (g)
+					folded[g] = 1;
+			});
+		}
+
+		function saveFolded() {
+			var out = [];
+			for (var g in folded) {
+				if (Object.prototype.hasOwnProperty.call(folded, g) && folded[g])
+					out.push(g);
+			}
+			CFI.prefs.set(CFI.prefs.NS + 'set.fold', out.join(','));
+		}
+
+		function setFold(sec, on, remember) {
+			if (!sec)
+				return;
+			if (on)
+				sec.classList.add('is-fold');
+			else
+				sec.classList.remove('is-fold');
+			var h = directH3(sec);
+			if (h)
+				h.setAttribute('aria-expanded', on ? 'false' : 'true');
+			if (remember) {
+				var g = sec.getAttribute('data-group');
+				if (g) {
+					if (on)
+						folded[g] = 1;
+					else
+						delete folded[g];
+					saveFolded();
+				}
+			}
+		}
+
+		function enhanceSection(sec) {
+			var h = directH3(sec);
+			if (!h || h.__cfiFold)
+				return;
+			h.__cfiFold = true;
+			h.classList.add('cfp-sec-toggle');
+			h.setAttribute('role', 'button');
+			h.setAttribute('tabindex', '0');
+			h.setAttribute('aria-expanded', sec.classList.contains('is-fold') ? 'false' : 'true');
+			h.appendChild(el('span', { class: 'cfp-sec-caret', 'aria-hidden': 'true' }));
+			var toggle = function () {
+				setFold(sec, !sec.classList.contains('is-fold'), true);
+			};
+			h.addEventListener('click', toggle);
+			h.addEventListener('keydown', function (e) {
+				if (e.key === 'Enter' || e.key === ' ' || e.keyCode === 13 || e.keyCode === 32) {
+					e.preventDefault();
+					toggle();
+				}
+			});
+		}
+
+		function setAllFold(on) {
+			sectionsOf(host).forEach(function (sec) {
+				if (!sec.hidden)
+					setFold(sec, on, true);
+			});
+		}
+
 		function applyFilter() {
-			var q = String(search.value || '').toLowerCase();
 			var changedOnly = onlyChanged.firstChild.checked;
 			Array.prototype.slice.call(host.querySelectorAll('.cbi-value')).forEach(function (row) {
-				var txt = String(row.textContent || '').toLowerCase();
-				var ok = (!q || txt.indexOf(q) >= 0) &&
-					(!changedOnly || row.className.indexOf('changed') >= 0);
+				var ok = !changedOnly || row.className.indexOf('changed') >= 0;
 				row.hidden = !ok;
 			});
-			Array.prototype.slice.call(host.querySelectorAll('.cbi-section')).forEach(function (sec) {
+			sectionsOf(host).forEach(function (sec) {
 				var any = Array.prototype.slice.call(sec.querySelectorAll('.cbi-value')).some(function (r) {
 					return !r.hidden;
 				});
 				sec.hidden = !any;
+				/* 「只看已改」命中段强制展开；取消后回到用户手动记下的折叠状态 */
+				if (changedOnly)
+					setFold(sec, false, false);
+				else
+					setFold(sec, !!folded[sec.getAttribute('data-group')], false);
 			});
+		}
+
+		function expandGroup(group) {
+			var sec = host.querySelector('.cbi-section[data-group="' + group + '"]');
+			if (!sec)
+				return false;
+			sec.hidden = false;
+			setFold(sec, false, true);
+			if (sec.scrollIntoView)
+				sec.scrollIntoView({ block: 'start' });
+			return true;
 		}
 
 		function rowValues(row) {
@@ -127,11 +219,9 @@
 		}
 
 		function openSources() {
-			var sec = host.querySelector('.cbi-section[data-group="sources"]');
-			if (!sec)
+			if (!expandGroup('sources'))
 				return false;
-			if (sec.scrollIntoView)
-				sec.scrollIntoView({ block: 'start' });
+			var sec = host.querySelector('.cbi-section[data-group="sources"]');
 			var inp = sec.querySelector('.cbi-value[data-name="community_sources"] input[type=text]');
 			if (inp && inp.focus)
 				inp.focus();
@@ -143,6 +233,11 @@
 			return m.render().then(function (node) {
 				mapnode = node;
 				markSections(node);
+				loadFolded();
+				sectionsOf(node).forEach(function (sec) {
+					enhanceSection(sec);
+					setFold(sec, !!folded[sec.getAttribute('data-group')], false);
+				});
 				host.appendChild(bar);
 				/* 整张 map 节点进面板：字段留在 map 子树里，CBI 才采得到值 */
 				host.appendChild(node);
@@ -167,7 +262,7 @@
 				dnsEditor.setCodes(st.dc_summary || []);
 		}
 
-		return { node: host, render: render, update: update, openSources: openSources };
+		return { node: host, render: render, update: update, openSources: openSources, expandGroup: expandGroup };
 	}
 
 	CFI.panels = CFI.panels || {};

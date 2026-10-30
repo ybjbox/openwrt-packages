@@ -2,9 +2,9 @@
 //
 // 为什么要这一层，而不是让页面直接 rpcd file.exec 那个脚本：
 //   file.exec 的 ACL 语义是「允许用任意参数执行这个绝对路径」（真机现在的写法），
-//   而这里收窄成「只能调这五个方法、每个方法不带参数」—— 能做什么由下面的
-//   methods 表决定，不由请求方决定。树内带逻辑的应用（upnp / ddns / wol / mosdns）
-//   都走这条路，file.exec 留给固定的一次性命令。
+//   而这里收窄成「只能调 methods 表里的方法」—— 能做什么由下面这张表决定，
+//   不由请求方决定。树内带逻辑的应用（upnp / ddns / wol / mosdns）都走这条路，
+//   file.exec 留给固定的一次性命令。
 //
 // 为什么不把引擎输出的 JSON 在这里 parse 成 blobmsg 再回给页面：
 //   那份 JSON 的字段契约属于引擎（result.json / status.json 的键），在 ucode 里
@@ -80,6 +80,18 @@ const methods = {
 	},
 	pool: {
 		call: () => sh('pool')
+	},
+	// 单 IP 复测（机房明细里的「延迟 / 测速」）。参数只有严格 IPv4 与 mode；
+	// 域名、端口、样本大小全部由引擎按已保存配置取，页面递不进来。
+	test_ip: {
+		args: { ip: 'ip', mode: 'mode' },
+		call: (request) => {
+			const ip = (request.args && request.args.ip) ? '' + request.args.ip : '';
+			const mode = (request.args && request.args.mode) ? '' + request.args.mode : '';
+			if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip) || (mode != 'delay' && mode != 'speed'))
+				return { ok: false, text: null };
+			return sh('test-ip ' + ip + ' ' + mode);
+		}
 	}
 };
 

@@ -21,7 +21,8 @@
                 "luci.cf-ipcheck": [
                     "run",
                     "stop",
-                    "dns_sync"
+                    "dns_sync",
+                    "test_ip"
                 ]
             },
             "uci": [

@@ -631,10 +631,11 @@ if [ -f "$VIEW" ] && [ -f "$UC_FILE" ] && [ -f "$ACL_FILE" ] && [ -f "$ENGINE" ]
     TMP_ACL="/tmp/lint_acl.$$"
     TMP_LABELS12="/tmp/lint_labels12.$$"
     # 插件：方法名 = 它调的引擎子命令（只认 "=> sh('xxx')" 这种调用行，
-    # 不认函数定义行，否则会把 "sub" 当成子命令）
+    # 不认函数定义行，否则会把 "sub" 当成子命令）。参数化调用写成
+    # sh('test-ip ' + ip)，这里只取引号里第一段字面量（子命令名），不拼参数。
     awk '/^[[:space:]]*[a-z_]+:[[:space:]]*\{/ { n=$1; sub(/:.*/, "", n) }
-         /=>[[:space:]]*sh\(/ { if (match($0, /sh\([^)]*\)/)) {
-             v = substr($0, RSTART + 4, RLENGTH - 5); gsub(/[^a-z_-]/, "", v); print n "=" v } }' \
+         /=>[[:space:]]*sh\(/ { if (match($0, /sh\(.[a-z-]+/)) {
+             v = substr($0, RSTART + 4, RLENGTH - 4); print n "=" v } }' \
         "$UC_FILE" > "$TMP_PAIRS"
     sed -n '/^case "${1:-}" in$/,/^esac$/p' "$ENGINE" |
         sed -n 's/^[[:space:]]*\([a-z][a-z_-]*\)).*/\1/p' | sort -u > "$TMP_LABELS12"

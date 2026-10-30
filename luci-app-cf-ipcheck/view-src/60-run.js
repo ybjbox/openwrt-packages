@@ -187,9 +187,9 @@
 			boardWrap
 		]);
 
-		var dcList = CFI.ui.DcList();
+		var dcList = CFI.ui.DcList({ onTest: actions.testIp });
 		var dcSec = el('article', { class: 'card', hidden: true }, [
-			el('div', { class: 'card-h' }, [ el('h2', { text: CFI.T('机房分布') }), el('span', { class: 'sub', text: CFI.T('按中位 TTFB') }) ]),
+			el('div', { class: 'card-h' }, [ el('h2', { text: CFI.T('机房分布') }), el('span', { class: 'sub', text: CFI.T('按中位 TTFB · 展开可单测') }) ]),
 			dcList.node
 		]);
 
@@ -440,6 +440,9 @@
 
 		/* ---- 状态 ---------------------------------------------------- */
 		function paintRound(st) {
+			/* 新一轮开始/结束：上一次单测结果不再属于当前榜单 */
+			if (dcList && dcList.clearTests)
+				dcList.clearTests();
 			var fail = 0;
 			var parts = [];
 			if (st.counts) {
@@ -495,7 +498,7 @@
 			var rows = st.dc_summary || [];
 			dcSec.hidden = !rows.length;
 			if (!rows.length) {
-				dcList.update([]);
+				dcList.update([], null, st.state === 'running');
 				return;
 			}
 			var show = st.dc_show || null;
@@ -511,17 +514,7 @@
 			} else {
 				list = rows.slice(0, 6);
 			}
-			list.forEach(function (r) {
-				var code = String(r.dc);
-				var cap = 12;
-				if (st.dc_show) {
-					for (var i = 0; i < st.dc_show.length; i++)
-						if (st.dc_show[i] && String(st.dc_show[i].dc) === code && Number(st.dc_show[i].n) > 0)
-							cap = Number(st.dc_show[i].n);
-				}
-				r.cap = cap;
-			});
-			dcList.update(list, st.speed_unit === 'mib' ? 1048576 : 1000000);
+			dcList.update(list, st.speed_unit === 'mib' ? 1048576 : 1000000, st.state === 'running');
 		}
 
 		function paintFoot(st, busy) {
