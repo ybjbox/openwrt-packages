@@ -30,13 +30,7 @@
 	}
 
 	function mount(actions) {
-		var bui = { logFilter: CFI.prefs.get(CFI.prefs.NS + 'logs.filter', 'all') };
-		var last = { trace: '', src: '', pool: '', diag: '', logs: '', busy: '' };
-		var logView = CFI.ui.LogView({ cap: 600 });
-		logView.setFilter(bui.logFilter);
-		logView.setFollow(CFI.prefs.getBool(CFI.prefs.NS + 'logs.follow', true));
-		var pausedNote = el('p', { class: 'log-paused', hidden: true },
-			CFI.T('已暂停：不再自动拉取。点「继续」恢复；下面这份是暂停前的最后一份。'));
+		var last = { trace: '', src: '', pool: '', diag: '', busy: '' };
 
 		var traceHost = el('div', { class: 'trace' });
 
@@ -84,52 +78,6 @@
 		var diagPending = el('p', { class: 'note' },
 			CFI.T('还没取过。点「取诊断」拿一份当前状态快照（不改配置）。'));
 
-		var autoBtn = CFI.ui.Button({ kind: 'link', label: CFI.T('自动刷新：开'), onClick: actions.logAuto });
-		var fullBtn = CFI.ui.Button({ kind: 'link', label: CFI.T('只看时刻'), onClick: actions.logFull });
-		var followBtn = CFI.ui.Button({ kind: 'link', label: CFI.T('跟随最新：开'), onClick: function () {
-			var on = !CFI.prefs.getBool(CFI.prefs.NS + 'logs.follow', true);
-			CFI.prefs.set(CFI.prefs.NS + 'logs.follow', on ? '1' : '0');
-			logView.setFollow(on);
-			followBtn.update({ label: on ? CFI.T('跟随最新：开') : CFI.T('跟随最新：关') });
-		} });
-		var pauseBtn = CFI.ui.Button({ kind: 'link', label: CFI.T('暂停'), onClick: function () {
-			var on = !CFI.prefs.getBool(CFI.prefs.NS + 'logs.paused', false);
-			CFI.prefs.set(CFI.prefs.NS + 'logs.paused', on ? '1' : '0');
-			if (actions.logPause)
-				actions.logPause(on);
-		} });
-		var refreshBtn = CFI.ui.Button({ kind: 'link', label: CFI.T('立即刷新'), onClick: actions.logs });
-		var copyBtn = CFI.ui.Button({ kind: 'link', label: CFI.T('复制全部'), onClick: actions.copyLogs });
-		var filterSel = el('select', { class: 'ctl small', 'aria-label': CFI.T('日志过滤') }, [
-			el('option', { value: 'all', text: CFI.T('全部') }),
-			el('option', { value: 'warn', text: CFI.T('提醒以上') }),
-			el('option', { value: 'bad', text: CFI.T('只看错误') })
-		]);
-		filterSel.value = bui.logFilter;
-		filterSel.addEventListener('change', function () {
-			bui.logFilter = filterSel.value;
-			CFI.prefs.set(CFI.prefs.NS + 'logs.filter', bui.logFilter);
-			logView.setFilter(bui.logFilter);
-		});
-
-		var logDetails = el('details', { class: 'cbi-section cfp-log' });
-		if (CFI.prefs.get(CFI.prefs.NS + 'logs.open', '0') === '1')
-			logDetails.open = true;
-		logDetails.appendChild(el('summary', {}, [
-			el('h3', { text: CFI.T('日志') }),
-			el('span', { class: 'cfp-hint dim', text: CFI.T('引擎写的过程记录；出问题先看这里') })
-		]));
-		logDetails.appendChild(el('div', { class: 'cfp-log-body' }, [
-			el('div', { class: 'log-bar' }, [ autoBtn.node, fullBtn.node, pauseBtn.node, followBtn.node, refreshBtn.node, copyBtn.node, filterSel ]),
-			pausedNote,
-			logView.node
-		]));
-		logDetails.addEventListener('toggle', function () {
-			CFI.prefs.set(CFI.prefs.NS + 'logs.open', logDetails.open ? '1' : '0');
-			if (actions.logToggle)
-				actions.logToggle(logDetails.open);
-		});
-
 		var body = el('div', { class: 'diag-body' }, [
 			traceHost,
 			el('section', { class: 'cbi-section' }, [
@@ -148,8 +96,7 @@
 				]),
 				diagPending,
 				diagHost
-			]),
-			logDetails
+			])
 		]);
 
 		function paintTrace(st) {
@@ -244,23 +191,6 @@
 			diagPending.hidden = rows.length > 0;
 		}
 
-		function paintLogs(state) {
-			var lg = state.logs;
-			autoBtn.update({ label: state.logAuto ? CFI.T('自动刷新：开') : CFI.T('自动刷新：关') });
-			fullBtn.update({ label: state.logFull ? CFI.T('只看时刻') : CFI.T('显示完整时刻') });
-			pauseBtn.update({ label: state.logPaused ? CFI.T('继续') : CFI.T('暂停') });
-			followBtn.update({ label: CFI.prefs.getBool(CFI.prefs.NS + 'logs.follow', true)
-				? CFI.T('跟随最新：开') : CFI.T('跟随最新：关') });
-			pausedNote.hidden = !state.logPaused;
-			if (!lg) return;
-			if (lg.state === 'ok')
-				logView.ingest(lg.text);
-			else
-				logView.notice(lg.state === 'empty'
-					? CFI.T('还没有日志（重启过或还没跑过）。')
-					: CFI.T('读不到日志：先确认 rpcd 正常，再点「立即刷新」。'));
-		}
-
 		function busyLabel(meta, base) {
 			if (!meta) return base;
 			var sec = Math.floor((Date.now() - (meta.at || Date.now())) / 1000);
@@ -272,7 +202,6 @@
 			btnCheck.update({ disabled: !!busy.check, busy: !!busy.check, label: busyLabel(busy.check, CFI.T('检测源可用性')) });
 			btnPool.update({ disabled: !!busy.pool, busy: !!busy.pool, label: busyLabel(busy.pool, CFI.T('预览候选池')) });
 			btnDiag.update({ disabled: !!busy.diag, busy: !!busy.diag, label: busyLabel(busy.diag, CFI.T('取诊断')) });
-			refreshBtn.update({ disabled: !!busy.logs, busy: !!busy.logs });
 		}
 
 		function update(state) {
@@ -286,34 +215,11 @@
 			if (k !== last.pool) { last.pool = k; paintPool(state); }
 			k = JSON.stringify(state.diag || null);
 			if (k !== last.diag) { last.diag = k; paintDiag(state); }
-			if (!!state.logFull !== last.full) {
-				last.full = !!state.logFull;
-				logView.setFull(last.full);
-			}
-			if (!!state.logPaused !== last.paused) {
-				last.paused = !!state.logPaused;
-				logView.setPaused(last.paused);
-			}
-			k = CFI.store.logsKey(state, {
-				logFilter: bui.logFilter, logPaused: state.logPaused,
-				logFull: state.logFull, logAuto: state.logAuto
-			});
-			if (k !== last.logs) { last.logs = k; paintLogs(state); }
 			k = JSON.stringify(state.busy || {}) + '|' + (state.busyTick || 0);
 			if (k !== last.busy) { last.busy = k; paintBusy(state); }
 		}
 
-		function openLogs() {
-			logDetails.open = true;
-			CFI.prefs.set(CFI.prefs.NS + 'logs.open', '1');
-			try { logView.box.scrollTop = logView.box.scrollHeight; } catch (e) {}
-			try { logView.box.focus(); } catch (e2) {}
-		}
-
-		return {
-			node: body, update: update, openLogs: openLogs, logBox: logView.box,
-			logOpen: function () { return !!logDetails.open; }
-		};
+		return { node: body, update: update };
 	}
 
 	CFI.panels = CFI.panels || {};

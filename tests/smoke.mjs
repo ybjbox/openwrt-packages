@@ -83,9 +83,9 @@ assert.ok(viewDef && typeof viewDef.render === 'function', 'view.extend 应返�
 const node = viewDef.render(statusJson);
 assert.ok(node && node.className && node.className.indexOf('cfp') >= 0, '根节点应是 .cfp');
 const panes = node.childNodes.filter((c) => String(c.className || '').indexOf('pane') >= 0);
-assert.equal(panes.length, 3, '应有 3 个区');
+assert.equal(panes.length, 4, '应有 4 个区');
 const tabs = node.childNodes.filter((c) => String(c.className || '').indexOf('cfp-tabs') >= 0);
 assert.equal(tabs.length, 1, '应有分段导航');
 const tabList = tabs[0].childNodes[0];
-assert.equal(tabList && tabList.childNodes.length, 3, '导航应有三段');
-console.log('[PASS] render 冒烟：.cfp + 分段导航 + 3 区');
+assert.equal(tabList && tabList.childNodes.length, 4, '导航应有四段');
+console.log('[PASS] render 冒烟：.cfp + 分段导航 + 4 区');

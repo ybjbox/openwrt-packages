@@ -170,7 +170,7 @@
 					paintBoard(true);
 				},
 				onActivate: function (key) { openDrawer(key); },
-				empty: function () { return CFI.ui.Empty({ title: CFI.T('没有达标 IP'), detail: CFI.T('这一轮没有可用的结果；去「诊断」看日志最后几行。') }); }
+				empty: function () { return CFI.ui.Empty({ title: CFI.T('没有达标 IP'), detail: CFI.T('这一轮没有可用的结果；去「日志」看最后几行。') }); }
 			});
 			CFI.dom.clear(boardWrap);
 			boardWrap.appendChild(table.node);
@@ -481,7 +481,7 @@
 				bannerHost.appendChild(CFI.ui.Empty({
 					title: CFI.sem.stateWord(st),
 					detail: CFI.sem.why(reason),
-					action: CFI.ui.Button({ kind: 'link', label: CFI.T('去诊断看日志'), onClick: actions.gotoDiag }).node
+					action: CFI.ui.Button({ kind: 'link', label: CFI.T('去看日志'), onClick: actions.gotoLogs }).node
 				}));
 			} else if (st.intercepted == 1) {
 				bannerHost.appendChild(CFI.ui.Msg({

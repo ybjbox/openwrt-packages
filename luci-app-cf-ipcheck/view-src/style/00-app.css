@@ -215,19 +215,16 @@
 .cfp .dc-note { padding: 2px 8px 0 2.4em; font-size: 11px; }
 
 /* ---- 日志 ------------------------------------------------------------ */
-.cfp-log > summary { display: flex; align-items: baseline; gap: 10px; cursor: pointer; list-style: none; margin-bottom: 8px; }
-.cfp-log > summary::-webkit-details-marker { display: none; }
-.cfp-log > summary h3 { margin: 0; padding: 0; background: none; }
-.cfp-log > summary::before { content: '▸'; color: var(--cfi-muted); }
-.cfp-log[open] > summary::before { content: '▾'; }
-.cfp .cfp-hint { font-size: 11px; }
 .cfp .log-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
 .cfp .log-meta { margin-left: auto; font-size: 11px; }
+.cfp .logwrap { position: relative; }
 .cfp .logbox {
 	position: relative; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 	font-size: 12px; line-height: 1.55; max-height: min(50vh, 480px); overflow: auto;
 	border-top: 1px solid var(--cfi-line); border-bottom: 1px solid var(--cfi-line); padding: 4px 2px;
 }
+/* 独立日志页：把整页高度让给日志 */
+.cfp .cfp-logs .logbox { max-height: min(66vh, 720px); }
 .cfp .lline { display: flex; gap: 8px; min-height: 1.45em; }
 .cfp .lts { flex: 0 0 9.2em; color: var(--cfi-muted); white-space: nowrap; }
 .cfp .lmsg { flex: 1 1 auto; word-break: break-all; }
@@ -470,6 +467,7 @@
 	.cfp-main { grid-template-columns: minmax(0, 1fr); }
 	.cfp-side { grid-template-columns: 1fr; }
 	.cfp .card { padding: 14px; }
+	.cfp .cfp-logs .logbox { max-height: 60vh; }
 	.cfp .board-tools { width: 100%; }
 	.cfp .board-tools .ctl { flex: 1 1 6em; }
 	.cfp .tbl-scroll { border: 0; border-radius: 0; overflow: visible; max-height: none; }

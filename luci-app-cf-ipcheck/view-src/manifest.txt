@@ -11,6 +11,7 @@ js 56-form-sources.js
 js 57-form-dns.js
 js 60-run.js
 js 70-diag.js
+js 75-logs.js
 js 80-set.js
 js 90-shell.js
 js 99-view.js

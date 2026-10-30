@@ -105,7 +105,7 @@
 
 		function pollTick() {
 			try {
-				if (store.get().tab === 'diag' && shouldPollLogs())
+				if (shouldPollLogs())
 					logsRefresh();
 				return refresh();
 			} catch (e) {
@@ -140,12 +140,11 @@
 		}
 
 		function shouldPollLogs() {
-			return !!store.get().logAuto && !store.get().logPaused &&
-				!!(shell && shell.diagPane && shell.diagPane.logOpen && shell.diagPane.logOpen());
+			return !!store.get().logAuto && !store.get().logPaused && store.get().tab === 'logs';
 		}
 
 		function logTick() {
-			if (closed || store.get().tab !== 'diag' || !shouldPollLogs())
+			if (closed || !shouldPollLogs())
 				return Promise.resolve();
 			return logsRefresh();
 		}
@@ -289,7 +288,7 @@
 			act('dns', CFI.ipc.LIMIT['dns-sync'], function () { return CFI.ipc.call([ 'dns-sync' ]); }, function (out) {
 				var ok = false, msg = '';
 				try { var o = JSON.parse(out); ok = !!o.ok; msg = String(o.msg || ''); } catch (e) {}
-				flash(ok ? 'ok' : 'warn', ok ? CFI.T('DNS 已更新') : CFI.T('DNS 没有写成'), msg || CFI.T('看「诊断」里的日志最后一行。'));
+				flash(ok ? 'ok' : 'warn', ok ? CFI.T('DNS 已更新') : CFI.T('DNS 没有写成'), msg || CFI.T('看「日志」里的最后一行。'));
 			}, function () {
 				flash('bad', CFI.T('写 DNS 没有回应'), CFI.T('先确认 dns_sync 打开且已经保存。'));
 			});
@@ -417,6 +416,7 @@
 			var tabs = CFI.ui.Tabs([
 				{ id: 'run', label: CFI.T('运行') },
 				{ id: 'diag', label: CFI.T('诊断') },
+				{ id: 'logs', label: CFI.T('日志') },
 				{ id: 'set', label: CFI.T('设置') }
 			], 'run', function (z) { goto(z); });
 
@@ -429,6 +429,7 @@
 
 			var runPane = CFI.panels.run.mount({
 				gotoDiag: function () { goto('diag'); },
+				gotoLogs: function () { goto('logs'); },
 				gotoSet: function () { goto('set'); },
 				run: actRun,
 				stop: actStop,
@@ -443,13 +444,20 @@
 			}, drawer);
 			var diagPane = CFI.panels.diag.mount({
 				check: actCheck, pool: actPool, diag: actDiag,
-				logs: logsRefresh,
 				gotoRun: function () { goto('run'); },
+				gotoSrc: function () {
+					pendingSrcOpen = true;
+					goto('set');
+				}
+			});
+			var logsPane = CFI.panels.logs.mount({
+				logs: logsRefresh,
+				copyLogs: actCopyLogs,
 				logAuto: function () {
 					var on = !store.get().logAuto;
 					store.patch({ logAuto: on });
 					CFI.prefs.set(CFI.prefs.NS + 'logs.auto', on ? '1' : '0');
-					if (on && store.get().tab === 'diag' && shouldPollLogs())
+					if (on && shouldPollLogs())
 						startLogPoll();
 					else
 						stopLogPoll();
@@ -457,21 +465,10 @@
 				logFull: function () { store.patch({ logFull: !store.get().logFull }); },
 				logPause: function (on) {
 					store.patch({ logPaused: !!on });
-					if (shouldPollLogs() && store.get().tab === 'diag')
+					if (shouldPollLogs())
 						startLogPoll();
 					else
 						stopLogPoll();
-				},
-				logToggle: function () {
-					if (store.get().tab === 'diag' && shouldPollLogs())
-						startLogPoll();
-					else
-						stopLogPoll();
-				},
-				copyLogs: actCopyLogs,
-				gotoSrc: function () {
-					pendingSrcOpen = true;
-					goto('set');
 				}
 			});
 			var setPane = CFI.panels.set.mount({
@@ -489,6 +486,7 @@
 			var panes = {
 				run: el('section', { class: 'pane on', id: 'cfi-pane-run', role: 'tabpanel', 'aria-labelledby': 'cfi-zone-run' }, runPane.node),
 				diag: el('section', { class: 'pane', id: 'cfi-pane-diag', role: 'tabpanel', 'aria-labelledby': 'cfi-zone-diag' }, diagPane.node),
+				logs: el('section', { class: 'pane', id: 'cfi-pane-logs', role: 'tabpanel', 'aria-labelledby': 'cfi-zone-logs' }, logsPane.node),
 				set: el('section', { class: 'pane', id: 'cfi-pane-set', role: 'tabpanel', 'aria-labelledby': 'cfi-zone-set' }, setPane.node)
 			};
 
@@ -497,11 +495,12 @@
 			root.appendChild(tabs.node);
 			root.appendChild(panes.run);
 			root.appendChild(panes.diag);
+			root.appendChild(panes.logs);
 			root.appendChild(panes.set);
 
 			shell = {
 				root: root, flashHost: flashHost, tabs: tabs, panes: panes,
-				drawer: drawer, diagPane: diagPane, setPane: setPane, runPane: runPane
+				drawer: drawer, diagPane: diagPane, logsPane: logsPane, setPane: setPane, runPane: runPane
 			};
 
 			store.select(function (s) {
@@ -533,9 +532,14 @@
 				var st = s.status || {};
 				return [ CFI.store.diagKey(s), CFI.store.roundKey(st),
 					JSON.stringify(s.pool || null), JSON.stringify(s.diag || null),
-					CFI.store.logsKey(s, { logFull: s.logFull, logPaused: s.logPaused, logAuto: s.logAuto }),
 					JSON.stringify(s.busy || {}), s.busyTick || 0, Math.floor(Date.now() / 5000) ].join('##');
 			}, function (s) { diagPane.update(s); });
+
+			store.select(function (s) {
+				return [ CFI.store.logsKey(s, {
+						logFull: s.logFull, logPaused: s.logPaused, logAuto: s.logAuto
+					}), (s.busy || {}).logs ? 1 : 0 ].join('##');
+			}, function (s) { logsPane.update(s); });
 
 			store.select(function (s) { return CFI.store.setKey(s); }, function (s) { setPane.update(s); });
 
@@ -549,7 +553,7 @@
 					openSetSources();
 					store.patch({});
 				}, function () {
-					flash('bad', CFI.T('配置表单没渲染出来'), CFI.T('页面其它部分仍可用；先看「诊断」里的日志。'));
+					flash('bad', CFI.T('配置表单没渲染出来'), CFI.T('页面其它部分仍可用；先看「日志」里的记录。'));
 				});
 			} catch (e) {
 				flash('bad', CFI.T('配置表单没渲染出来'), String(e.message || e));
@@ -577,6 +581,11 @@
 		}
 
 		function goto(zone, sub, arg, persist) {
+			/* 旧深链 #/cfi/diag/logs → 独立日志页 */
+			if (zone === 'diag' && sub === 'logs') {
+				zone = 'logs';
+				sub = '';
+			}
 			var z = CFI.nav.ZONES.indexOf(zone) >= 0 ? zone : 'run';
 			var switched = store.get().tab !== z;
 			store.patch({ tab: z });
@@ -604,16 +613,19 @@
 				CFI.nav.writeRoute(z, sub || '', arg || '', false);
 				CFI.prefs.rememberZone(z);
 			}
-			if (z === 'diag' && sub === 'logs' && shell) {
-				shell.diagPane.openLogs();
-				/* 深链进来时日志还没取过：立刻拉一次，不等 4 秒后的轮询 */
+			if (z === 'logs') {
+				/* 首次进来日志还没取过：立刻拉一次，不等 4 秒后的轮询 */
 				if (!store.get().logs)
 					logsRefresh();
-			}
-			if (z === 'diag' && shouldPollLogs())
-				startLogPoll();
-			else
+				if (shell && shell.logsPane && shell.logsPane.reveal)
+					shell.logsPane.reveal();
+				if (shouldPollLogs())
+					startLogPoll();
+				else
+					stopLogPoll();
+			} else {
 				stopLogPoll();
+			}
 			if (z === 'set') {
 				pendingGroup = sub || '';
 				scrollSetGroup();

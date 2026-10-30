@@ -62,7 +62,7 @@ function load() {
 const CFI = load();
 
 test('构建版本与包版本一致', () => {
-	assert.equal(CFI.build, 'r140');
+	assert.equal(CFI.build, 'r141');
 });
 
 test('IPC：9 个方法与超时预算', () => {
@@ -152,6 +152,7 @@ test('dns_targets 存储形态：分号单行往返字节不变，换行输入�
 
 test('hash：#/cfi/<zone> 直通，旧 #cf-tab= 一律不识别', () => {
 	assert.equal(CFI.nav.parseRoute('#/cfi/run').zone, 'run');
+	assert.equal(CFI.nav.parseRoute('#/cfi/logs').zone, 'logs');
 	assert.equal(CFI.nav.parseRoute('#/cfi/diag/logs').sub, 'logs');
 	assert.equal(CFI.nav.parseRoute('#/cfi/run/ip/1.1.1.1').arg, '1.1.1.1');
 	assert.equal(CFI.nav.parseRoute('#/cfi/set/dns').sub, 'dns');
@@ -170,6 +171,8 @@ test('存储：旧键零读写，新键只在 cfi3.* 前缀下', () => {
 	assert.equal(ls.savedZone(), null, '旧键不能被当成当前区');
 	ls.set('cfi3.zone', 'set');
 	assert.equal(ls.savedZone(), 'set');
+	ls.set('cfi3.zone', 'logs');
+	assert.equal(ls.savedZone(), 'logs');
 	ls.set('cfi3.zone', 'nope');
 	assert.equal(ls.savedZone(), null, '未知区回落');
 });

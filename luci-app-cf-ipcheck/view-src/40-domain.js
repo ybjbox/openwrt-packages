@@ -4,7 +4,7 @@
 	/* ---- 导航：只认 #/cfi/<zone>[/<sub>[/<arg>]] --------------------------
 	 * 旧版 #cf-tab= 前缀一律不识别（2026-10-29 重设计时明确重置），
 	 * 落默认区。开抽屉用 pushState（Back 即关），切区用 replaceState。 */
-	var ZONES = [ 'run', 'diag', 'set' ];
+	var ZONES = [ 'run', 'diag', 'logs', 'set' ];
 
 	function parseRoute(hash) {
 		var h = String(hash || '').replace(/^#\/?/, '');
