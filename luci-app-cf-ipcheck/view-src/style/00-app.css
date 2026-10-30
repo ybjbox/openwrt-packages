@@ -109,7 +109,9 @@
 
 /* ---- 按钮：沿用 cbi-button，只补图标与忙碌态 -------------------------- */
 .cfp .btn { display: inline-flex; align-items: center; gap: 6px; }
-.cfp .btn.cbi-button:not(.primary):not(.danger) { color: inherit; background: transparent; border-color: var(--cfi-line-strong); }
+.cfp .btn.cbi-button:not(.primary):not(.danger):not(.cbi-button-add) { color: inherit; background: transparent; border-color: var(--cfi-line-strong); }
+/* 原生 DynamicList 的「+」：主题锁死白字；透明底会变成白字白底，保持主色填充 */
+.cfp .btn.cbi-button.cbi-button-add { background: var(--cfi-primary); border-color: var(--cfi-primary); }
 .cfp .btn.primary { color: var(--cfi-on-primary); }
 .cfp .btn.danger { color: var(--cfi-bad); }
 .cfp .btn .bi { width: 1em; height: 1em; display: inline-flex; align-items: center; justify-content: center; opacity: .85; }
@@ -122,8 +124,8 @@
 	border-top-color: transparent; border-radius: 50%; animation: cfi-spin .8s linear infinite;
 }
 @keyframes cfi-spin { to { transform: rotate(360deg); } }
-.cfp .btn.link { border: 0; background: none; padding: 2px 4px; color: var(--cfi-primary); }
-.cfp .btn.link:hover { background: color-mix(in srgb, var(--cfi-primary) 10%, transparent); }
+.cfp .btn.link { color: var(--cfi-primary); }
+.cfp .btn.link:hover { border-color: var(--cfi-primary); background: color-mix(in srgb, var(--cfi-primary) 12%, var(--cfi-card)); }
 
 /* ---- 提示 / 空态 / 进度 ---------------------------------------------- */
 .cfp .msg {
@@ -398,7 +400,21 @@
 .cfp .btn.primary:hover { filter: brightness(1.05); }
 .cfp .btn.danger { color: var(--cfi-bad); border-color: color-mix(in srgb, var(--cfi-bad) 45%, var(--cfi-line)); background: transparent; }
 .cfp .btn.quiet { background: var(--cfi-card); }
-.cfp .btn.link { border: 0; box-shadow: none; background: none; color: var(--cfi-primary); padding: 2px 4px; min-height: 0; }
+/* link 型也是按钮：保留主色文字，但必须看得到边界 */
+.cfp .btn.link {
+	color: var(--cfi-primary);
+	border-color: var(--cfi-primary);
+	background: color-mix(in srgb, var(--cfi-primary) 4%, var(--cfi-card));
+	box-shadow: none;
+	padding: 4px 10px;
+	min-height: 32px;
+}
+.cfp .log-bar .btn.link,
+.cfp .dnsrow .btn.link,
+.cfp .dnsrows-add .btn.link { min-height: 30px; padding: 3px 10px; font-size: 12px; }
+.cfp .groups-bar .btn.link { min-height: 34px; }
+.cfp .btn.log-pill { min-height: 0; padding: 3px 9px; }
+.cfp .btn:focus-visible { outline: 2px solid var(--cfi-primary); outline-offset: 2px; }
 .cfp .btn.sm { min-height: 30px; padding: 3px 10px; font-size: 12px; }
 
 /* 工具栏与列菜单 */
