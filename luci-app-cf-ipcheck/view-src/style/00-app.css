@@ -280,7 +280,8 @@
 .cfp .cbi-section[hidden] { display: none; }
 .cfp .help-q {
 	display: inline-flex; align-items: center; justify-content: center;
-	min-width: 22px; min-height: 22px; margin-left: 6px; padding: 0;
+	width: 22px; height: 22px; min-width: 22px; min-height: 22px;
+	margin-left: 6px; padding: 0;
 	border: 1px solid var(--cfi-line-strong); border-radius: 50%;
 	background: transparent; font: inherit; font-size: 11px; line-height: 1; cursor: pointer;
 }
@@ -341,7 +342,7 @@
 	.cfp .dc > summary { grid-template-columns: minmax(5.5em, max-content) 4em 6em minmax(0, 1fr); }
 	.cfp .dnsrow { grid-template-columns: 1fr 1fr; }
 	.cfp .dnsrow-h { display: none; }
-	.cfp .help-q { min-width: 44px; min-height: 44px; }
+	.cfp .help-q { width: 44px; height: 44px; min-width: 44px; min-height: 44px; }
 	.cfp input[type="text"], .cfp input[type="password"], .cfp input[type="number"],
 	.cfp select, .cfp textarea { font-size: 16px; }
 }
