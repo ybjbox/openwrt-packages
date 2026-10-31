@@ -771,7 +771,10 @@
 		}
 
 		return {
-			node: el('div', { class: 'logwrap' }, [ meta, box, pill ]),
+			node: el('div', { class: 'logwrap' }, [
+				meta,
+				el('div', { class: 'logstage' }, [ box, pill ])
+			]),
 			ingest: ingest,
 			notice: notice,
 			setFilter: setFilter,

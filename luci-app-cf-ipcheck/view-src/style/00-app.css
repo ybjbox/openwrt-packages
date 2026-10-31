@@ -226,6 +226,7 @@
 .cfp .log-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
 .cfp .log-meta { margin-left: auto; font-size: 11px; }
 .cfp .logwrap { position: relative; }
+.cfp .logstage { position: relative; }
 .cfp .logbox {
 	position: relative; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 	font-size: 12px; line-height: 1.55; max-height: min(50vh, 480px); overflow: auto;

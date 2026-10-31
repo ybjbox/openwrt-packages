@@ -355,7 +355,7 @@ test('日志：往回翻时新行前插，滚动位置跟着补，并提示有�
 	lv.ingest('a\nb\nc');
 	assert.match(lv.box.childNodes[0].textContent, /c/);
 	assert.equal(lv.box.scrollTop, 120, '插在上方的高度补回，眼前内容不动');
-	const pill = lv.node.childNodes[2];
+	const pill = lv.node.querySelectorAll('.log-pill')[0];
 	assert.equal(pill.hidden, false);
 	assert.match(pill.textContent, /有新日志/);
 	assert.match(pill.textContent, /↑/);
