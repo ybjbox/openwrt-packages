@@ -212,7 +212,7 @@
 				onClick: function () { checkRow(row); }
 			});
 			var delBtn = CFI.ui.Button({
-				kind: 'link', label: CFI.T('删除'), ariaLabel: CFI.T('删除这一条源'),
+				kind: 'danger', label: CFI.T('删除'), ariaLabel: CFI.T('删除这一条源'),
 				onClick: function () {
 					var i = src.rows.indexOf(row);
 					if (i >= 0)

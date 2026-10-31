@@ -14,6 +14,22 @@
 		var pausedNote = el('p', { class: 'log-paused', hidden: true },
 			CFI.T('已暂停：不再自动拉取。点「继续」恢复；下面这份是暂停前的最后一份。'));
 
+		/* 开关状态不只看文字：选中态同时给底色，便于一眼分辨 */
+		function markToggle(btn, on, warn, pressed) {
+			if (!btn || !btn.node)
+				return;
+			if (on && !warn)
+				btn.node.classList.add('is-on');
+			else
+				btn.node.classList.remove('is-on');
+			if (warn && on)
+				btn.node.classList.add('is-warn');
+			else
+				btn.node.classList.remove('is-warn');
+			if (pressed)
+				btn.node.setAttribute('aria-pressed', on ? 'true' : 'false');
+		}
+
 		var autoBtn = CFI.ui.Button({ kind: 'link', label: CFI.T('自动刷新：开'), onClick: actions.logAuto });
 		var fullBtn = CFI.ui.Button({ kind: 'link', label: CFI.T('只看时刻'), onClick: actions.logFull });
 		var followBtn = CFI.ui.Button({ kind: 'link', label: CFI.T('跟随最新：开'), onClick: function () {
@@ -21,6 +37,7 @@
 			CFI.prefs.set(CFI.prefs.NS + 'logs.follow', on ? '1' : '0');
 			logView.setFollow(on);
 			followBtn.update({ label: on ? CFI.T('跟随最新：开') : CFI.T('跟随最新：关') });
+			markToggle(followBtn, on, false, true);
 		} });
 		var pauseBtn = CFI.ui.Button({ kind: 'link', label: CFI.T('暂停'), onClick: function () {
 			var on = !CFI.prefs.getBool(CFI.prefs.NS + 'logs.paused', false);
@@ -42,6 +59,11 @@
 			logView.setFilter(bui.logFilter);
 		});
 
+		markToggle(autoBtn, CFI.prefs.get(CFI.prefs.NS + 'logs.auto', '1') !== '0', false, true);
+		markToggle(fullBtn, false, false, false);
+		markToggle(followBtn, CFI.prefs.getBool(CFI.prefs.NS + 'logs.follow', true), false, true);
+		markToggle(pauseBtn, CFI.prefs.getBool(CFI.prefs.NS + 'logs.paused', false), true, false);
+
 		var body = el('article', { class: 'card cfp-logs' }, [
 			el('div', { class: 'card-h' }, [
 				el('h2', { text: CFI.T('日志') }),
@@ -59,6 +81,10 @@
 			autoBtn.update({ label: state.logAuto ? CFI.T('自动刷新：开') : CFI.T('自动刷新：关') });
 			fullBtn.update({ label: state.logFull ? CFI.T('只看时刻') : CFI.T('显示完整时刻') });
 			pauseBtn.update({ label: state.logPaused ? CFI.T('继续') : CFI.T('暂停') });
+			markToggle(autoBtn, !!state.logAuto, false, true);
+			markToggle(fullBtn, !!state.logFull, false, false);
+			markToggle(pauseBtn, !!state.logPaused, true, false);
+			markToggle(followBtn, CFI.prefs.getBool(CFI.prefs.NS + 'logs.follow', true), false, true);
 			pausedNote.hidden = !state.logPaused;
 			if (!lg) return;
 			if (lg.state === 'ok') {
