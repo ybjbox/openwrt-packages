@@ -63,7 +63,7 @@
 			if (!lg) return;
 			if (lg.state === 'ok') {
 				logView.ingest(lg.text);
-				/* 首次上屏：日志比一屏长时贴到最新，而不是停在最旧一行 */
+				/* 首次上屏：日志比一屏长时回到最上面（最新一行） */
 				if (!painted) {
 					painted = true;
 					reveal();

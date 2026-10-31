@@ -243,7 +243,7 @@
 .cfp .logbox.paused { opacity: .7; }
 .cfp .log-paused { margin: 0 0 6px; padding: 5px 8px; border-left: 3px solid var(--cfi-warn); font-size: 12px; }
 .cfp .log-pill {
-	position: absolute; right: 10px; bottom: 10px; padding: 3px 9px;
+	position: absolute; right: 10px; top: 10px; padding: 3px 9px;
 	border: 1px solid var(--cfi-line-strong); background: var(--background-color, #fff); font-size: 11px;
 }
 .cfp .log-notice { padding: 10px 4px; font-size: 12px; }

@@ -643,7 +643,7 @@
 		};
 	}
 
-	/* 日志：增量追加 + 滚动锚点 + 过滤/暂停。 */
+	/* 日志：最新在上 + 增量前插 + 滚动锚点 + 过滤/暂停。 */
 	function LogView(p) {
 		var box = el('div', { class: 'logbox', 'aria-live': 'off', tabindex: '0' });
 		var meta = el('span', { class: 'log-meta dim' });
@@ -655,26 +655,28 @@
 		var full = false;
 		var stick = true;
 
-		function nearBottom() {
-			return box.scrollHeight - box.scrollTop - (box.clientHeight || 0) < 24;
+		function nearTop() {
+			return box.scrollTop < 24;
 		}
 
-		function appendLine(line) {
+		/* 日志按「最新在上」排列：新行插到最前，上限淘汰最后（最旧）一行。 */
+		function appendLine(line, atTop) {
 			var st = CFI.log.stamp(line, full);
 			var tone = CFI.log.tone(line);
 			var row = el('div', { class: 'lline' + (tone ? ' ' + tone : '') }, [
 				el('span', { class: 'lts', text: st ? st.shown : '', title: st ? st.title : '' }),
 				el('span', { class: 'lmsg', text: st ? st.rest : line })
 			]);
-			box.appendChild(row);
+			if (atTop && box.firstChild)
+				box.insertBefore(row, box.firstChild);
+			else
+				box.appendChild(row);
 			rows++;
 			if (rows > cap) {
-				var h = box.scrollHeight;
-				while (rows > cap && box.firstChild) {
-					box.removeChild(box.firstChild);
+				while (rows > cap && box.lastChild) {
+					box.removeChild(box.lastChild);
 					rows--;
 				}
-				box.scrollTop = Math.max(0, box.scrollTop - (h - box.scrollHeight));
 			}
 		}
 
@@ -682,7 +684,8 @@
 			CFI.dom.clear(box);
 			rows = 0;
 			var lines = String(text).split(/\r?\n/);
-			for (var i = 0; i < lines.length; i++) {
+			/* 从最后一行往前追加，DOM 顺序即「最新在上」 */
+			for (var i = lines.length - 1; i >= 0; i--) {
 				if (lines[i])
 					appendLine(lines[i]);
 			}
@@ -690,14 +693,19 @@
 
 		function ingest(text) {
 			text = String(text || '');
-			var follow = nearBottom();
 			if (text === prev)
 				return;
+			var follow = stick && nearTop();
+			var beforeH = box.scrollHeight;
+			var beforeTop = box.scrollTop;
+			var added = 0;
 			if (prev && text.indexOf(prev) === 0) {
 				var tail = text.slice(prev.length).split(/\r?\n/);
 				for (var i = 0; i < tail.length; i++) {
-					if (tail[i])
-						appendLine(tail[i]);
+					if (tail[i]) {
+						appendLine(tail[i], true);
+						added++;
+					}
 				}
 			} else if (prev && (prev.indexOf(text) === 0 ||
 					(text.length < prev.length && prev.slice(-text.length) === text))) {
@@ -709,17 +717,23 @@
 				rebuild(text);
 			}
 			prev = text;
-			if (stick && nearBottom()) {
-				box.scrollTop = box.scrollHeight;
-			} else {
+			if (follow) {
+				box.scrollTop = 0;
+			} else if (added) {
+				/* 用户正往回翻：新行插在上方，补回高度让眼前内容不动 */
+				var delta = box.scrollHeight - beforeH;
+				if (delta > 0)
+					box.scrollTop = beforeTop + delta;
+			}
+			if (!follow && added) {
 				pill.hidden = false;
-				pill.textContent = CFI.T('有新日志 ↓');
+				pill.textContent = CFI.T('有新日志 ↑');
 			}
 			meta.textContent = CFI.T('%s 行').format(String(rows));
 		}
 
 		pill.addEventListener('click', function () {
-			box.scrollTop = box.scrollHeight;
+			box.scrollTop = 0;
 			pill.hidden = true;
 		});
 
@@ -743,7 +757,7 @@
 		function setFollow(b) {
 			stick = !!b;
 			if (stick) {
-				box.scrollTop = box.scrollHeight;
+				box.scrollTop = 0;
 				pill.hidden = true;
 			}
 		}

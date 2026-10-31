@@ -80,6 +80,7 @@ function makeEl(tag) {
 		querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
 	};
 	Object.defineProperty(n, 'firstChild', { get() { return this.childNodes[0] || null; } });
+	Object.defineProperty(n, 'lastChild', { get() { return this.childNodes[this.childNodes.length - 1] || null; } });
 	Object.defineProperty(n, 'nextSibling', {
 		get() {
 			const p = this.parentNode;
@@ -203,17 +204,21 @@ test('表格：空态占位行在有数据后被摘掉', () => {	const t = CFI.u
 });
 
 /* ---- 2. 日志增量 ------------------------------------------------------- */
-test('日志：文本是上一版的超集时只追加，已有行节点不变', () => {
+test('日志：最新在上；文本是上一版的超集时只前插，已有行节点不变', () => {
 	const lv = CFI.ui.LogView({ cap: 600 });
 	lv.ingest('a\nb');
+	assert.match(lv.box.childNodes[0].textContent, /b/, '最新一行在最上面');
+	assert.match(lv.box.childNodes[1].textContent, /a/);
 	const first = lv.box.childNodes[0];
 	const second = lv.box.childNodes[1];
 	assert.equal(lv.box.childNodes.length, 2);
 
 	lv.ingest('a\nb\nc\nd');
 	assert.equal(lv.box.childNodes.length, 4);
-	assert.equal(lv.box.childNodes[0], first, '旧行不许重建（往回翻时会被弹回顶部）');
-	assert.equal(lv.box.childNodes[1], second);
+	assert.match(lv.box.childNodes[0].textContent, /d/);
+	assert.match(lv.box.childNodes[1].textContent, /c/);
+	assert.equal(lv.box.childNodes[2], first, '旧行不许重建（往下翻时会被弹走）');
+	assert.equal(lv.box.childNodes[3], second);
 	assert.equal(lv.count(), 4);
 });
 
@@ -222,6 +227,8 @@ test('日志：被截断时重建并打一条分隔说明', () => {
 	lv.ingest('a\nb\nc');
 	lv.ingest('b\nc');
 	assert.equal(lv.count(), 3, '两行 + 一条截断说明');
+	assert.match(lv.box.childNodes[0].textContent, /c/);
+	assert.match(lv.box.childNodes[1].textContent, /b/);
 	assert.match(lv.box.childNodes[2].textContent, /截断/);
 });
 
@@ -322,11 +329,11 @@ test('日志：850 行进 DOM 只保留 600 行，最早的行被摘掉', () => 
 	lv.ingest(txt);
 	assert.equal(lv.count(), 600);
 	assert.equal(lv.box.childNodes.length, 600);
-	assert.match(lv.box.childNodes[0].textContent, /l250/, '应保留最后 600 行');
-	assert.match(lv.box.childNodes[599].textContent, /l849/);
+	assert.match(lv.box.childNodes[0].textContent, /l849/, '最新的在最上面');
+	assert.match(lv.box.childNodes[599].textContent, /l250/, '应保留最后 600 行');
 });
 
-test('日志：关闭跟随后不自动贴底；重新打开立刻回到底部', () => {
+test('日志：关闭跟随后不自动回顶；重新打开立刻回到最新', () => {
 	const lv = CFI.ui.LogView({ cap: 600 });
 	lv.box.scrollHeight = 1000;
 	lv.box.clientHeight = 100;
@@ -335,7 +342,23 @@ test('日志：关闭跟随后不自动贴底；重新打开立刻回到底部',
 	lv.ingest('a\nb');
 	assert.equal(lv.box.scrollTop, 900, '关跟随后滚动位置不动');
 	lv.setFollow(true);
-	assert.equal(lv.box.scrollTop, 1000, '开跟随立刻贴底');
+	assert.equal(lv.box.scrollTop, 0, '开跟随立刻回到最上面');
+});
+
+test('日志：往回翻时新行前插，滚动位置跟着补，并提示有新日志', () => {
+	const lv = CFI.ui.LogView({ cap: 600 });
+	lv.ingest('a\nb');
+	Object.defineProperty(lv.box, 'scrollHeight', {
+		get() { return lv.box.childNodes.length * 20; }
+	});
+	lv.box.scrollTop = 100;
+	lv.ingest('a\nb\nc');
+	assert.match(lv.box.childNodes[0].textContent, /c/);
+	assert.equal(lv.box.scrollTop, 120, '插在上方的高度补回，眼前内容不动');
+	const pill = lv.node.childNodes[2];
+	assert.equal(pill.hidden, false);
+	assert.match(pill.textContent, /有新日志/);
+	assert.match(pill.textContent, /↑/);
 });
 
 /* ---- 8. DNS 行级脏标记与还原 ------------------------------------------ */
