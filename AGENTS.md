@@ -38,7 +38,7 @@
 sh tools/build-view.sh --check   # 产物与源一致（改完源码先跑 build）
 sh tests/lint.sh                 # 期望：all lint checks passed
 node --test tests/unit/*.test.mjs  # 纯逻辑 + 组件：六态/格式化/dns 往返/切片订阅/表格复用/日志增量/抽屉焦点
-node tests/contract.mjs          # 引擎↔ucode↔ACL↔uci↔字段表↔产物 156 条
+node tests/contract.mjs          # 引擎↔ucode↔ACL↔uci↔字段表↔产物 166 条
 node tests/smoke.mjs             # 最小 DOM 里跑一遍 render
 ```
 
@@ -66,6 +66,8 @@ git ls-files -s luci-app-cf-ipcheck/root/usr/libexec/cf-ipcheck/apply-dns.sh   #
 - **ES5 写法**（`var` / `function`）：`luci.mk` 的 `JsMin` 是字符级压缩器，不认模板字符串。
 - **rpcd 的 ucode 插件里不要用正则字面量**（`/.../.test()` 会在调用时抛 Unknown error，日志无记录），
   也不要用 `String()`；参数校验用逐字符比较（见 `ip4ok`），真正的八位段校验交给引擎 `valid_ip4`。
+- **RPC 参数类型按 ucode `args` 声明走**：`check_source` 的 `index` 是字符串，页面递 number 时
+  rpcd 在入口直接回 `Invalid argument`（页面显示「调不到引擎」）；调用侧写 `String(n)`。
 - **响应式媒体查询不要依赖源文件顺序**：打包时 CssTidy 会把同条件 `@media` 合并到首次出现处；
   重叠范围用 `(min-width: 768px) and (max-width: 1100px)` 写死，别让 1100 的规则落到手机宽度。
 - **源清单的 CBI DynamicList 不能搬出 `.cbi-map`**：实测搬到诊断页后保存会把 `community_sources`
