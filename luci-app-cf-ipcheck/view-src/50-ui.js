@@ -4,6 +4,42 @@
 	var el = CFI.dom.el;
 	var icon = CFI.dom.icon;
 
+	/* 表头问号的悬浮说明：挂到 body 才能逃出 .tbl-scroll 的 overflow 裁剪。 */
+	var tipNode = null;
+	var tipAnchor = null;
+	var tipSeq = 0;
+	function hideTip() {
+		if (tipNode && tipNode.parentNode)
+			tipNode.parentNode.removeChild(tipNode);
+		if (tipAnchor)
+			tipAnchor.removeAttribute('aria-describedby');
+		tipNode = null;
+		tipAnchor = null;
+		if (typeof window !== 'undefined') {
+			window.removeEventListener('scroll', hideTip, true);
+			window.removeEventListener('resize', hideTip, false);
+		}
+	}
+	function showTip(anchor, text) {
+		hideTip();
+		tipNode = el('div', { class: 'cfp-tip', role: 'tooltip', text: text });
+		document.body.appendChild(tipNode);
+		tipAnchor = anchor;
+		tipNode.id = 'cfp-tip-' + (++tipSeq);
+		anchor.setAttribute('aria-describedby', tipNode.id);
+		var r = anchor.getBoundingClientRect();
+		var vw = window.innerWidth || 320;
+		var w = Math.min(320, vw - 24);
+		tipNode.style.width = w + 'px';
+		tipNode.style.left = Math.max(12, Math.min(r.right - w, vw - w - 12)) + 'px';
+		tipNode.style.top = (r.bottom + 8) + 'px';
+		var h = tipNode.offsetHeight || 0;
+		if (r.bottom + 8 + h > (window.innerHeight || 0) - 12)
+			tipNode.style.top = Math.max(12, r.top - h - 8) + 'px';
+		window.addEventListener('scroll', hideTip, true);
+		window.addEventListener('resize', hideTip, false);
+	}
+
 	/* 按钮：节点只建一次，update 只改文案/禁用/忙碌 —— 真实鼠标的 down/up
 	 * 落在同一颗节点上，浏览器才会合成 click。 */
 	function btnClass(kind) {
@@ -93,9 +129,23 @@
 
 		function buildHead() {
 			CFI.dom.clear(thead);
+			hideTip();
 			var tr = el('tr', { class: 'tr table-titles' });
 			cols.forEach(function (c) {
-				var th = el('th', { class: 'th ' + (c.cls || ''), scope: 'col', text: c.h });
+				var th = el('th', { class: 'th ' + (c.cls || ''), scope: 'col' });
+				if (c.tip) {
+					th.appendChild(document.createTextNode(c.h));
+					var tip = el('span', {
+						class: 'th-tip', text: '?', tabindex: '0', role: 'note', 'aria-label': c.tip
+					});
+					tip.addEventListener('mouseenter', function () { showTip(tip, c.tip); });
+					tip.addEventListener('focus', function () { showTip(tip, c.tip); });
+					tip.addEventListener('mouseleave', hideTip);
+					tip.addEventListener('blur', hideTip);
+					th.appendChild(tip);
+				} else {
+					th.textContent = c.h;
+				}
 				if (c.sortable && p.onSort) {
 					th.tabIndex = 0;
 					th.setAttribute('aria-sort', 'none');

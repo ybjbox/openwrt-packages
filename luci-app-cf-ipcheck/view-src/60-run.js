@@ -3,6 +3,7 @@
 
 	var el = CFI.dom.el;
 	var F = CFI.fmt;
+	var QUALITY_NOTE = CFI.T('质量只列异常：抖动 = 同一 IP 多次测得的 TTFB 最大差（ms，>100 才标）；丢包 = 没打通的样本占比；未验到 CF-RAY = 没拿到机房标记；— = 没发现异常。');
 
 	/* 运行区：卡片式读数 + 可排序/筛选的榜单 + 行详情抽屉 + 机房分布。
 	 * 所有交互宿主（工具栏、按钮、表格容器）只建一次，之后只做 update。 */
@@ -14,7 +15,7 @@
 			{ key: 'code', h: 'HTTP', cls: 'r' },
 			{ key: 'ttfb', h: st.probe_metric === 'tcp' ? 'TCP' : 'TTFB', cls: 'r c-ttfb', sortable: true },
 			{ key: 'spd', h: st.speed_unit === 'mib' ? 'MiB/s' : 'MB/s', cls: 'r c-spd', sortable: true },
-			{ key: 'q', h: '质量', cls: 'l c-q' }
+			{ key: 'q', h: '质量', cls: 'l c-q', tip: QUALITY_NOTE }
 		];
 	}
 
@@ -265,7 +266,7 @@
 				return el('span', { class: 'n' }, txt);
 			}
 			var q = quality(it);
-			return el('span', { class: q ? 'q' : 'q none', text: q || F.DASH });
+			return el('span', { class: q ? 'q' : 'q none', text: q || F.DASH, title: QUALITY_NOTE });
 		}
 
 		function sortedFiltered(items) {
