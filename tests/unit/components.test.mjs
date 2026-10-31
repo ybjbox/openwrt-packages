@@ -188,6 +188,24 @@ test('表格：同 key 同内容不换行节点，只重建真正变化的那一
 	assert.equal(tbody.childNodes[1], a1);
 });
 
+test('表头：排序后仍保留 th 类与排序态（Argon 的 .th 规则依赖它）', () => {
+	const t = CFI.ui.Table({
+		cols: [ { key: 'ip', h: 'IP', sortable: true, cls: 'l' } ],
+		keyOf: (r) => r.ip,
+		rowSig: (r) => r.ip,
+		cell: (r) => CFI.dom.el('span', { text: r.ip }),
+		onSort: () => {}
+	});
+	t.update({ rows: [] });
+	t.paintHead({ key: 'ip', dir: 'asc' });
+	const { tbl } = tableParts(t);
+	const th = tbl.childNodes[1].childNodes[0].childNodes[0];
+	assert.match(th.className, /\bth\b/, 'th 类被 paintHead 洗掉会让表头掉回主题的另一套样式');
+	assert.match(th.className, /\bsortable\b/);
+	assert.match(th.className, /\bs-asc\b/);
+	assert.equal(th.getAttribute('aria-sort'), 'ascending');
+});
+
 test('表格：空态占位行在有数据后被摘掉', () => {	const t = CFI.ui.Table({
 		cols: [ { key: 'ip', h: 'IP' } ],
 		keyOf: (r) => r.ip,

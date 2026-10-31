@@ -475,7 +475,14 @@
 	border: 1px solid var(--cfi-line); border-radius: 8px;
 	max-height: min(62vh, 620px); overflow: auto;
 }
-.cfp .tbl th { background: var(--cfi-card2); }
+/* 表头要压过 Argon 对 .th 的主题规则，否则排序过的表头会掉回另一套底色/内衬 */
+#view .cfp .tbl thead th {
+	padding: 9px 10px; font-size: 12px;
+	color: color-mix(in srgb, currentColor 72%, transparent);
+	background: color-mix(in srgb, currentColor 7%, var(--background-color, #fff));
+	border-bottom: 1px solid var(--cfi-line-strong);
+}
+#view .cfp .tbl thead th + th { box-shadow: inset 1px 0 0 var(--cfi-line); }
 .cfp .tbl td { padding: 9px 10px; }
 .cfp .tbl .ip { font-size: 13.5px; }
 .cfp .tbl .lead {

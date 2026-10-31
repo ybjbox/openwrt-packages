@@ -186,8 +186,8 @@
 					continue;
 				var dir = sort.key === key ? sort.dir : 'none';
 				ths[i].setAttribute('aria-sort', dir === 'asc' ? 'ascending' : (dir === 'desc' ? 'descending' : 'none'));
-				ths[i].className = (cols[i] && cols[i].cls ? cols[i].cls + ' ' : '') + 'sortable' +
-					(sort.key === key ? ' s-' + dir : '');
+				ths[i].className = 'th ' + (cols[i] && cols[i].cls ? cols[i].cls + ' ' : '') +
+					'sortable' + (sort.key === key ? ' s-' + dir : '');
 			}
 		}
 
