@@ -50,6 +50,23 @@
 		var host = el('div', { class: 'set-body' });
 		var mapnode = null;
 		var dnsEditor = null;
+		var hints = {};
+		(CFI.form.GROUPS || []).forEach(function (g) {
+			if (g && g.id && g.hint)
+				hints[g.id] = g.hint;
+		});
+
+		/* 分组标题下显示用途提示；折叠时由 section 的 is-fold 规则一起隐藏。 */
+		function addHints(node) {
+			Array.prototype.slice.call(node.querySelectorAll('.cbi-section')).forEach(function (sec) {
+				var hint = hints[sec.getAttribute('data-group')];
+				if (!hint || sec.querySelector('.cfp-sec-hint'))
+					return;
+				var h = directH3(sec);
+				if (h && h.parentNode)
+					h.parentNode.insertBefore(el('p', { class: 'cfp-sec-hint', text: hint }), h.nextSibling);
+			});
+		}
 
 		var bar = el('div', { class: 'groups-bar' }, [
 			CFI.ui.Button({ kind: 'link', label: CFI.T('全部展开'), onClick: function () { setAllFold(false); } }).node,
@@ -195,6 +212,7 @@
 			return m.render().then(function (node) {
 				mapnode = node;
 				markSections(node);
+				addHints(node);
 				loadFolded();
 				sectionsOf(node).forEach(function (sec) {
 					enhanceSection(sec);

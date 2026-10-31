@@ -57,9 +57,11 @@
 		var srcHost = el('div', { class: 'srcedit' });
 		var srcNote = el('div', { class: 'src-note' });
 		var poolHost = el('div', { class: 'pool-result' });
+		var srcCount = el('span', { class: 'cfp-sec-count' });
 		var srcCard = el('section', { class: 'cbi-section cfp-src-edit', hidden: true }, [
 			el('div', { class: 'cfp-sec-h' }, [
 				el('h3', { text: CFI.T('源清单') }),
+				srcCount,
 				el('div', { class: 'cfp-sec-a' }, [ btnCheck.node, btnPool.node ])
 			]),
 			el('p', { class: 'note dim', text: CFI.T('每行一个 HTTPS 文本地址；改完点页面底部「保存并应用」，再检测。') }),
@@ -171,6 +173,7 @@
 
 		function refreshAll() {
 			src.dirty = !sameList(currentUrls(), src.saved);
+			srcCount.textContent = CFI.T('%s 条源').format(String(currentUrls().length));
 			src.rows.forEach(refreshRow);
 			refreshActions();
 			paintNote();

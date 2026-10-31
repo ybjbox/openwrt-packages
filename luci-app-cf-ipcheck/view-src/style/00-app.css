@@ -68,6 +68,7 @@
 .cfp-sec-h { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0; padding: 16px 20px 8px; }
 .cfp-sec-h h3 { margin: 0; padding: 0; background: none; width: auto; flex: 0 1 auto; }
 .cfp-sec-a, .board-tools { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.cfp .cfp-sec-count { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 999px; background: var(--cfi-card2); color: var(--cfi-muted); font-size: 12px; font-weight: 500; }
 .cfp .ctl {
 	background: var(--background-color, #fff); color: inherit;
 	border: 1px solid var(--cfi-line-strong); border-radius: 3px;
@@ -237,9 +238,10 @@
 }
 /* 独立日志页：把整页高度让给日志 */
 .cfp .cfp-logs .logbox { max-height: min(66vh, 720px); }
-.cfp .lline { display: flex; gap: 8px; min-height: 1.45em; }
-.cfp .lts { flex: 0 0 9.6em; color: var(--cfi-muted); white-space: nowrap; }
-.cfp .lmsg { flex: 1 1 auto; word-break: break-all; }
+.cfp .lline { display: flex; gap: 8px; min-height: 1.45em; padding-left: 2px; border-radius: 4px; }
+.cfp .lline:hover { background: color-mix(in srgb, currentColor 4%, transparent); }
+.cfp .lts { flex: 0 0 9.6em; color: var(--cfi-muted); white-space: nowrap; padding-right: 10px; border-right: 1px solid var(--cfi-line); }
+.cfp .lmsg { flex: 1 1 auto; word-break: break-all; padding-left: 2px; }
 .cfp .lline.bad { color: var(--cfi-bad); }
 .cfp .lline.warn { color: var(--cfi-warn); }
 .cfp .logbox.f-warn .lline:not(.warn):not(.bad) { display: none; }
@@ -530,7 +532,8 @@
 @media (min-width: 768px) {
 	.cfp .cbi-section { padding: 20px; }
 }
-.cfp .cbi-section > h3 { margin: 0 0 14px; padding: 0; font-size: 16px; background: none; width: auto; border: 0; border-radius: 0; }
+.cfp .cbi-section > h3 { margin: 0 0 6px; padding: 0; font-size: 16px; background: none; width: auto; border: 0; border-radius: 0; }
+.cfp .cfp-sec-hint { margin: 6px 0 14px; padding-left: 20px; color: var(--cfi-muted); font-size: 12.5px; line-height: 1.55; }
 .cfp .cbi-value-description { font-size: 13px; line-height: 1.65; color: var(--cfi-muted); padding-top: 6px; padding-bottom: 6px; }
 /* 设置分组：点标题展开/收起（80-set 给 h3 加 role / aria-expanded） */
 .cfp .cbi-section > h3.cfp-sec-toggle { display: flex; align-items: center; gap: 8px; min-height: 32px; cursor: pointer; user-select: none; }
@@ -571,6 +574,11 @@
 	.cfp .cfp-logs .logbox { max-height: 60vh; }
 	.cfp .board-tools { width: 100%; }
 	.cfp .board-tools .ctl { flex: 1 1 6em; }
+	.cfp .cfp-board .board-tools { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 6px; }
+	.cfp .cfp-board .board-tools > .ctl { width: 100%; min-width: 0; }
+	.cfp .cfp-board .board-tools > .cols { grid-column: 3; grid-row: 1; align-self: stretch; }
+	.cfp .cfp-board .board-tools > .cols > summary { height: 100%; display: flex; align-items: center; justify-content: center; padding: 0 12px; }
+	.cfp .cfp-board .board-tools > input.ctl[type="search"] { grid-column: 1 / -1; grid-row: 2; }
 	.cfp .tbl-scroll { border: 0; border-radius: 0; overflow: visible; max-height: none; }
 	.cfp .tbl, .cfp .tbl tbody { display: block; white-space: normal; }
 	.cfp .tbl thead { display: none; }
