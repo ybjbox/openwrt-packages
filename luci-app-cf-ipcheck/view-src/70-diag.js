@@ -332,8 +332,6 @@
 				fail ? el('span', { class: 'warn', text: CFI.T('失败 %s：%s').format(String(fail), parts.join(' · ')) }) : null,
 				st.intercepted == 1 ? el('span', { class: 'warn', text: CFI.T('出口被接管') }) : null
 			];
-			if (actions.gotoRun && (st.items || []).length)
-				kids.push(CFI.ui.Button({ kind: 'link', label: CFI.T('回运行看榜单'), onClick: actions.gotoRun }).node);
 			traceHost.appendChild(el('div', { class: 'trace-line t-' + tone }, kids));
 		}
 

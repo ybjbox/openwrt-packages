@@ -476,8 +476,7 @@
 				}
 			}, drawer);
 			var diagPane = CFI.panels.diag.mount({
-				check: actCheck, checkOne: actCheckOne, pool: actPool,
-				gotoRun: function () { goto('run'); }
+				check: actCheck, checkOne: actCheckOne, pool: actPool
 			});
 			var logsPane = CFI.panels.logs.mount({
 				logs: logsRefresh,
