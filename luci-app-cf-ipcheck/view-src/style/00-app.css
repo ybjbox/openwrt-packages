@@ -561,7 +561,7 @@
 	.cfp .tbl td:nth-child(4) { grid-column: 3; grid-row: 1; }
 	.cfp .tbl td.c-colo { grid-column: 2; grid-row: 2; color: var(--cfi-muted); font-size: 12px; }
 	.cfp .tbl td.c-ttfb { grid-column: 3; grid-row: 2; font-size: 12px; }
-	.cfp .tbl td.c-ttfb::before { content: 'TTFB '; color: var(--cfi-muted); }
+	.cfp .tbl td.c-ttfb::before { content: '首字节 '; color: var(--cfi-muted); }
 	.cfp .tbl td.c-spd { grid-column: 2 / span 2; grid-row: 3; }
 	.cfp .tbl td.c-spd::before { content: '吞吐 '; color: var(--cfi-muted); }
 	.cfp .tbl td.c-q { display: none; }

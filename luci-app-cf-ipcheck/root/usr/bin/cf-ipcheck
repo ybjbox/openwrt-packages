@@ -2027,16 +2027,16 @@ test_one_ip() {
 			if [ "$tbps" -gt 0 ]; then
 				tspeed=",\"speed_bps\":$tbps,\"speed_code\":$tscode,\"speed_bytes\":$tsize,\"speed_want\":$twant,\"speed_truncated\":$ttr"
 				tspeed_mb=$(speed_fmt "$tbps")
-				log "单 IP 测速 $ti：HTTP $tcode / TTFB ${ttf}ms / 吞吐 ${tspeed_mb} MB/s"
+				log "单 IP 测速 $ti：HTTP $tcode / 首字节 ${ttf}ms / 吞吐 ${tspeed_mb} MB/s"
 			else
 				tspeed=",\"speed_bps\":null,\"speed_code\":$tscode,\"speed_bytes\":$tsize,\"speed_want\":$twant,\"speed_truncated\":$ttr"
-				log "单 IP 测速 $ti：HTTP $tcode / TTFB ${ttf}ms / 吞吐未测到"
+				log "单 IP 测速 $ti：HTTP $tcode / 首字节 ${ttf}ms / 吞吐未测到"
 			fi
 		else
-			log "单 IP 测速 $ti：HTTP $tcode / TTFB ${ttf}ms / $terr（不测吞吐）"
+			log "单 IP 测速 $ti：HTTP $tcode / 首字节 ${ttf}ms / $terr（不测吞吐）"
 		fi
 	else
-		log "单 IP 延迟 $ti：HTTP $tcode / TTFB ${ttf}ms / $terr"
+		log "单 IP 延迟 $ti：HTTP $tcode / 首字节 ${ttf}ms / $terr"
 	fi
 	printf '{"ok":true,"ip":"%s","mode":"%s","domain":"%s","port":%s,"code":%s,"connect_ms":%s,"tls_ms":%s,"ttfb_ms":%s,"total_ms":%s,"err":"%s"%s}\n' \
 		"$ti" "$tmode" "$(json_str "$tdom2")" "$C_PORT" "$tcode" "$tconn" "$ttls" "$ttf" "$ttot" "$(json_str "$terr")" "$tspeed"
