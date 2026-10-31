@@ -2026,7 +2026,8 @@ test_one_ip() {
 			case "$ttr" in ''|*[!0-9]*) ttr=0 ;; esac
 			if [ "$tbps" -gt 0 ]; then
 				tspeed=",\"speed_bps\":$tbps,\"speed_code\":$tscode,\"speed_bytes\":$tsize,\"speed_want\":$twant,\"speed_truncated\":$ttr"
-				log "单 IP 测速 $ti：HTTP $tcode / TTFB ${ttf}ms / 吞吐 $tbps B/s"
+				tspeed_mb=$(speed_fmt "$tbps")
+				log "单 IP 测速 $ti：HTTP $tcode / TTFB ${ttf}ms / 吞吐 ${tspeed_mb} MB/s"
 			else
 				tspeed=",\"speed_bps\":null,\"speed_code\":$tscode,\"speed_bytes\":$tsize,\"speed_want\":$twant,\"speed_truncated\":$ttr"
 				log "单 IP 测速 $ti：HTTP $tcode / TTFB ${ttf}ms / 吞吐未测到"

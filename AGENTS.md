@@ -68,6 +68,9 @@ git ls-files -s luci-app-cf-ipcheck/root/usr/libexec/cf-ipcheck/apply-dns.sh   #
   也不要用 `String()`；参数校验用逐字符比较（见 `ip4ok`），真正的八位段校验交给引擎 `valid_ip4`。
 - **响应式媒体查询不要依赖源文件顺序**：打包时 CssTidy 会把同条件 `@media` 合并到首次出现处；
   重叠范围用 `(min-width: 768px) and (max-width: 1100px)` 写死，别让 1100 的规则落到手机宽度。
+- **源清单的 CBI DynamicList 不能搬出 `.cbi-map`**：实测搬到诊断页后保存会把 `community_sources`
+  写成空。诊断页用自定义编辑器同步原 section 的 `.item` 隐藏输入（section 留在设置 Map 里、CSS 隐藏）；
+  单源检测只按已保存清单序号走 `check-source N`，不要把页面 URL 拼进 shell。
 - **不加 `po/`**：`i18n-scan.pl` 对 `.js` 只认 `_()` / `N_()`，不认自定义包装 `T()`，
   加了会造成"半翻译"（页面主体永远中文）。
 - **吞吐单位固定十进制 MB/s**（`speed_mbytes`），lint 里 `speed_mbps` / `speed_mibs` 出现即红。
