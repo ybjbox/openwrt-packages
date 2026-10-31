@@ -64,7 +64,7 @@
 		if (kind === 'primary')
 			return 'btn primary cbi-button cbi-button-action important';
 		if (kind === 'danger')
-			return 'btn danger cbi-button cbi-button-negative';
+			return 'btn is-danger';
 		if (kind === 'link')
 			return 'btn link';
 		return 'btn ' + kind + ' cbi-button';
