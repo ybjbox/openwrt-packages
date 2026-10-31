@@ -146,7 +146,9 @@
 
 		function refreshRow(row) {
 			var r = resultOf(row.url);
-			row.res.textContent = r.text;
+			var empty = r.text === F.DASH;
+			row.res.textContent = empty ? '' : r.text;
+			row.res.hidden = empty;
 			row.res.className = 'src-res ' + (r.tone || 'dim');
 			var idx = savedIndex(row.url);
 			var dis = src.dirty || !!src.busy || !!uiBusy.check || idx < 0 || !actions.checkOne;
@@ -208,7 +210,8 @@
 				placeholder: 'https://example.com/ips.txt',
 				'aria-label': CFI.T('源地址')
 			});
-			var res = el('span', { class: 'src-res dim', text: F.DASH });
+			var res = el('span', { class: 'src-res dim', text: '' });
+			res.hidden = true;
 			var row = { url: String(url || '').trim(), input: input, res: res, node: null, btn: null };
 			var checkBtn = CFI.ui.Button({
 				kind: 'link', label: CFI.T('检测'), ariaLabel: CFI.T('检测这一条源'),

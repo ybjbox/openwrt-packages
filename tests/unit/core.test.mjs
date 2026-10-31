@@ -62,7 +62,7 @@ function load() {
 const CFI = load();
 
 test('构建版本与包版本一致', () => {
-	assert.equal(CFI.build, 'r167');
+	assert.equal(CFI.build, 'r168');
 });
 
 test('机房码：常见机场码有中文名，未知码不编造', () => {
