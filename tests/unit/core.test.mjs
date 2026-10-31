@@ -62,16 +62,15 @@ function load() {
 const CFI = load();
 
 test('构建版本与包版本一致', () => {
-	assert.equal(CFI.build, 'r159');
+	assert.equal(CFI.build, 'r160');
 });
 
 test('机房码：常见机场码有中文名，未知码不编造', () => {
 	assert.equal(CFI.colo.name('NRT'), '东京');
 	assert.equal(CFI.colo.name('kix'), '大阪');
 	assert.equal(CFI.colo.name('LAX'), '洛杉矶');
-	assert.equal(CFI.colo.label('NRT'), '东京（NRT）');
 	assert.equal(CFI.colo.name('ZZZ'), '');
-	assert.equal(CFI.colo.label(''), '');
+	assert.equal(CFI.colo.name(''), '');
 });
 
 test('IPC：11 个方法与超时预算', () => {

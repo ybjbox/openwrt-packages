@@ -383,11 +383,11 @@ test('日志：往回翻时新行前插，滚动位置跟着补，并提示有�
 /* ---- 8. 悬浮说明：机房码等节点复用同一个提示层 ------------------------ */
 test('悬浮说明：挂到任意节点，函数取文字，移出即移除', () => {
 	const n = CFI.dom.el('span', { text: 'NRT' });
-	CFI.ui.attachTip(n, () => CFI.colo.label('NRT'));
+	CFI.ui.attachTip(n, () => '东京');
 	n.dispatchEvent({ type: 'mouseenter' });
 	const tip = documentStub.body.querySelectorAll('.cfp-tip')[0];
 	assert.ok(tip, '应把提示层挂到 body');
-	assert.equal(tip.textContent, '东京（NRT）');
+	assert.equal(tip.textContent, '东京');
 	assert.equal(n.getAttribute('aria-describedby'), tip.id);
 	n.dispatchEvent({ type: 'mouseleave' });
 	assert.equal(documentStub.body.querySelectorAll('.cfp-tip').length, 0);

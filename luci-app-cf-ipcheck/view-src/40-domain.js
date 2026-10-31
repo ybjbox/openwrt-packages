@@ -203,12 +203,6 @@
 		return Object.prototype.hasOwnProperty.call(COLO_CITY, c) ? COLO_CITY[c] : '';
 	}
 
-	function coloLabel(code) {
-		var c = String(code || '').toUpperCase();
-		var n = coloName(c);
-		return n ? n + '（' + c + '）' : '';
-	}
-
 	/* ---- 日志 ---------------------------------------------------------- */
 	function logTone(line) {
 		if (/失败|错误|中止|写不动|不是字符设备|找不到|没有 curl/.test(line))
@@ -251,6 +245,6 @@
 		savedZone: savedZone, rememberZone: rememberZone
 	};
 	CFI.dns = { LIMIT: DNS_LIMIT, linesOf: dnsLinesOf, textOf: dnsTextOf };
-	CFI.colo = { name: coloName, label: coloLabel };
+	CFI.colo = { name: coloName };
 	CFI.log = { tone: logTone, stamp: logStamp, TS_RE: LOG_TS_RE };
 })(CFI);

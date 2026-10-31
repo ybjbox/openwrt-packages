@@ -432,7 +432,7 @@
 
 		function build() {
 			var d = el('details', { class: 'dc' });
-			var code = el('span', { class: 'mono' });
+			var code = el('span', { class: 'dc-code' });
 			var n = {
 				d: d, code: code,
 				count: span('r mono', ''),
@@ -440,7 +440,6 @@
 				best: span('mono', '')
 			};
 			d.appendChild(el('summary', {}, [ code, n.count, n.med, n.best ]));
-			attachTip(code, function () { return n.colo ? CFI.colo.label(n.colo) : ''; });
 			n.inner = el('div', { class: 'dcitems' });
 			d.appendChild(n.inner);
 			n.ss = '';
@@ -455,8 +454,10 @@
 
 		function paintSummary(n, r) {
 			CFI.dom.clear(n.code);
-			n.colo = String(r.dc || '');
-			n.code.appendChild(document.createTextNode(String(r.dc)));
+			n.code.appendChild(el('span', { class: 'mono', text: String(r.dc) }));
+			var cn = CFI.colo.name(r.dc);
+			if (cn)
+				n.code.appendChild(el('span', { class: 'colo-name', text: cn }));
 			if (r.empty)
 				n.code.appendChild(el('span', { class: 'tag', text: CFI.T('本轮无') }));
 			n.count.textContent = CFI.fmt.num(r.count);

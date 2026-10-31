@@ -239,10 +239,11 @@
 			if (c.key === 'total') return el('span', { class: 'n', text: F.ms(it.total_ms) });
 			if (c.key === 'colo') {
 				var colo = it.colo ? String(it.colo) : '';
-				var cell = el('span', { class: 'n', text: colo || F.DASH });
-				if (CFI.colo.name(colo))
-					CFI.ui.attachTip(cell, CFI.colo.label(colo));
-				return cell;
+				var kids = [ el('span', { class: 'n', text: colo || F.DASH }) ];
+				var cn = CFI.colo.name(colo);
+				if (cn)
+					kids.push(el('span', { class: 'colo-name', text: cn }));
+				return el('span', { class: 'colocell' }, kids);
 			}
 			if (c.key === 'domain') return el('span', { class: 'dim', text: it.domain || F.DASH });
 			if (c.key === 'ttfb') {
@@ -383,7 +384,7 @@
 				[ CFI.T('TLS'), F.ms(it.tls_ms) + ' ms' ],
 				[ CFI.T('首字节耗时'), F.ms(it.ttfb_ms) + ' ms' ],
 				[ CFI.T('总耗时'), F.ms(it.total_ms) + ' ms' ],
-				[ CFI.T('机房'), it.colo || F.DASH, it.colo ? CFI.colo.label(it.colo) : '' ],
+				[ CFI.T('机房'), it.colo || F.DASH, it.colo ? CFI.colo.name(it.colo) : '' ],
 				[ CFI.T('胜出域名'), it.domain || F.DASH ],
 				[ CFI.T('吞吐'), F.mbps(F.speedOf(it, st.speed_unit === 'mib' ? 'mib' : 'mb')) + unit ],
 				[ CFI.T('丢包'), it.loss != null && isFinite(Number(it.loss)) ? (Number(it.loss) * 100).toFixed(1) + '%' : F.DASH ],
@@ -393,9 +394,7 @@
 			var list = el('dl', { class: 'kv' });
 			rows.forEach(function (r) {
 				list.appendChild(el('dt', { text: r[0] }));
-				var dd = el('dd', { class: 'n', text: r[1] });
-				if (r[2])
-					CFI.ui.attachTip(dd, r[2]);
+				var dd = el('dd', { class: 'n' }, [ el('span', { text: r[1] }), r[2] ? el('span', { class: 'colo-name', text: r[2] }) : null ]);
 				list.appendChild(dd);
 			});
 			var kids = [ list ];
