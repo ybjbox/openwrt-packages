@@ -403,7 +403,7 @@
 			if (d.code != null)
 				parts.push('HTTP ' + String(d.code));
 			if (d.ttfb_ms != null)
-				parts.push('TTFB ' + CFI.fmt.ms(d.ttfb_ms) + ' ms');
+				parts.push('首字节 ' + CFI.fmt.ms(d.ttfb_ms) + ' ms');
 			if (mode === 'speed') {
 				if (d.speed_bps != null && Number(d.speed_bps) > 0) {
 					parts.push(fmtSpeed(d.speed_bps) + speedUnit());

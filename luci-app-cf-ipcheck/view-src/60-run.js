@@ -3,7 +3,7 @@
 
 	var el = CFI.dom.el;
 	var F = CFI.fmt;
-	var QUALITY_NOTE = CFI.T('质量只列异常：抖动 = 同一 IP 多次测得的 TTFB 最大差（ms，>100 才标）；丢包 = 没打通的样本占比；未验到 CF-RAY = 没拿到机房标记；— = 没发现异常。');
+	var QUALITY_NOTE = CFI.T('质量只列异常：抖动 = 同一 IP 多次测得的首字节耗时最大差（ms，>100 才标）；丢包 = 没打通的样本占比；未验到 CF-RAY = 没拿到机房标记；— = 没发现异常。');
 
 	/* 运行区：卡片式读数 + 可排序/筛选的榜单 + 行详情抽屉 + 机房分布。
 	 * 所有交互宿主（工具栏、按钮、表格容器）只建一次，之后只做 update。 */
@@ -13,7 +13,7 @@
 			{ key: 'ip', h: 'IP', cls: 'l' },
 			{ key: 'colo', h: '机房', cls: 'l c-colo', sortable: true },
 			{ key: 'code', h: 'HTTP', cls: 'r' },
-			{ key: 'ttfb', h: st.probe_metric === 'tcp' ? 'TCP' : 'TTFB', cls: 'r c-ttfb', sortable: true },
+			{ key: 'ttfb', h: st.probe_metric === 'tcp' ? 'TCP' : '首字节', cls: 'r c-ttfb', sortable: true },
 			{ key: 'spd', h: st.speed_unit === 'mib' ? 'MiB/s' : 'MB/s', cls: 'r c-spd', sortable: true },
 			{ key: 'q', h: '质量', cls: 'l c-q', tip: QUALITY_NOTE }
 		];
@@ -106,7 +106,7 @@
 		]);
 
 		var sortSel = el('select', { class: 'ctl', 'aria-label': CFI.T('排序') }, [
-			el('option', { value: 'ttfb', text: CFI.T('按 TTFB') }),
+			el('option', { value: 'ttfb', text: CFI.T('按首字节') }),
 			el('option', { value: 'spd', text: CFI.T('按速度') }),
 			el('option', { value: 'colo', text: CFI.T('按机房') })
 		]);
@@ -156,7 +156,7 @@
 			var cols = colsOf(st);
 			table = CFI.ui.Table({
 				cols: cols,
-				caption: CFI.T('榜单：按 TTFB 排序的可用 IP'),
+				caption: CFI.T('榜单：按首字节排序的可用 IP'),
 				keyOf: function (it, i) { return it.ip || ('#' + i); },
 				rowSig: function (it) { return CFI.store.rowSig(it) + '|' + bui.sort.key + bui.sort.dir + bui.filter + bui.q; },
 				cell: function (it, i, c) { return cellOf(it, i, c, lastSt); },
@@ -190,7 +190,7 @@
 
 		var dcList = CFI.ui.DcList({ onTest: actions.testIp });
 		var dcSec = el('article', { class: 'card', hidden: true }, [
-			el('div', { class: 'card-h' }, [ el('h2', { text: CFI.T('机房分布') }), el('span', { class: 'sub', text: CFI.T('按中位 TTFB · 展开可单测') }) ]),
+			el('div', { class: 'card-h' }, [ el('h2', { text: CFI.T('机房分布') }), el('span', { class: 'sub', text: CFI.T('按首字节中位值 · 展开可单测') }) ]),
 			dcList.node
 		]);
 
@@ -375,7 +375,7 @@
 				[ CFI.T('HTTP'), it.code != null ? String(it.code) : F.DASH ],
 				[ CFI.T('TCP 建连'), F.ms(it.connect_ms) + ' ms' ],
 				[ CFI.T('TLS'), F.ms(it.tls_ms) + ' ms' ],
-				[ CFI.T('TTFB'), F.ms(it.ttfb_ms) + ' ms' ],
+				[ CFI.T('首字节耗时'), F.ms(it.ttfb_ms) + ' ms' ],
 				[ CFI.T('总耗时'), F.ms(it.total_ms) + ' ms' ],
 				[ CFI.T('机房'), it.colo || F.DASH ],
 				[ CFI.T('胜出域名'), it.domain || F.DASH ],
