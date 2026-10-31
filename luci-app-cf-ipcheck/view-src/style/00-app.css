@@ -448,6 +448,8 @@
 .cfp .tbl .q.none { color: var(--cfi-muted); }
 .cfp .tbl .spd { gap: 6px; }
 .cfp .tbl .spd-bar { width: 34px; height: 4px; border-radius: 2px; }
+/* 数字槽定宽：不同位数的速度不会推动条形起点，整列条形对齐 */
+.cfp .tbl .c-spd .spd .n { flex: 0 0 3.6em; text-align: right; }
 .cfp .tbl tr.top td:first-child { box-shadow: inset 2px 0 0 var(--cfi-primary); }
 
 /* 侧栏机房：紧凑行 */

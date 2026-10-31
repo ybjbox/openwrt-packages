@@ -240,7 +240,14 @@
 			if (c.key === 'domain') return el('span', { class: 'dim', text: it.domain || F.DASH });
 			if (c.key === 'ttfb') {
 				var v = st.probe_metric === 'tcp' && it.connect_ms != null ? it.connect_ms : it.ttfb_ms;
-				var kids = [ el('span', { class: 'n', text: F.ms(v) }) ];
+				var nv = Number(v);
+				/* 颜色是粗分档，不是准入门槛：HTTP 300/500ms，TCP 80/150ms。
+				 * 准入门槛仍由引擎的 ttfb_limit / total_limit 决定。 */
+				var okAt = st.probe_metric === 'tcp' ? 80 : 300;
+				var warnAt = st.probe_metric === 'tcp' ? 150 : 500;
+				var tone = !isFinite(nv) || nv <= 0 ? '' :
+					(nv <= okAt ? ' ok' : (nv <= warnAt ? ' warn' : ' bad'));
+				var kids = [ el('span', { class: 'n' + tone, text: F.ms(v) }) ];
 				if (st.probe_metric !== 'tcp' && it.net_ttfb_ms != null && isFinite(Number(it.net_ttfb_ms)))
 					kids.push(el('span', { class: 'sub n', text: CFI.T('净 %s').format(F.ms(it.net_ttfb_ms)) }));
 				return el('span', {}, kids);
