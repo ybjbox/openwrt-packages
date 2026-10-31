@@ -128,6 +128,87 @@
 		}).join('; ');
 	}
 
+	/* ---- Cloudflare 机房码 → 中文城市名 --------------------------------
+	 * colo 是 IATA 机场码（NRT/KIX/LAX…），对不熟悉机场码的人是噪声。
+	 * 只做悬停提示，不改榜单里显示的原码；表里没有的码返回空串，不猜。 */
+	var COLO_CITY = {
+		/* 日本 */
+		NRT: '东京', HND: '东京', KIX: '大阪', ITM: '大阪', NGO: '名古屋',
+		CTS: '札幌', FUK: '福冈', OKA: '冲绳', SDJ: '仙台', HIJ: '广岛',
+		KOJ: '鹿儿岛', NGS: '长崎', OIT: '大分', KMQ: '金泽', TOY: '富山',
+		OKJ: '冈山', TAK: '高松', MYJ: '松山', FSZ: '静冈', IBR: '茨城',
+		/* 亚洲其它 */
+		ICN: '首尔', GMP: '首尔', PUS: '釜山', TPE: '台北', TSA: '台北', KHH: '高雄',
+		HKG: '香港', MFM: '澳门', SIN: '新加坡', BKK: '曼谷', DMK: '曼谷',
+		CNX: '清迈', HKT: '普吉', KUL: '吉隆坡', PEN: '槟城', CGK: '雅加达',
+		DPS: '登巴萨', SUB: '泗水', MNL: '马尼拉', CEB: '宿务', SGN: '胡志明市',
+		HAN: '河内', PNH: '金边', RGN: '仰光', DEL: '新德里', BOM: '孟买',
+		BLR: '班加罗尔', MAA: '金奈', CCU: '加尔各答', HYD: '海得拉巴', COK: '科钦',
+		AMD: '艾哈迈达巴德', DAC: '达卡', CMB: '科伦坡', KTM: '加德满都',
+		ISB: '伊斯兰堡', KHI: '卡拉奇', LHE: '拉合尔', MLE: '马累',
+		TAS: '塔什干', ALA: '阿拉木图',
+		/* 大洋洲 */
+		SYD: '悉尼', MEL: '墨尔本', BNE: '布里斯班', PER: '珀斯', ADL: '阿德莱德',
+		CBR: '堪培拉', AKL: '奥克兰', WLG: '惠灵顿', CHC: '基督城', NAN: '楠迪',
+		HNL: '檀香山', GUM: '关岛',
+		/* 北美 */
+		LAX: '洛杉矶', SFO: '旧金山', SJC: '圣何塞', OAK: '奥克兰', SEA: '西雅图',
+		PDX: '波特兰', SMF: '萨克拉门托', SAN: '圣地亚哥', LAS: '拉斯维加斯',
+		PHX: '凤凰城', DEN: '丹佛', SLC: '盐湖城', DFW: '达拉斯', IAH: '休斯顿',
+		AUS: '奥斯汀', SAT: '圣安东尼奥', ORD: '芝加哥', MSP: '明尼阿波利斯',
+		DTW: '底特律', STL: '圣路易斯', ATL: '亚特兰大', MIA: '迈阿密',
+		MCO: '奥兰多', TPA: '坦帕', CLT: '夏洛特', RDU: '罗利', IAD: '华盛顿',
+		BWI: '巴尔的摩', PHL: '费城', EWR: '纽瓦克', JFK: '纽约', LGA: '纽约',
+		BOS: '波士顿', BUF: '布法罗', CLE: '克利夫兰', CMH: '哥伦布',
+		IND: '印第安纳波利斯', CVG: '辛辛那提', BNA: '纳什维尔', MEM: '孟菲斯',
+		MSY: '新奥尔良', MCI: '堪萨斯城', OMA: '奥马哈', OKC: '俄克拉何马城',
+		ANC: '安克雷奇',
+		YYZ: '多伦多', YVR: '温哥华', YUL: '蒙特利尔', YYC: '卡尔加里',
+		YEG: '埃德蒙顿', YOW: '渥太华', YHZ: '哈利法克斯', YWG: '温尼伯',
+		/* 拉美 */
+		MEX: '墨西哥城', GDL: '瓜达拉哈拉', MTY: '蒙特雷', CUN: '坎昆', TIJ: '蒂华纳',
+		GRU: '圣保罗', GIG: '里约热内卢', CNF: '贝洛奥里藏特', POA: '阿雷格里港',
+		CWB: '库里蒂巴', FLN: '弗洛里亚诺波利斯', FOR: '福塔莱萨', REC: '累西腓',
+		SSA: '萨尔瓦多', BSB: '巴西利亚', EZE: '布宜诺斯艾利斯', SCL: '圣地亚哥',
+		LIM: '利马', BOG: '波哥大', MDE: '麦德林', UIO: '基多',
+		MVD: '蒙得维的亚', ASU: '亚松森', LPB: '拉巴斯', CCS: '加拉加斯',
+		/* 欧洲 */
+		LHR: '伦敦', LGW: '伦敦', LCY: '伦敦', MAN: '曼彻斯特', BHX: '伯明翰',
+		EDI: '爱丁堡', DUB: '都柏林', CDG: '巴黎', ORY: '巴黎', MRS: '马赛',
+		LYS: '里昂', AMS: '阿姆斯特丹', BRU: '布鲁塞尔', LUX: '卢森堡',
+		FRA: '法兰克福', MUC: '慕尼黑', BER: '柏林', DUS: '杜塞尔多夫',
+		HAM: '汉堡', STR: '斯图加特', CGN: '科隆', VIE: '维也纳', ZRH: '苏黎世',
+		GVA: '日内瓦', BSL: '巴塞尔', MAD: '马德里', BCN: '巴塞罗那',
+		LIS: '里斯本', OPO: '波尔图', FCO: '罗马', MXP: '米兰', LIN: '米兰',
+		VCE: '威尼斯', NAP: '那不勒斯', PMO: '巴勒莫', ATH: '雅典',
+		SKG: '塞萨洛尼基', IST: '伊斯坦布尔', SAW: '伊斯坦布尔', WAW: '华沙',
+		KRK: '克拉科夫', PRG: '布拉格', BUD: '布达佩斯', OTP: '布加勒斯特',
+		SOF: '索菲亚', ZAG: '萨格勒布', BEG: '贝尔格莱德', LJU: '卢布尔雅那',
+		CPH: '哥本哈根', ARN: '斯德哥尔摩', GOT: '哥德堡', OSL: '奥斯陆',
+		HEL: '赫尔辛基', TLL: '塔林', RIX: '里加', VNO: '维尔纽斯',
+		KEF: '雷克雅未克', SVO: '莫斯科', DME: '莫斯科', LED: '圣彼得堡',
+		KBP: '基辅', MSQ: '明斯克', TBS: '第比利斯', EVN: '埃里温', GYD: '巴库',
+		/* 中东与非洲 */
+		DXB: '迪拜', AUH: '阿布扎比', SHJ: '沙迦', DOH: '多哈', RUH: '利雅得',
+		JED: '吉达', DMM: '达曼', KWI: '科威特城', BAH: '麦纳麦', MCT: '马斯喀特',
+		AMM: '安曼', TLV: '特拉维夫', BEY: '贝鲁特', CAI: '开罗',
+		CMN: '卡萨布兰卡', RAK: '马拉喀什', TUN: '突尼斯', ALG: '阿尔及尔',
+		JNB: '约翰内斯堡', CPT: '开普敦', DUR: '德班', LOS: '拉各斯',
+		ABV: '阿布贾', ACC: '阿克拉', NBO: '内罗毕', ADD: '亚的斯亚贝巴',
+		DAR: '达累斯萨拉姆', EBB: '坎帕拉', KGL: '基加利', LAD: '罗安达', MRU: '路易港'
+	};
+
+	function coloName(code) {
+		var c = String(code || '').toUpperCase();
+		return Object.prototype.hasOwnProperty.call(COLO_CITY, c) ? COLO_CITY[c] : '';
+	}
+
+	function coloLabel(code) {
+		var c = String(code || '').toUpperCase();
+		var n = coloName(c);
+		return n ? n + '（' + c + '）' : '';
+	}
+
 	/* ---- 日志 ---------------------------------------------------------- */
 	function logTone(line) {
 		if (/失败|错误|中止|写不动|不是字符设备|找不到|没有 curl/.test(line))
@@ -170,5 +251,6 @@
 		savedZone: savedZone, rememberZone: rememberZone
 	};
 	CFI.dns = { LIMIT: DNS_LIMIT, linesOf: dnsLinesOf, textOf: dnsTextOf };
+	CFI.colo = { name: coloName, label: coloLabel };
 	CFI.log = { tone: logTone, stamp: logStamp, TS_RE: LOG_TS_RE };
 })(CFI);

@@ -40,6 +40,23 @@
 		window.addEventListener('resize', hideTip, false);
 	}
 
+	/* 给任意节点挂悬浮说明；文字可以传函数，随节点内容变化再取。 */
+	function attachTip(node, text) {
+		if (!node)
+			return node;
+		var get = typeof text === 'function' ? text : function () { return text; };
+		var open = function () {
+			var t = get();
+			if (t)
+				showTip(node, t);
+		};
+		node.addEventListener('mouseenter', open);
+		node.addEventListener('focus', open);
+		node.addEventListener('mouseleave', hideTip);
+		node.addEventListener('blur', hideTip);
+		return node;
+	}
+
 	/* 按钮：节点只建一次，update 只改文案/禁用/忙碌 —— 真实鼠标的 down/up
 	 * 落在同一颗节点上，浏览器才会合成 click。 */
 	function btnClass(kind) {
@@ -138,10 +155,7 @@
 					var tip = el('span', {
 						class: 'th-tip', text: '?', tabindex: '0', role: 'note', 'aria-label': c.tip
 					});
-					tip.addEventListener('mouseenter', function () { showTip(tip, c.tip); });
-					tip.addEventListener('focus', function () { showTip(tip, c.tip); });
-					tip.addEventListener('mouseleave', hideTip);
-					tip.addEventListener('blur', hideTip);
+					attachTip(tip, c.tip);
 					th.appendChild(tip);
 				} else {
 					th.textContent = c.h;
@@ -426,6 +440,7 @@
 				best: span('mono', '')
 			};
 			d.appendChild(el('summary', {}, [ code, n.count, n.med, n.best ]));
+			attachTip(code, function () { return n.colo ? CFI.colo.label(n.colo) : ''; });
 			n.inner = el('div', { class: 'dcitems' });
 			d.appendChild(n.inner);
 			n.ss = '';
@@ -440,6 +455,7 @@
 
 		function paintSummary(n, r) {
 			CFI.dom.clear(n.code);
+			n.colo = String(r.dc || '');
 			n.code.appendChild(document.createTextNode(String(r.dc)));
 			if (r.empty)
 				n.code.appendChild(el('span', { class: 'tag', text: CFI.T('本轮无') }));
@@ -1016,6 +1032,7 @@
 		Empty: Empty,
 		Msg: Msg,
 		Progress: Progress,
-		Tabs: Tabs
+		Tabs: Tabs,
+		attachTip: attachTip
 	};
 })(CFI);

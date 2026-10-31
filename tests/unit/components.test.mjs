@@ -77,7 +77,8 @@ function makeEl(tag) {
 			walk(this);
 			return out;
 		},
-		querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
+		querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+		getBoundingClientRect() { return { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 }; }
 	};
 	Object.defineProperty(n, 'firstChild', { get() { return this.childNodes[0] || null; } });
 	Object.defineProperty(n, 'lastChild', { get() { return this.childNodes[this.childNodes.length - 1] || null; } });
@@ -361,7 +362,21 @@ test('日志：往回翻时新行前插，滚动位置跟着补，并提示有�
 	assert.match(pill.textContent, /↑/);
 });
 
-/* ---- 8. DNS 行级脏标记与还原 ------------------------------------------ */
+/* ---- 8. 悬浮说明：机房码等节点复用同一个提示层 ------------------------ */
+test('悬浮说明：挂到任意节点，函数取文字，移出即移除', () => {
+	const n = CFI.dom.el('span', { text: 'NRT' });
+	CFI.ui.attachTip(n, () => CFI.colo.label('NRT'));
+	n.dispatchEvent({ type: 'mouseenter' });
+	const tip = documentStub.body.querySelectorAll('.cfp-tip')[0];
+	assert.ok(tip, '应把提示层挂到 body');
+	assert.equal(tip.textContent, '东京（NRT）');
+	assert.equal(n.getAttribute('aria-describedby'), tip.id);
+	n.dispatchEvent({ type: 'mouseleave' });
+	assert.equal(documentStub.body.querySelectorAll('.cfp-tip').length, 0);
+	assert.equal(n.getAttribute('aria-describedby'), null);
+});
+
+/* ---- 9. DNS 行级脏标记与还原 ------------------------------------------ */
 test('DNS 编辑器：改一行只标这一行，还原后回到原文', () => {
 	const ed = CFI.form.dns.RowsEditor({
 		value: 'jp.example.com 3 @NRT\nus.example.com 1',
