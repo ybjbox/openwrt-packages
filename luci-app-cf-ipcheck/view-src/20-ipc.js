@@ -11,6 +11,7 @@
 		'run-now': rpc.declare({ object: RPC_OBJECT, method: 'run' }),
 		stop: rpc.declare({ object: RPC_OBJECT, method: 'stop' }),
 		'check-sources': rpc.declare({ object: RPC_OBJECT, method: 'check_sources' }),
+		'check-source': rpc.declare({ object: RPC_OBJECT, method: 'check_source', params: [ 'index' ] }),
 		'dns-sync': rpc.declare({ object: RPC_OBJECT, method: 'dns_sync' }),
 		csv: rpc.declare({ object: RPC_OBJECT, method: 'csv' }),
 		diag: rpc.declare({ object: RPC_OBJECT, method: 'diag' }),
@@ -28,6 +29,8 @@
 		'run-now': 10000,
 		stop: 8000,
 		'check-sources': 45000,
+		/* 单源：最多 8 秒探测 + 段表 4 秒。 */
+		'check-source': 15000,
 		'dns-sync': 30000,
 		csv: 8000,
 		diag: 8000,

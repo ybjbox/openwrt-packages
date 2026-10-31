@@ -57,6 +57,17 @@ function ip4ok(s) {
 	return true;
 }
 
+function digitsok(s) {
+	if (length(s) < 1 || length(s) > 5)
+		return false;
+	for (let i = 0; i < length(s); i++) {
+		const c = substr(s, i, 1);
+		if (c < '0' || c > '9')
+			return false;
+	}
+	return true;
+}
+
 const methods = {
 	status: {
 		call: () => sh('status')
@@ -72,6 +83,17 @@ const methods = {
 	},
 	check_sources: {
 		call: () => sh('check-sources')
+	},
+	// 单源检测：只接受已保存源清单里的序号，URL 由引擎按自己的列表取，
+	// 页面递不进任意地址（也避免把 URL 拼进 shell）。
+	check_source: {
+		args: { index: 'index' },
+		call: (request) => {
+			const index = (request.args && request.args.index) ? '' + request.args.index : '';
+			if (!digitsok(index))
+				return { ok: false, text: null };
+			return sh('check-source ' + index);
+		}
 	},
 	// DNS 同步（可选功能）：把榜首写进 Cloudflare 的 A 记录。
 	// 单独成一个方法而不是复用 run：它的语义是「现在就写一次」，与「跑一轮」无关，

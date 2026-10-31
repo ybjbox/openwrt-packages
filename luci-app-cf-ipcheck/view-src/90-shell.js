@@ -237,6 +237,26 @@
 			});
 		}
 
+		function actCheckOne(index) {
+			var n = Number(index);
+			if (!isFinite(n) || n < 1)
+				return Promise.resolve({ error: 'bad_index' });
+			return CFI.ipc.call([ 'check-source', n ]).then(function (out) {
+				if (out === CFI.ipc.HUNG)
+					return { error: 'hung' };
+				if (out === null || out === undefined)
+					return { error: 'unreachable' };
+				try {
+					var o = JSON.parse(out);
+					return (o && typeof o === 'object') ? o : { error: 'parse_error' };
+				} catch (e) {
+					return { error: 'parse_error' };
+				}
+			}, function () {
+				return { error: 'unreachable' };
+			});
+		}
+
 		function actPool() {
 			act('pool', CFI.ipc.LIMIT.pool, function () { return CFI.ipc.call([ 'pool' ]); }, function (out) {
 				var ips = [];
@@ -455,12 +475,8 @@
 				}
 			}, drawer);
 			var diagPane = CFI.panels.diag.mount({
-				check: actCheck, pool: actPool,
-				gotoRun: function () { goto('run'); },
-				gotoSrc: function () {
-					pendingSrcOpen = true;
-					goto('set');
-				}
+				check: actCheck, checkOne: actCheckOne, pool: actPool,
+				gotoRun: function () { goto('run'); }
 			});
 			var logsPane = CFI.panels.logs.mount({
 				logs: logsRefresh,
@@ -561,8 +577,14 @@
 					/* 订阅回调在挂载前就跑了（mapnode 还是 null）：渲染完补一次 update，
 					 * 否则 DNS 编辑器与「未生效条数」永远不会出现。 */
 					setPane.update(store.get());
+					/* 源清单编辑搬到诊断页：CBI 源 section 留在设置 Map 里（保存链路不变），
+					 * 只隐藏 DOM，并把隐藏字段交给诊断页的自定义编辑器同步。 */
+					var srcSec = shell.panes.set.querySelector('.cbi-section[data-group="sources"]');
+					if (srcSec) {
+						srcSec.classList.add('cfp-src-off');
+						shell.diagPane.setSourceEditor(srcSec);
+					}
 					scrollSetGroup();
-					openSetSources();
 					store.patch({});
 				}, function () {
 					flash('bad', CFI.T('配置表单没渲染出来'), CFI.T('页面其它部分仍可用；先看「日志」里的记录。'));
@@ -575,14 +597,6 @@
 		}
 
 		var pendingGroup = '';
-		var pendingSrcOpen = false;
-
-		function openSetSources() {
-			if (!pendingSrcOpen || !shell || store.get().tab !== 'set')
-				return;
-			if (shell.setPane.openSources && shell.setPane.openSources())
-				pendingSrcOpen = false;
-		}
 
 		function scrollSetGroup() {
 			if (!pendingGroup || !shell || store.get().tab !== 'set')
@@ -643,10 +657,8 @@
 			if (z === 'set') {
 				pendingGroup = sub || '';
 				scrollSetGroup();
-				openSetSources();
 			} else {
 				pendingGroup = '';
-				pendingSrcOpen = false;
 			}
 			/* 深链 #/cfi/run/ip/<ip>：开抽屉，但不改写 URL */
 			if (z === 'run' && sub === 'ip' && arg && shell && shell.runPane.select)

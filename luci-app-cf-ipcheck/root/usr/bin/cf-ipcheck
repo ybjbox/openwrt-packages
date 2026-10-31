@@ -1685,6 +1685,33 @@ check_one_source() { # $1=url $2=序号 —— 结果写进 $RUN_DIR/cs.out.<序
 # 6 条一批时 13 个源要 3 批 = 24 秒，加上段表联网就顶到 rpcd 的 30 秒红线外头；
 # 13 条一批把 13 个源压成一批，最坏 8 秒。同时开 13 条小请求比探测阶段
 # （默认并发 8 条、每条 5 秒超时）还轻，不会把路由器压出别的症状。
+check_source_one() { # $1=已保存源清单里的序号（1 起）
+	idx=${1:-}
+	case "$idx" in
+		''|*[!0-9]*)
+			printf '{"error":"bad_index"}\n'
+			return 0
+			;;
+	esac
+	src=$(printf '%s\n' "$SOURCES" | sed -n "${idx}p")
+	if [ -z "$src" ]; then
+		printf '{"error":"missing_source"}\n'
+		return 0
+	fi
+	log "收到页面指令：检测源 #$idx"
+	CF_NETS=$(cf_nets 4)
+	export CF_NETS
+	[ -n "$CF_NETS" ] || log '拿不到官方网段（也没有缓存），段内占比记 -1'
+	check_one_source "$src" single
+	if [ -s "$RUN_DIR/cs.out.single" ]; then
+		cat "$RUN_DIR/cs.out.single"
+		rm -f "$RUN_DIR/cs.out.single"
+	else
+		printf '{"url":"%s","http":"000","rc":255,"ips":0,"cf_in":-1}' "$(json_str "$src")"
+	fi
+	printf '\n'
+}
+
 check_sources() {
 	load_config
 	i=0
@@ -3723,6 +3750,7 @@ selftest() {
 	check '/17 两端都算段内' "$got" '2'
 	got=$(printf '1.1.1.1\n' | sh "$0" _cfin "" 2>/dev/null)
 	check '没有网段时算出 0 而不是报错' "$got" '0'
+	check 'check-source：非法序号直接拒绝（不联网）' "$(check_source_one 'x')" '{"error":"bad_index"}'
 
 	# 探测命令串是用 printf 拼的（因为要整条交给 su -c），格式与参数最容易错位：
 	# 错位一次的表现为 `-o 5`（把超时秒数当成输出路径）。这里按结构钉，不写死数值，
@@ -4444,6 +4472,7 @@ usage() {
   pool      只打印本轮会用的候选 IP 列表（联网取源，不测速）——核对源配置用
   canary    只跑一次出口接管自检，输出 {"intercepted":0|1}
   check-sources  逐个源体检：HTTP 状态 / 提取到的 IPv4 数 / 落在 CF 官方段内的数量
+  check-source N  只体检已保存源清单里的第 N 条（页面单源检测用）
   logs      输出引擎日志的最近部分（给页面看；最多约 60 KB，且总是从整行开始）
   dns-sync  把当前优选 IP 写进 Cloudflare DNS 的目标记录（可多个记录名、每个可挂多条 A；
             手工触发，绕开关但仍走缓存）
@@ -4482,6 +4511,7 @@ case "${1:-}" in
 	canary)  load_config; printf '{"intercepted":%s}\n' "$(canary_check)" ;;
 	check-sources) log '收到页面指令：检测源可用性'
 	               check_sources ;;
+	check-source) load_config; check_source_one "${2:-}" ;;
 	logs)    load_config; trim_log; print_log ;;
 	# 手工触发一次 DNS 同步（页面「立即写一次」）。这里传 manual：
 	# 人已经明确点了，不该再被 dns_sync 开关拦回去；但仍然走 zone id 缓存 ——

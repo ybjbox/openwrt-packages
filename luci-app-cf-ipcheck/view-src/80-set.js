@@ -218,15 +218,6 @@
 			actions.setSrcPending(n);
 		}
 
-		function openSources() {
-			if (!expandGroup('sources'))
-				return false;
-			var sec = host.querySelector('.cbi-section[data-group="sources"]');
-			var inp = sec.querySelector('.cbi-value[data-name="community_sources"] input[type=text]');
-			if (inp && inp.focus)
-				inp.focus();
-			return true;
-		}
 
 		function render() {
 			var m = CFI.form.create();
@@ -262,7 +253,7 @@
 				dnsEditor.setCodes(st.dc_summary || []);
 		}
 
-		return { node: host, render: render, update: update, openSources: openSources, expandGroup: expandGroup };
+		return { node: host, render: render, update: update, expandGroup: expandGroup };
 	}
 
 	CFI.panels = CFI.panels || {};
