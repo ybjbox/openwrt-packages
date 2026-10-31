@@ -51,17 +51,9 @@
 		var mapnode = null;
 		var dnsEditor = null;
 
-		var onlyChanged = el('label', { class: 'chk' }, [
-			el('input', { type: 'checkbox' }),
-			el('span', { text: CFI.T('只看已改') })
-		]);
-		onlyChanged.firstChild.addEventListener('change', applyFilter);
 		var bar = el('div', { class: 'groups-bar' }, [
-			onlyChanged,
-			el('span', { class: 'bar-gap' }),
 			CFI.ui.Button({ kind: 'link', label: CFI.T('全部展开'), onClick: function () { setAllFold(false); } }).node,
-			CFI.ui.Button({ kind: 'link', label: CFI.T('全部收起'), onClick: function () { setAllFold(true); } }).node,
-			CFI.ui.Button({ kind: 'link', label: CFI.T('去诊断检测'), onClick: actions.gotoDiag }).node
+			CFI.ui.Button({ kind: 'link', label: CFI.T('全部收起'), onClick: function () { setAllFold(true); } }).node
 		]);
 
 		/* ---- 分组折叠：状态存在 cfi3.set.fold（逗号分隔的组名） ---------- */
@@ -135,25 +127,6 @@
 			});
 		}
 
-		function applyFilter() {
-			var changedOnly = onlyChanged.firstChild.checked;
-			Array.prototype.slice.call(host.querySelectorAll('.cbi-value')).forEach(function (row) {
-				var ok = !changedOnly || row.className.indexOf('changed') >= 0;
-				row.hidden = !ok;
-			});
-			sectionsOf(host).forEach(function (sec) {
-				var any = Array.prototype.slice.call(sec.querySelectorAll('.cbi-value')).some(function (r) {
-					return !r.hidden;
-				});
-				sec.hidden = !any;
-				/* 「只看已改」命中段强制展开；取消后回到用户手动记下的折叠状态 */
-				if (changedOnly)
-					setFold(sec, false, false);
-				else
-					setFold(sec, !!folded[sec.getAttribute('data-group')], false);
-			});
-		}
-
 		function expandGroup(group) {
 			var sec = host.querySelector('.cbi-section[data-group="' + group + '"]');
 			if (!sec)
@@ -195,8 +168,6 @@
 				else if (!changed && has)
 					row.className = String(row.className).replace(/\s*changed\b/g, '');
 			});
-			if (onlyChanged.firstChild.checked)
-				applyFilter();
 		}
 
 		function markChanged() {

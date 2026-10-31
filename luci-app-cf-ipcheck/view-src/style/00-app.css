@@ -275,7 +275,6 @@
 	.cfp .src-acts { grid-column: 2; grid-row: 1; }
 }
 .cfp .chk { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
-.cfp .bar-gap { flex: 1 1 auto; }
 .cfp .cbi-value.changed { box-shadow: inset 3px 0 0 var(--cfi-primary); }
 .cfp .cbi-value[hidden] { display: none; }
 .cfp .cbi-section[hidden] { display: none; }

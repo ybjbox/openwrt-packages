@@ -501,7 +501,6 @@
 				}
 			});
 			var setPane = CFI.panels.set.mount({
-				gotoDiag: function () { goto('diag'); },
 				getSources: function () {
 					var s = store.get().sources;
 					return s && s.state === 'ok' ? s.rows : [];
