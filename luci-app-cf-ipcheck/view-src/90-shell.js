@@ -241,7 +241,8 @@
 			var n = Number(index);
 			if (!isFinite(n) || n < 1)
 				return Promise.resolve({ error: 'bad_index' });
-			return CFI.ipc.call([ 'check-source', n ]).then(function (out) {
+			/* ubus 把 index 声明成字符串：递 number 会在 rpcd 入口直接 Invalid argument。 */
+			return CFI.ipc.call([ 'check-source', String(n) ]).then(function (out) {
 				if (out === CFI.ipc.HUNG)
 					return { error: 'hung' };
 				if (out === null || out === undefined)

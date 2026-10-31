@@ -813,6 +813,14 @@ if [ -f "$VIEW" ]; then
     else
         echo "[PASS] copy: 视图里没有「保存并检测」这种做不到的承诺"
     fi
+    # r154 真机实测：ubus 把 check_source 的 index 声明成字符串，页面递 number 时
+    # rpcd 在入口就回 Invalid argument（页面显示「调不到引擎」）；必须 String(n)。
+    if grep -q "check-source', String(" "$VIEW"; then
+        echo "[PASS] arg: 单源检测的 index 按字符串递（ubus 签名要求）"
+    else
+        echo "[FAIL] arg: check-source 的 index 必须 String(n)，否则真机 rpcd 直接 Invalid argument"
+        rl15=1
+    fi
     if [ "$rl15" = 1 ]; then
         fail=1
     else
