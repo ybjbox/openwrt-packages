@@ -141,12 +141,12 @@
 .cfp .empty-t { font-weight: 600; margin-bottom: 4px; }
 .cfp .empty-d { color: var(--cfi-muted); max-width: 70ch; line-height: 1.7; }
 .cfp .empty-a { margin-top: 8px; }
-.cfp .prog { margin: 12px 0 0; }
+.cfp .prog { margin: 14px 0 0; }
 .cfp .pbar { display: flex; align-items: center; gap: 10px; }
-.cfp .pbar-track { flex: 1 1 auto; height: 4px; background: var(--cfi-line); overflow: hidden; }
-.cfp .pbar-fill { display: block; height: 100%; background: var(--cfi-primary); transform: scaleX(0); transform-origin: left; transition: transform 160ms ease; }
-.cfp .pbar-n { font-size: 11px; color: var(--cfi-muted); min-width: 4ch; text-align: right; }
-.cfp .steps { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11px; color: var(--cfi-muted); }
+.cfp .pbar-track { flex: 1 1 auto; height: 6px; border-radius: 999px; background: var(--cfi-line-strong); overflow: hidden; }
+.cfp .pbar-fill { display: block; height: 100%; border-radius: inherit; background: var(--cfi-primary); transform: scaleX(0); transform-origin: left; transition: transform 160ms ease; }
+.cfp .pbar-n { font-size: 12px; color: var(--cfi-muted); min-width: 4ch; text-align: right; }
+.cfp .steps { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--cfi-muted); }
 .cfp .step { display: inline-flex; gap: 4px; }
 .cfp .step.now { color: inherit; font-weight: 600; }
 .cfp .step.done .step-l::before { content: '✓ '; color: var(--cfi-ok); }

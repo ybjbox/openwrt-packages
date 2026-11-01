@@ -910,14 +910,17 @@
 
 	/* 进度：阶段清单 + 两帧起跳的进度条；只改节点，不重建 */
 	function Progress(st) {
+		/* 顺序与引擎 progress_set 的真实阶段一致：fetch → canary → probe →
+		 * rank（含多样本验证）→ speed → colo → upload；不要再用未出现的
+		 * verify / publish，否则阶段切换时进度会归零。 */
 		var stages = [
 			{ id: 'fetch', label: CFI.T('拉取社区源') },
 			{ id: 'canary', label: CFI.T('出口自检') },
 			{ id: 'probe', label: CFI.T('探测候选') },
-			{ id: 'verify', label: CFI.T('多样本验证') },
-			{ id: 'colo', label: CFI.T('识别机房') },
+			{ id: 'rank', label: CFI.T('排序 / 验证') },
 			{ id: 'speed', label: CFI.T('测吞吐') },
-			{ id: 'publish', label: CFI.T('写产物') }
+			{ id: 'colo', label: CFI.T('识别机房') },
+			{ id: 'upload', label: CFI.T('写产物') }
 		];
 		var bar = el('i', { class: 'pbar-fill' });
 		var pct = el('span', { class: 'pbar-n n', text: '0%' });
@@ -950,11 +953,16 @@
 				items[i].className = 'step ' + state;
 				items[i].lastChild.textContent = i === cur ? (s.stage_done || 0) + '/' + (s.stage_total || 0) : '';
 			});
-			var p = 0;
-			if (s.stage_total > 0)
-				p = Math.round(100 * (s.stage_done || 0) / s.stage_total);
-			else if (cur >= 0)
-				p = Math.round(100 * cur / stages.length);
+			/* 总进度：阶段序号 + 当前阶段完成度；阶段切换不回零。 */
+			var p = lastPct >= 0 ? lastPct : 0;
+			if (cur >= 0) {
+				var frac = s.stage_total > 0
+					? Math.min(1, (Number(s.stage_done) || 0) / Number(s.stage_total))
+					: 0;
+				p = Math.round(100 * (cur + frac) / stages.length);
+				if (lastPct >= 0)
+					p = Math.max(p, lastPct);
+			}
 			if (p !== lastPct) {
 				lastPct = p;
 				pct.textContent = p + '%';

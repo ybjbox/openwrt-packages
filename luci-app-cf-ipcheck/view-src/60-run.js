@@ -490,7 +490,9 @@
 			var t0 = Date.parse(st.started), t1 = Date.parse(st.finished);
 			sumDuration.textContent = isFinite(t0) && isFinite(t1) && t1 >= t0
 				? CFI.T('耗时 %s s').format(String(Math.round((t1 - t0) / 1000))) : '';
-			boardSub.textContent = lastItems.length ? CFI.T('%s 条可用').format(String(lastItems.length)) : '';
+			boardSub.textContent = st.state === 'running'
+				? CFI.T('测速中')
+				: (lastItems.length ? CFI.T('%s 条可用').format(String(lastItems.length)) : '');
 		}
 
 		function paintBanner(st) {
@@ -554,12 +556,22 @@
 			var busy = state.busy || {};
 			lastSt = st;
 			lastItems = st.items || [];
+			var runningEmpty = st.state === 'running' && !lastItems.length;
+
+			/* 运行中没有结果时只显示进度，不把“没有达标 IP”当成结论。 */
+			boardWrap.hidden = runningEmpty;
+			boardSec.hidden = !lastItems.length && st.state !== 'running' && st.state !== 'done';
 
 			var k = CFI.store.roundKey(st);
 			if (k !== last.round) {
 				last.round = k;
 				paintRound(st);
 				paintBanner(st);
+				/* 新一轮换一个进度实例：上一轮的 100% 不能靠单调钳位带进来。 */
+				if (progress) {
+					CFI.dom.clear(progressHost);
+					progress = null;
+				}
 			}
 			var ks = CFI.store.stageKey(st);
 			if (ks !== last.stage) {
@@ -577,7 +589,6 @@
 			var kb = CFI.store.boardKey(st);
 			if (kb !== last.board) {
 				last.board = kb;
-				boardSec.hidden = !lastItems.length && st.state !== 'running';
 				paintBoard(true);
 				if (bui.sel && drawer.isOpen && drawer.isOpen()) {
 					var cur = itemOf(bui.sel);
