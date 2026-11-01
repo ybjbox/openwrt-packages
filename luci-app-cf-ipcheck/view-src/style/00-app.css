@@ -308,12 +308,17 @@
 .cfp .help-body[hidden] { display: none; }
 .cfp .dnsrows { border: 1px solid var(--cfi-line); }
 .cfp .dnsrow {
-	display: grid; grid-template-columns: 9.5em minmax(0, 1fr) 5em 4em;
+	display: grid; grid-template-columns: 14em minmax(0, 1fr) 5em 4em;
 	gap: 8px; align-items: center; padding: 5px 7px; border-top: 1px solid var(--cfi-line);
 }
 .cfp .dnsrow:first-child { border-top: 0; }
 .cfp .dnsrow-h { color: var(--cfi-muted); font-size: 11px; }
 .cfp .dnsrow-raw { grid-template-columns: 1fr; color: var(--cfi-muted); }
+.cfp .dnsrow > * { min-width: 0; }
+/* Argon 的 .cbi-value input[type=text] 有 min-width:18rem；记录名输入在窄屏两列里必须能缩。 */
+.cfp .dnsrow input.dnsrow-dom,
+.cfp .dnsrow input.dnsrow-n,
+.cfp .dnsrow select.dnsrow-code { min-width: 0; }
 .cfp .dnsrow select, .cfp .dnsrow input { width: 100%; box-sizing: border-box; }
 .cfp .dnsrows-add { display: flex; align-items: center; gap: 12px; padding: 5px 7px; border-top: 1px solid var(--cfi-line); }
 .cfp .dnsrows.dirty { box-shadow: inset 3px 0 0 var(--cfi-warn); }
@@ -355,7 +360,7 @@
 	.cfp .board-tools .ctl { flex: 1 1 6em; }
 	.cfp input.ctl[type="search"] { flex: 1 1 100%; width: auto; }
 	.cfp .dc > summary { grid-template-columns: minmax(5.5em, max-content) 4em 6em minmax(0, 1fr); }
-	.cfp .dnsrow { grid-template-columns: 1fr 1fr; }
+	.cfp .dnsrow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 	.cfp .dnsrow-h { display: none; }
 	.cfp .help-q { width: 44px; height: 44px; min-width: 44px; min-height: 44px; font-size: 14px; }
 	.cfp input[type="text"], .cfp input[type="password"], .cfp input[type="number"],

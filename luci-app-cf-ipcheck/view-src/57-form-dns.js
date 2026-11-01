@@ -53,20 +53,24 @@
 			paint();
 		}
 
+		/* 机房码后面补中文城市名，和榜单/机房分布一致；未知码只显示原码。 */
+		function coloText(code, count) {
+			var cn = CFI.colo.name(code);
+			var s = String(code) + (cn ? ' ' + cn : '');
+			return count != null && count !== '' ? s + CFI.T(' · %s 条').format(String(count)) : s;
+		}
+
 		function optionList(sel, current) {
 			CFI.dom.clear(sel);
 			sel.appendChild(el('option', { value: '', text: CFI.T('不限（全局前 N）') }));
 			codes.forEach(function (c) {
-				sel.appendChild(el('option', {
-					value: String(c.dc),
-					text: c.count != null && c.count !== '' ? String(c.dc) + CFI.T('（%s 条）').format(String(c.count)) : String(c.dc)
-				}));
+				sel.appendChild(el('option', { value: String(c.dc), text: coloText(c.dc, c.count) }));
 			});
 			var known = false;
 			for (var i = 0; i < codes.length; i++)
 				if (String(codes[i].dc) === current) { known = true; break; }
 			if (current && !known)
-				sel.appendChild(el('option', { value: current, text: current + CFI.T('（本轮无）') }));
+				sel.appendChild(el('option', { value: current, text: coloText(current, null) + CFI.T(' · 本轮无') }));
 			sel.value = current || '';
 		}
 
