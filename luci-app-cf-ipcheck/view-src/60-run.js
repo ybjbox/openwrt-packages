@@ -189,8 +189,16 @@
 		]);
 
 		var dcList = CFI.ui.DcList({ onTest: actions.testIp });
-		var dcSec = el('article', { class: 'card', hidden: true }, [
-			el('div', { class: 'card-h' }, [ el('h2', { text: CFI.T('机房分布') }), el('span', { class: 'sub', text: CFI.T('按首字节中位值 · 展开可单测') }) ]),
+		var dcHead = el('div', { class: 'dc-head' }, [
+			el('span', { text: CFI.T('机房') }),
+			el('span', { class: 'r', text: CFI.T('可用') }),
+			el('span', { class: 'r', text: CFI.T('首字节中位') }),
+			el('span', { text: CFI.T('最佳 IP') }),
+			el('span', { class: 'r', text: CFI.T('操作') })
+		]);
+		var dcSec = el('article', { class: 'card cfp-dc', hidden: true }, [
+			el('div', { class: 'card-h' }, [ el('h2', { text: CFI.T('机房分布') }), el('span', { class: 'sub', text: CFI.T('按首字节中位值 · 点行展开可单测') }) ]),
+			dcHead,
 			dcList.node
 		]);
 
@@ -205,8 +213,8 @@
 		var body = el('div', { class: 'run-body' }, [
 			bannerHost,
 			el('div', { class: 'cfp-main' }, [
-				boardSec,
-				el('aside', { class: 'cfp-side' }, [ summaryCard, dcSec, actionsCard ])
+				el('div', { class: 'cfp-main-col' }, [ boardSec, dcSec ]),
+				el('aside', { class: 'cfp-side' }, [ summaryCard, actionsCard ])
 			])
 		]);
 

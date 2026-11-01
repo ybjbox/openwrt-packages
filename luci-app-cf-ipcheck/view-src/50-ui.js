@@ -563,6 +563,12 @@
 			if (!items.length) {
 				n.inner.appendChild(el('div', { class: 'dc-note dim' }, CFI.T('本轮这个机房没有可用 IP。')));
 			} else {
+				n.inner.appendChild(el('div', { class: 'dc-iphead' }, [
+					el('span', { text: CFI.T('IP') }),
+					el('span', { class: 'r', text: CFI.T('首字节') }),
+					el('span', { class: 'r', text: CFI.T('吞吐') }),
+					el('span', { class: 'r', text: CFI.T('操作') })
+				]));
 				items.forEach(function (x) {
 					addItem(n, x);
 				});
