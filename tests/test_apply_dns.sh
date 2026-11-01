@@ -111,7 +111,9 @@ mk_write_curl
 run "$W/write.sh" MOCK_MARK="$W/mark.del.ok" MOCK_METHOD=DELETE MOCK_MODE=after >/dev/null 2>&1; rc=$?
 chk '退出码 0' "$rc" 0
 chk '旧记录已不在' "$(awk -F'|' '$3=="old1"' "$STORE" | wc -l)" 0
-chk '日志说回读确认已删除' "$(has_log '回读确认已删除')" yes
+chk '日志说请求超时后回读确认' "$(has_log '请求超时，回读确认')" yes
+chk '删除成功只记一行 IP' "$(has_log '删除 1.1.1.1')" yes
+chk '不再打印删除前留档' "$(has_log '删除前留档')" no
 
 reset
 echo "=== 5. DELETE 失败且记录仍在 → 部分完成（退出码 6） ==="

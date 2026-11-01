@@ -446,7 +446,9 @@
 	min-width: 0;
 }
 .cfp .card-h { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0 0 16px; }
-.cfp .card-h h2, .cfp .card-h h3 { margin: 0; padding: 0; font-size: 16px; font-weight: 600; }
+/* Argon 的 cascade.css 给全局 h2 加了白底 + 阴影；卡片标题不该继承，
+ * 否则卡片是浅灰时标题下面会出现一块白底。 */
+.cfp .card-h h2, .cfp .card-h h3 { margin: 0; padding: 0; font-size: 16px; font-weight: 600; background: transparent; box-shadow: none; }
 .cfp .card-h .sub { color: var(--cfi-muted); font-size: 13px; line-height: 1.5; }
 .cfp .card-h .right { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .cfp-main { display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(280px, 1fr); gap: 18px; align-items: start; }

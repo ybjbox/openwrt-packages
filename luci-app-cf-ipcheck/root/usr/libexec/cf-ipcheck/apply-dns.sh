@@ -35,8 +35,9 @@
 #     新增失败，解析就会少几条甚至空掉 —— 那是"把网站写挂"，比多留一条旧 IP 严重得多；
 #   · 同一时刻只允许一个同步在跑（mkdir 原子锁）：自动收尾与页面按钮是两条独立路径，
 #     同时算 diff 会各自基于同一份旧快照 POST/DELETE，结果是重复记录或一边删一边加；
-#   · 每条要删的记录在删之前把原字段（content/proxied/ttl/comment/id）写进日志，
-#     这就是"撤回"需要的全部信息 —— 密码/令牌除外，留在日志里也不会多一条。
+#   · 删除成功只记一行「删除 <IP>」；proxied/ttl/comment/id 不再刷进主日志
+#     （日志页太杂）。重建所需信息 = 这个 IP + 本工具固定写死的
+#     proxied=false / ttl / comment，不需要逐条留档。
 #
 # 用法：
 #   apply-dns.sh --dry-run             # 只打印计划，不联网、不写
@@ -955,20 +956,17 @@ handle_target() {
 		fi
 	done
 
-	# ---- 再删除多余的（删之前先把原记录留档）----
+	# ---- 再删除多余的 ----
 	for _item in $_del; do
 		_id=${_item%%:*}
 		_ip=${_item#*:}
-		# 留档就是"撤回"要的全部信息：拿这一行去面板重建，或照着它手动 POST 回去。
-		_prev=$(printf '%s' "$_res" | "$JQ" -r --arg id "$_id" \
-			'.result[]|select(.id==$id)|"proxied=\(.proxied) ttl=\(.ttl) comment=\(.comment // "")"')
-		log "$_tag：删除前留档 $_f A $_ip（${_prev:-原字段读不到}，id=$_id）—— 要恢复就照这行重建"
 		budget_ok || return "$(ret_code 3)"
 		if _r=$(api DELETE "/zones/$_zid/dns_records/$_id"); then
 			if [ "$(printf '%s' "$_r" | "$JQ" -r '.success')" != 'true' ]; then
 				log "$_tag：删除 $_ip 被拒：$(printf '%s' "$_r" | "$JQ" -r '.errors[0].message // "未知错误"')（保留原记录）"
 				return "$(ret_code 4)"
 			fi
+			log "$_tag：删除 $_ip"
 			WROTE=1
 			SUM_DEL=$((SUM_DEL + 1))
 		else
@@ -986,7 +984,7 @@ handle_target() {
 				log "$_tag：删除 $_ip 失败（网络），记录仍在；下次同步再删"
 				return "$(ret_code 3)"
 			fi
-			log "$_tag：删除 $_ip 的请求没回包，但回读确认已删除"
+			log "$_tag：删除 $_ip（请求超时，回读确认）"
 			WROTE=1
 			SUM_DEL=$((SUM_DEL + 1))
 		fi
