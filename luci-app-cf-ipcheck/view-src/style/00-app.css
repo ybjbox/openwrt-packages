@@ -361,6 +361,31 @@
 	.cfp input[type="text"], .cfp input[type="password"], .cfp input[type="number"],
 	.cfp select, .cfp textarea { font-size: 16px; min-height: 44px; }
 }
+@media (prefers-color-scheme: dark) {
+	.cfp[class],
+	.cfp-modal[class] {
+		--background-color: #1e1e1e;
+		--cfi-card: #252526;
+		--cfi-ok: #6ee7a8;
+		--cfi-warn: #fbbf24;
+		--cfi-bad: #ff8a80;
+		color-scheme: dark;
+	}
+	.cfp[class] .cfp-tabs { background: transparent; }
+	.cfp[class] .cfp-tabs .cbi-tabmenu > li.cbi-tab { --dark-primary: transparent; }
+	.cfp[class] .cfp-title h1 { border-bottom: 0; }
+	.cfp[class] .tbl th { background: #1e1e1e; }
+	.cfp[class] .log-pill { background: #1e1e1e; }
+	.cfp[class] .ctl,
+	.cfp[class] #cfi-pane-set input:not([type=hidden]):not([type=checkbox]):not([type=radio]),
+	.cfp[class] #cfi-pane-set select,
+	.cfp[class] #cfi-pane-set textarea,
+	.cfp[class] .btn { box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 55%, transparent); }
+	.cfp[class] .btn.primary,
+	.cfp[class] .btn.cbi-button.cbi-button-add { box-shadow: inset 0 0 0 1px var(--cfi-primary); }
+	.cfp[class] .btn.link { box-shadow: inset 0 0 0 1px var(--cfi-primary); }
+	.cfp[class] .btn.is-danger { box-shadow: inset 0 0 0 1px var(--cfi-bad); }
+}
 @media (prefers-reduced-motion: reduce) {
 	.cfp *, .cfp *::before, .cfp *::after { transition: none; animation: none; }
 }
