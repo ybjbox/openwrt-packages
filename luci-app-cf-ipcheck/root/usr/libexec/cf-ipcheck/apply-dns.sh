@@ -27,7 +27,9 @@
 # 安全约定：
 #   · 令牌只进 Authorization 头，任何时候都不打印、不写日志；
 #   · --dry-run 把 Authorization 打码后打印计划，不联网；
-#   · 单请求与总耗时都有上限（rpcd 对外部执行有 30 秒平台级上限）；
+#   · 单请求与总耗时都有上限（页面按钮走 rpcd，有 30 秒平台级上限）：
+#     单请求 6 秒，GET 失败重试一次；写请求不盲目重放，超时后回读对账，
+#     避免一次重试多出重复 A 记录；
 #   · 任何失败都只追加一行日志，不做跨目标的回滚（避免覆盖他人改动）；
 #   · 写的时候**先加后删**：新增成功之后才删多余的旧记录。反过来（先删后加）一旦
 #     新增失败，解析就会少几条甚至空掉 —— 那是"把网站写挂"，比多留一条旧 IP 严重得多；
@@ -58,8 +60,13 @@ MARK='cf-ipcheck'          # 写进记录 comment 的标记，也是「这是本
 # 所以配置只是往后缀上追加：comment = "cf-ipcheck · <用户写的>"。
 COMMENT="$MARK"
 MAX_COUNT=10               # 单个记录名最多挂几条 A 记录
-BUDGET=25                  # 整次同步的时间预算（秒）。rpcd 上限 30，留 5 秒余量
-REQ_TIMEOUT=4              # 单请求超时（秒）。见下面 api() 的注释
+# 两条路径的上限不一样：页面按钮经 rpcd 调用，平台级 30 秒；自动收尾由 daemon
+# 拉起，不受这个限制。给慢代理留余量，但手动路径仍要留 5 秒收尾。
+BUDGET_MANUAL=25
+BUDGET_AUTO=45
+BUDGET=$BUDGET_MANUAL
+REQ_TIMEOUT=6              # 单请求超时（秒）。实测代理路径 1.0–3.3s，4s 太紧
+REQ_TRIES=2                # 只对 GET 重试；写请求不能盲目重放（见 api() 注释）
 
 RUN_DIR="${CFIP_RUN_DIR:-/tmp/cf-ipcheck}"
 ETC_DIR="${CFIP_ETC_DIR:-/etc/cf-ipcheck}"
@@ -103,6 +110,10 @@ while [ $# -gt 0 ]; do
 	shift
 done
 
+# --manual / --force 是页面按钮和 ssh 手工路径，可能落在 rpcd 的 30 秒里；
+# 无参数（自动收尾）由 daemon 拉起，预算可以放宽，把多目标/清理跑完。
+[ "$SKIP_GATE" = 1 ] || BUDGET=$BUDGET_AUTO
+
 # ---------------------------------------------------------------- 基础工具
 # find_bin / valid_ip4 / now_iso 与引擎共用 lib.sh（就在本文件旁边）。
 _cfip_self=$(CDPATH= cd "$(dirname "$0")" 2>/dev/null && pwd) || _cfip_self=''
@@ -113,7 +124,13 @@ done
 [ -n "$_cfip_lib" ] || { echo 'apply-dns: 缺 lib.sh（包没装全？）' >&2; exit 78; }
 . "$_cfip_lib"
 
-UCI=$(find_bin /sbin/uci /usr/sbin/uci /bin/uci /usr/bin/uci) || UCI=''
+# CFIP_UCI 与 CFIP_CURL 同性质：只给离线/真机隔离测试用，正式路径仍走 find_bin。
+# 测试里设成 /bin/false 就能让 cfg() 回落到环境变量，不读真机 uci。
+if [ -n "${CFIP_UCI:-}" ]; then
+	UCI=$CFIP_UCI
+else
+	UCI=$(find_bin /sbin/uci /usr/sbin/uci /bin/uci /usr/bin/uci) || UCI=''
+fi
 JQ=$(find_bin /usr/bin/jq /usr/sbin/jq /bin/jq) || JQ=''
 # CFIP_CURL 只为测试留的口子（与引擎的 CFIP_APPLY_DNS 同一性质）：
 # 写路径里「该删哪几条、该留哪几条」的判据是最贵的一段，而它必须靠真实的 API
@@ -326,19 +343,45 @@ body_patch() {
 
 api() {
 	# $1 = GET|POST|PATCH|DELETE, $2 = 路径, $3 = body（GET/DELETE 时省略）
-	# --max-time 4 是算过的：多目标时请求数会变多（每个目标 1 读 + 最多 N 写），
-	# 而 rpcd 对外部执行有平台级 30 秒上限（真机 /etc/config/rpcd option timeout 30，
-	# file.exec 与 ucode 方法共用）。单请求 4 秒 + BUDGET 25 秒双重约束，
-	# 保证在被 rpcd 掐断前自己先停手、给出「做到哪一步」的日志，而不是页面一片沉默。
-	if [ -n "${3:-}" ]; then
-		"$CURL" -sS --max-time "$REQ_TIMEOUT" -X "$1" \
-			-H "Authorization: Bearer $TOKEN" \
-			-H 'Content-Type: application/json' \
-			--data "$3" "$API$2"
-	else
-		"$CURL" -sS --max-time "$REQ_TIMEOUT" -X "$1" \
-			-H "Authorization: Bearer $TOKEN" "$API$2"
-	fi
+	# 超时与预算：手动按钮受 rpcd 30 秒硬上限约束，自动收尾没有。单请求 6 秒
+	# 覆盖实测 1.0–3.3 秒的代理抖动；GET 是只读的，失败后再试一次；写请求
+	# （POST/DELETE）不在这里重放 —— 响应丢了不等于没执行，交给调用方回读对账，
+	# 否则一次超时重试就可能多出重复 A 记录。
+	# stderr 收进文件：失败时把 curl 退出码、耗时和原因写进日志，不再只写“网络”。
+	_m=$1; _p=$2; _body=${3:-}
+	_tries=1
+	[ "$_m" = GET ] && _tries=$REQ_TRIES
+	_attempt=1
+	_errf="$RUN_DIR/.api-err.$$"
+	while :; do
+		_t0=$(date +%s)
+		if [ -n "$_body" ]; then
+			_out=$("$CURL" -sS --max-time "$REQ_TIMEOUT" -X "$_m" \
+				-H "Authorization: Bearer $TOKEN" \
+				-H 'Content-Type: application/json' \
+				--data "$_body" "$API$_p" 2>"$_errf")
+		else
+			_out=$("$CURL" -sS --max-time "$REQ_TIMEOUT" -X "$_m" \
+				-H "Authorization: Bearer $TOKEN" "$API$_p" 2>"$_errf")
+		fi
+		_rc=$?
+		_secs=$(( $(date +%s) - _t0 ))
+		if [ "$_rc" = 0 ]; then
+			printf '%s' "$_out"
+			rm -f "$_errf" 2>/dev/null
+			return 0
+		fi
+		_why=$(tr '\n' ' ' <"$_errf" 2>/dev/null | sed 's/[[:space:]]*$//')
+		if [ "$_attempt" -lt "$_tries" ] && budget_ok; then
+			log "API $_m $_p 失败（curl=$_rc，${_secs}s：${_why:-无错误输出}），重试 1/1"
+			_attempt=$((_attempt + 1))
+			continue
+		fi
+		log "API $_m $_p 失败（curl=$_rc，${_secs}s：${_why:-无错误输出}），本次不重试"
+		printf '%s' "$_out"
+		rm -f "$_errf" 2>/dev/null
+		return "$_rc"
+	done
 }
 
 # 剩余预算够不够再发一个请求
@@ -346,7 +389,7 @@ budget_ok() {
 	[ "$DRY" = 1 ] && return 0
 	_left=$(( BUDGET - ( $(date +%s) - T_START ) ))
 	[ "$_left" -ge "$REQ_TIMEOUT" ] && return 0
-	log "已接近 rpcd 的 30 秒上限（用了 $(( $(date +%s) - T_START )) 秒），停止后续目标；已完成的部分已生效"
+	log "已接近本次同步的时间预算（${BUDGET}s，用了 $(( $(date +%s) - T_START )) 秒），停止后续目标；已完成的部分已生效"
 	return 1
 }
 
@@ -721,6 +764,16 @@ $1
 	return 1
 }
 
+# 目标失败时的退出码：本次已经有写入生效（先加后删）就报 6 = 部分完成，
+# 页面才能说“已部分更新”，而不是把已经写进去的记录说成完全没写成。
+ret_code() {
+	if [ "${WROTE:-0}" = 1 ]; then
+		printf 6
+	else
+		printf '%s' "$1"
+	fi
+}
+
 # zone 名 -> zone id，优先走缓存
 resolve_zone() {
 	_z=$1
@@ -751,9 +804,11 @@ resolve_zone() {
 }
 
 # 处理单个目标。$1=序号 $2=总数 $3=记录名|数量|zone
-# 退出码：0 成功（含无变化）；3 网络；4 API/逻辑拒；5 回读不一致
+# 退出码：0 成功（含无变化）；3 网络；4 API/逻辑拒；5 回读不一致；
+# 6 部分完成（本次已有写入生效，但清理/校验没做完）
 handle_target() {
 	_no=$1; _tot=$2; _spec=$3
+	WROTE=0
 	_f=${_spec%%|*}; _rest=${_spec#*|}
 	_n=${_rest%%|*}; _rest=${_rest#*|}
 	_z=${_rest%%|*}; _rest2=${_rest#*|}
@@ -795,7 +850,7 @@ handle_target() {
 		fi
 	fi
 
-	_zid=$(resolve_zone "$_z") || return 3
+	_zid=$(resolve_zone "$_z") || return "$(ret_code 3)"
 
 	# ---- 读现有记录（同名 A 记录可能多条，全要）----
 	if [ "$DRY" = 1 ]; then
@@ -809,11 +864,11 @@ handle_target() {
 		return 0
 	fi
 
-	budget_ok || return 3
-	_res=$(api GET "/zones/$_zid/dns_records?type=A&name=$_f&per_page=100") || { log "$_tag：查记录失败（网络）"; return 3; }
+	budget_ok || return "$(ret_code 3)"
+	_res=$(api GET "/zones/$_zid/dns_records?type=A&name=$_f&per_page=100") || { log "$_tag：查记录失败（网络）"; return "$(ret_code 3)"; }
 	if [ "$(printf '%s' "$_res" | "$JQ" -r '.success')" != 'true' ]; then
 		log "$_tag：查记录被拒：$(printf '%s' "$_res" | "$JQ" -r '.errors[0].message // "未知错误"')"
-		return 4
+		return "$(ret_code 4)"
 	fi
 
 	# 三类：本工具建的（comment 前缀 MARK）/ 别人的 / 期望里已有的
@@ -851,8 +906,8 @@ handle_target() {
 	_add_n=$(printf '%s' "$_add" | wc -w | tr -d ' ')
 	_del_n=$(printf '%s' "$_del" | wc -w | tr -d ' ')
 	_keep_n=$(( _want_n - _add_n ))
-	SUM_ADD=$((SUM_ADD + _add_n))
-	SUM_DEL=$((SUM_DEL + _del_n))
+	# 这里只记计划数；SUM_ADD / SUM_DEL 在下面每次写成功后累加，
+	# 这样“部分完成”时汇总的是实际生效数，不是打算做多少。
 
 	# ---- 无差异：直接收工 ----
 	if [ "$_add_n" -eq 0 ] && [ "$_del_n" -eq 0 ]; then
@@ -869,12 +924,34 @@ handle_target() {
 	# 这个记录名的 A 记录会少几条甚至空掉 —— 对线上来说就是解析中断或变慢。
 	# 先加的唯一代价是中间那一小会儿多一两颗"旧但当时可用"的 IP，DNS 层轮询无碍。
 	for _ip in $_add; do
-		budget_ok || return 3
+		budget_ok || return "$(ret_code 3)"
 		_body=$(body_create "$_ip" "$_f")
-		_r=$(api POST "/zones/$_zid/dns_records" "$_body") || { log "$_tag：新增 $_ip 失败（网络），旧记录未动"; return 3; }
-		if [ "$(printf '%s' "$_r" | "$JQ" -r '.success')" != 'true' ]; then
-			log "$_tag：新增 $_ip 被拒：$(printf '%s' "$_r" | "$JQ" -r '.errors[0].message // "未知错误"')（旧记录未动）"
-			return 4
+		if _r=$(api POST "/zones/$_zid/dns_records" "$_body"); then
+			if [ "$(printf '%s' "$_r" | "$JQ" -r '.success')" != 'true' ]; then
+				log "$_tag：新增 $_ip 被拒：$(printf '%s' "$_r" | "$JQ" -r '.errors[0].message // "未知错误"')（旧记录未动）"
+				return "$(ret_code 4)"
+			fi
+			WROTE=1
+			SUM_ADD=$((SUM_ADD + 1))
+		else
+			# 响应丢了不等于没建成：先回读确认。重放 POST 可能多出一条同 content 的
+			# A 记录，而 Cloudflare 不按 content 去重 —— 宁可下次同步再补，也不写重。
+			_chk=$(api GET "/zones/$_zid/dns_records?type=A&name=$_f&per_page=100") || {
+				log "$_tag：新增 $_ip 结果未知（网络），回读也失败"
+				return "$(ret_code 3)"
+			}
+			if [ "$(printf '%s' "$_chk" | "$JQ" -r '.success')" != 'true' ]; then
+				log "$_tag：新增 $_ip 结果未知，回读被拒：$(printf '%s' "$_chk" | "$JQ" -r '.errors[0].message // "未知错误"')"
+				return "$(ret_code 4)"
+			fi
+			if printf '%s' "$_chk" | "$JQ" -e --arg c "$_ip" '[.result[]|select(.content==$c)]|length>0' >/dev/null 2>&1; then
+				log "$_tag：新增 $_ip 的请求没回包，但回读确认记录已在"
+				WROTE=1
+				SUM_ADD=$((SUM_ADD + 1))
+			else
+				log "$_tag：新增 $_ip 失败（网络），记录未建成；旧记录未动"
+				return "$(ret_code 3)"
+			fi
 		fi
 	done
 
@@ -886,17 +963,42 @@ handle_target() {
 		_prev=$(printf '%s' "$_res" | "$JQ" -r --arg id "$_id" \
 			'.result[]|select(.id==$id)|"proxied=\(.proxied) ttl=\(.ttl) comment=\(.comment // "")"')
 		log "$_tag：删除前留档 $_f A $_ip（${_prev:-原字段读不到}，id=$_id）—— 要恢复就照这行重建"
-		budget_ok || return 3
-		_r=$(api DELETE "/zones/$_zid/dns_records/$_id") || { log "$_tag：删除 $_ip 失败（网络）"; return 3; }
-		if [ "$(printf '%s' "$_r" | "$JQ" -r '.success')" != 'true' ]; then
-			log "$_tag：删除 $_ip 被拒：$(printf '%s' "$_r" | "$JQ" -r '.errors[0].message // "未知错误"')（保留原记录）"
-			return 4
+		budget_ok || return "$(ret_code 3)"
+		if _r=$(api DELETE "/zones/$_zid/dns_records/$_id"); then
+			if [ "$(printf '%s' "$_r" | "$JQ" -r '.success')" != 'true' ]; then
+				log "$_tag：删除 $_ip 被拒：$(printf '%s' "$_r" | "$JQ" -r '.errors[0].message // "未知错误"')（保留原记录）"
+				return "$(ret_code 4)"
+			fi
+			WROTE=1
+			SUM_DEL=$((SUM_DEL + 1))
+		else
+			# 删除超时/断线时结果未知：按 id 回读一次。已经不在就当成功，
+			# 否则如实报失败，留到下一轮再删（不重放 DELETE，避免误读 404）。
+			_chk=$(api GET "/zones/$_zid/dns_records?type=A&name=$_f&per_page=100") || {
+				log "$_tag：删除 $_ip 结果未知（网络），回读也失败"
+				return "$(ret_code 3)"
+			}
+			if [ "$(printf '%s' "$_chk" | "$JQ" -r '.success')" != 'true' ]; then
+				log "$_tag：删除 $_ip 结果未知，回读被拒：$(printf '%s' "$_chk" | "$JQ" -r '.errors[0].message // "未知错误"')"
+				return "$(ret_code 4)"
+			fi
+			if printf '%s' "$_chk" | "$JQ" -e --arg id "$_id" '.result[]|select(.id==$id)' >/dev/null 2>&1; then
+				log "$_tag：删除 $_ip 失败（网络），记录仍在；下次同步再删"
+				return "$(ret_code 3)"
+			fi
+			log "$_tag：删除 $_ip 的请求没回包，但回读确认已删除"
+			WROTE=1
+			SUM_DEL=$((SUM_DEL + 1))
 		fi
 	done
 
 	# ---- 回读校验：期望的 IP 必须全部在，且本工具多写的必须已清掉 ----
-	budget_ok || return 3
-	_verify=$(api GET "/zones/$_zid/dns_records?type=A&name=$_f&per_page=100") || { log "$_tag：回读失败（网络），写入结果未知"; return 3; }
+	budget_ok || return "$(ret_code 3)"
+	_verify=$(api GET "/zones/$_zid/dns_records?type=A&name=$_f&per_page=100") || { log "$_tag：回读失败（网络），写入结果未知"; return "$(ret_code 3)"; }
+	if [ "$(printf '%s' "$_verify" | "$JQ" -r '.success')" != 'true' ]; then
+		log "$_tag：回读被拒：$(printf '%s' "$_verify" | "$JQ" -r '.errors[0].message // "未知错误"')"
+		return "$(ret_code 4)"
+	fi
 	_got=$(printf '%s' "$_verify" | "$JQ" -r '.result[].content')
 	_missing=''
 	for _ip in $_want; do
@@ -915,11 +1017,11 @@ handle_target() {
 	[ "$_other_n" -gt 0 ] && _note="，另有 $_other_n 条非本工具管理的记录未动"
 	if [ -n "$_missing" ]; then
 		log "$_tag：回读少了 IP:$_missing（期望 $_want_csv）—— 请人工核对（未做回滚，避免覆盖他人改动）"
-		return 5
+		return "$(ret_code 5)"
 	fi
 	if [ -n "$(printf '%s' "$_extra" | tr -d ' ')" ]; then
 		log "$_tag：回读仍有本工具建却不在期望内的记录（$_extra）—— 删除没生效，请人工核对"
-		return 5
+		return "$(ret_code 5)"
 	fi
 	if [ "$_cleanup" = 1 ]; then
 		log "$_tag：清理掉 $_del_n 条编号多余的记录"
@@ -936,7 +1038,8 @@ handle_target() {
 # 前面某个目标失败了，用户看到的仍是「已同步」，这是最坏的一种沉默。
 _rc_all=0
 SUM_OK=0
-SUM_FAIL=0
+SUM_PARTIAL=0
+SUM_HARD=0
 SUM_ADD=0
 SUM_DEL=0
 _seen=0
@@ -947,8 +1050,12 @@ while IFS= read -r _spec; do
 		SUM_OK=$((SUM_OK + 1))
 	else
 		_r=$?
-		SUM_FAIL=$((SUM_FAIL + 1))
-		_rc_all=$_r
+		case "$_r" in
+			6) SUM_PARTIAL=$((SUM_PARTIAL + 1))
+			   # 硬失败优先作为退出码；只有部分失败时才是 6。
+			   [ "$_rc_all" = 0 ] && _rc_all=6 ;;
+			*) SUM_HARD=$((SUM_HARD + 1)); _rc_all=$_r ;;
+		esac
 	fi
 done <<EOF
 $TARGETS
@@ -956,10 +1063,12 @@ EOF
 
 if [ "$DRY" = 1 ]; then
 	printf '[dry-run] 共 %s 个目标（未联网、未写入）\n' "$TARGET_TOTAL"
-elif [ "$SUM_FAIL" -eq 0 ]; then
+elif [ "$SUM_HARD" -eq 0 ] && [ "$SUM_PARTIAL" -eq 0 ]; then
 	log "DNS 同步完成：$SUM_OK 个记录名已与期望一致（新增 $SUM_ADD / 删除 $SUM_DEL）"
+elif [ "$SUM_HARD" -eq 0 ]; then
+	log "DNS 同步部分完成：$SUM_OK 完成、$SUM_PARTIAL 部分完成（共 $TARGET_TOTAL 个记录名；已新增 $SUM_ADD / 已删除 $SUM_DEL）—— 清理或校验没做完，下一轮会接着做"
 else
-	log "DNS 同步结束：$SUM_OK 成功、$SUM_FAIL 失败（共 $TARGET_TOTAL 个记录名）—— 失败原因见上面各目标那行"
+	log "DNS 同步结束：$SUM_OK 完成、$SUM_PARTIAL 部分完成、$SUM_HARD 失败（共 $TARGET_TOTAL 个记录名；已新增 $SUM_ADD / 已删除 $SUM_DEL）—— 失败原因见上面各目标那行"
 fi
 
 # dns_sync_hook 会把退出码带回页面；多目标时按最后一个失败码报，

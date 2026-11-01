@@ -318,9 +318,15 @@
 
 		function actDns() {
 			act('dns', CFI.ipc.LIMIT['dns-sync'], function () { return CFI.ipc.call([ 'dns-sync' ]); }, function (out) {
-				var ok = false, msg = '';
-				try { var o = JSON.parse(out); ok = !!o.ok; msg = String(o.msg || ''); } catch (e) {}
-				flash(ok ? 'ok' : 'warn', ok ? CFI.T('DNS 已更新') : CFI.T('DNS 没有写成'), msg || CFI.T('看「日志」里的最后一行。'));
+				var ok = false, partial = false, msg = '';
+				try {
+					var o = JSON.parse(out);
+					ok = !!o.ok;
+					partial = !!o.partial;
+					msg = String(o.msg || '');
+				} catch (e) {}
+				var title = ok ? CFI.T('DNS 已更新') : (partial ? CFI.T('DNS 已部分更新') : CFI.T('DNS 没有写成'));
+				flash(ok ? 'ok' : 'warn', title, msg || CFI.T('看「日志」里的最后一行。'));
 			}, function () {
 				flash('bad', CFI.T('写 DNS 没有回应'), CFI.T('先确认 dns_sync 打开且已经保存。'));
 			});

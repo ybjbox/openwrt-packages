@@ -2678,8 +2678,13 @@ dns_sync_hook() {
 		*)      ( "$APPLY_DNS"          >/dev/null 2>&1 ) || _rc=$? ;;
 	esac
 	# 0=已写或本来就是同一个 IP；2=配置不全/开关拦下（脚本自己已记日志）；
-	# 3=网络；4=API 拒；5=回读不一致。后三种才值得在这里再提一句。
-	[ "$_rc" = 0 ] || [ "$_rc" = 2 ] || log "DNS 同步未完成（退出码 $_rc），详见上面 dns 相关日志"
+	# 3=网络；4=API 拒；5=回读不一致；6=部分完成（已有写入生效，清理/校验没做完）。
+	# 6 不再补一行：脚本的汇总行已经写明“部分完成”和实际新增/删除数，
+	# 页面取最后一行当提示，多补一句反而会把数字盖掉。
+	case "$_rc" in
+		0|2|6) : ;;
+		*)     log "DNS 同步未完成（退出码 $_rc），详见上面 dns 相关日志" ;;
+	esac
 	# 把退出码交回去：自动收尾那条路不看它，手工触发那条要把结果报给页面。
 	return "$_rc"
 }
@@ -4527,8 +4532,9 @@ case "${1:-}" in
 		# 多目标时脚本的最后一行的是一句总结（成功几个、失败几个），
 		# 页面因此不会「前面失败了却只看到最后一条成功」。
 		_dmsg=$(tail -n 1 "$LOG" 2>/dev/null | sed 's/^[0-9][0-9T:+-]* //')
-		printf '{"rc":%s,"ok":%s,"msg":"%s"}\n' \
-			"$_drc" "$([ "$_drc" = 0 ] && printf true || printf false)" "$(json_str "$_dmsg")"
+		printf '{"rc":%s,"ok":%s,"partial":%s,"msg":"%s"}\n' \
+			"$_drc" "$([ "$_drc" = 0 ] && printf true || printf false)" \
+			"$([ "$_drc" = 6 ] && printf true || printf false)" "$(json_str "$_dmsg")"
 		;;
 	colo)    if ! valid_ip4 "${2:-}"; then
 				 echo '参数必须是一个纯 IPv4（不接受主机名，也不接受任何多余字符）'
