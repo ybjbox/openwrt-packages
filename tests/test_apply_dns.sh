@@ -1,7 +1,7 @@
 #!/bin/sh
 # DNS 同步网络加固回归（CI 用；隔离临时目录 + 假 curl + 故障注入）
-# 覆盖：GET 超时重试 / 重试也失败 / POST 响应丢失后回读 / DELETE 响应丢失 /
-#       删除失败但已有新增生效 → 部分完成（退出码 6，汇总数量按实际写入算）。
+# 覆盖：GET 超时重试 / 重试也失败 / 写请求连接阶段失败重试 / POST 响应丢失后回读 /
+#       DELETE 响应丢失 / 删除失败但已有新增生效 → 部分完成（退出码 6，数量按实际写入算）。
 # 依赖：jq（CI 的 alpine job 先 apk add jq）。不联网、不读写真 DNS。
 ROOT=$(CDPATH= cd "$(dirname "$0")/.." 2>/dev/null && pwd) || exit 1
 AD="$ROOT/luci-app-cf-ipcheck/root/usr/libexec/cf-ipcheck/apply-dns.sh"
@@ -48,14 +48,22 @@ EOF
 	chmod +x "$W/get.sh"
 }
 mk_write_curl() {
-	# 首次写请求：drop=不发；after=先写成功再丢响应
+	# 首次写请求：drop=不发；after=先写成功再丢响应；connect=连接阶段 TLS 失败
 	cat >"$W/write.sh" <<'EOF'
 #!/bin/sh
 case "$*" in
 	*"-X $MOCK_METHOD"*"/dns_records"*)
 		if [ ! -f "$MOCK_MARK" ]; then
 			: >"$MOCK_MARK"
-			[ "$MOCK_MODE" = after ] && sh "$MOCK_CURL" "$@" >/dev/null 2>&1
+			if [ "$MOCK_MODE" = after ]; then
+				sh "$MOCK_CURL" "$@" >/dev/null 2>&1
+				printf 'curl: (28) Operation timed out after 6001 milliseconds\n' >&2
+				exit 28
+			fi
+			if [ "$MOCK_MODE" = connect ]; then
+				printf 'curl: (35) TLS connect error: error:0A000126:SSL routines::unexpected eof while reading\n' >&2
+				exit 35
+			fi
 			printf 'curl: (28) Operation timed out after 6001 milliseconds\n' >&2
 			exit 28
 		fi
@@ -114,6 +122,16 @@ chk '旧记录已不在' "$(awk -F'|' '$3=="old1"' "$STORE" | wc -l)" 0
 chk '日志说请求超时后回读确认' "$(has_log '请求超时，回读确认')" yes
 chk '删除成功只记一行 IP' "$(has_log '删除 1.1.1.1')" yes
 chk '不再打印删除前留档' "$(has_log '删除前留档')" no
+
+reset
+echo "=== 4b. DELETE TLS 连接失败 → 连接阶段安全重试一次 ==="
+seed cf.example.com old3 1.1.1.3 cf-ipcheck
+mk_write_curl
+run "$W/write.sh" MOCK_MARK="$W/mark.del.tls" MOCK_METHOD=DELETE MOCK_MODE=connect >/dev/null 2>&1; rc=$?
+chk '退出码 0' "$rc" 0
+chk '旧记录被删掉' "$(awk -F'|' '$3=="old3"' "$STORE" | wc -l)" 0
+chk '日志记录了连接阶段重试' "$(has_log '重试 1/1')" yes
+chk 'DELETE 只发了一次（连接失败未到 mock）' "$(grep -c '^DELETE' "$TRACE")" 1
 
 reset
 echo "=== 5. DELETE 失败且记录仍在 → 部分完成（退出码 6） ==="

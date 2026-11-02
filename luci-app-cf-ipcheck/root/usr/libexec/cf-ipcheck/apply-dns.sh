@@ -28,8 +28,9 @@
 #   · 令牌只进 Authorization 头，任何时候都不打印、不写日志；
 #   · --dry-run 把 Authorization 打码后打印计划，不联网；
 #   · 单请求与总耗时都有上限（页面按钮走 rpcd，有 30 秒平台级上限）：
-#     单请求 6 秒，GET 失败重试一次；写请求不盲目重放，超时后回读对账，
-#     避免一次重试多出重复 A 记录；
+#     单请求 6 秒，GET 任意失败重试一次；POST/DELETE 只在连接阶段失败
+#     （curl 6/7/35，请求还没发出）时重试一次；响应丢了则回读对账，
+#     不盲目重放，避免多出重复 A 记录；
 #   · 任何失败都只追加一行日志，不做跨目标的回滚（避免覆盖他人改动）；
 #   · 写的时候**先加后删**：新增成功之后才删多余的旧记录。反过来（先删后加）一旦
 #     新增失败，解析就会少几条甚至空掉 —— 那是"把网站写挂"，比多留一条旧 IP 严重得多；
@@ -64,10 +65,10 @@ MAX_COUNT=10               # 单个记录名最多挂几条 A 记录
 # 两条路径的上限不一样：页面按钮经 rpcd 调用，平台级 30 秒；自动收尾由 daemon
 # 拉起，不受这个限制。给慢代理留余量，但手动路径仍要留 5 秒收尾。
 BUDGET_MANUAL=25
-BUDGET_AUTO=45
+BUDGET_AUTO=90             # 4 个目标 + 代理抖动的余量；手动仍受 rpcd 30s 限制
 BUDGET=$BUDGET_MANUAL
 REQ_TIMEOUT=6              # 单请求超时（秒）。实测代理路径 1.0–3.3s，4s 太紧
-REQ_TRIES=2                # 只对 GET 重试；写请求不能盲目重放（见 api() 注释）
+REQ_TRIES=2                # GET 任意失败 / 写请求连接阶段失败时，最多试 2 次
 
 RUN_DIR="${CFIP_RUN_DIR:-/tmp/cf-ipcheck}"
 ETC_DIR="${CFIP_ETC_DIR:-/etc/cf-ipcheck}"
@@ -345,13 +346,11 @@ body_patch() {
 api() {
 	# $1 = GET|POST|PATCH|DELETE, $2 = 路径, $3 = body（GET/DELETE 时省略）
 	# 超时与预算：手动按钮受 rpcd 30 秒硬上限约束，自动收尾没有。单请求 6 秒
-	# 覆盖实测 1.0–3.3 秒的代理抖动；GET 是只读的，失败后再试一次；写请求
-	# （POST/DELETE）不在这里重放 —— 响应丢了不等于没执行，交给调用方回读对账，
-	# 否则一次超时重试就可能多出重复 A 记录。
+	# 覆盖实测 1.0–3.3 秒的代理抖动；GET 是只读的，任意失败后再试一次。写请求
+	# 只在连接阶段失败（curl 6/7/35，HTTP 请求还没发出）时重试；响应丢了不等于
+	# 没执行，交给调用方回读对账，避免一次重放多出重复 A 记录。
 	# stderr 收进文件：失败时把 curl 退出码、耗时和原因写进日志，不再只写“网络”。
 	_m=$1; _p=$2; _body=${3:-}
-	_tries=1
-	[ "$_m" = GET ] && _tries=$REQ_TRIES
 	_attempt=1
 	_errf="$RUN_DIR/.api-err.$$"
 	while :; do
@@ -373,7 +372,12 @@ api() {
 			return 0
 		fi
 		_why=$(tr '\n' ' ' <"$_errf" 2>/dev/null | sed 's/[[:space:]]*$//')
-		if [ "$_attempt" -lt "$_tries" ] && budget_ok; then
+		# GET：只读，任何失败都可再试。POST/DELETE：只有连接阶段失败
+		# （curl 6/7/35，请求尚未发出）才重试；rc 28/56 可能已写入，留给调用方对账。
+		_retryable=0
+		[ "$_m" = GET ] && _retryable=1
+		case "$_rc" in 6|7|35) _retryable=1 ;; esac
+		if [ "$_retryable" = 1 ] && [ "$_attempt" -lt "$REQ_TRIES" ] && budget_ok; then
 			log "API $_m $_p 失败（curl=$_rc，${_secs}s：${_why:-无错误输出}），重试 1/1"
 			_attempt=$((_attempt + 1))
 			continue
