@@ -13,6 +13,7 @@ LOG=$S/run/cf-ipcheck.log
 W=$S/wrap
 trap 'rm -rf "$S"' EXIT INT TERM
 mkdir -p "$S/run" "$S/etc" "$W" || exit 1
+chmod +x "$MK" 2>/dev/null || true
 ok=0; bad=0
 chk() { if [ "$2" = "$3" ]; then ok=$((ok+1)); printf '[PASS] %s\n' "$1"; else bad=$((bad+1)); printf '[FAIL] %s: got <%s> want <%s>\n' "$1" "$2" "$3"; fi; }
 
