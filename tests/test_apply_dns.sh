@@ -79,6 +79,11 @@ run() { # $1=curl wrapper $2=extra env assignments...
 		CFIP_UCI=/bin/false MOCK_CURL="$MK" CFIP_DNS_TOKEN=x CFIP_DNS_TARGETS="cf.example.com 2" "$@" \
 		sh "$AD" --manual --ip 4.4.4.4,5.5.5.5
 }
+run_result() { # 从 result.json 取候选（不走 --ip），用于验发布过滤
+	env MOCK_STORE="$STORE" CFIP_CURL="$MK" CFIP_RUN_DIR="$S/run" CFIP_ETC_DIR="$S/etc" \
+		CFIP_UCI=/bin/false MOCK_CURL="$MK" CFIP_DNS_TOKEN=x \
+		CFIP_DNS_TARGETS="cf.example.com 2 @NRT" sh "$AD" --manual
+}
 count_records() { awk -F'|' -v n="$1" '$2==n{print $4}' "$STORE" | grep -c .; }
 has_log() { grep -q "$1" "$LOG" 2>/dev/null && echo yes || echo no; }
 
@@ -132,6 +137,42 @@ chk '退出码 0' "$rc" 0
 chk '旧记录被删掉' "$(awk -F'|' '$3=="old3"' "$STORE" | wc -l)" 0
 chk '日志记录了连接阶段重试' "$(has_log '重试 1/1')" yes
 chk 'DELETE 只发了一次（连接失败未到 mock）' "$(grep -c '^DELETE' "$TRACE")" 1
+
+reset
+echo "=== 4c. DNS 发布过滤：4xx 可达但不发布 ==="
+cat >"$S/run/result.json" <<'JSON'
+{"items":[{"ip":"5.5.5.5","code":200}],
+ "dc_summary":[{"dc":"NRT","items":[
+  {"ip":"4.4.4.4","ttfb_ms":10,"code":403},
+  {"ip":"5.5.5.5","ttfb_ms":20,"code":200},
+  {"ip":"6.6.6.6","ttfb_ms":30,"code":200},
+  {"ip":"7.7.7.7","ttfb_ms":40,"code":200}]}]}
+JSON
+run_result >/dev/null 2>&1; rc=$?
+chk '退出码 0' "$rc" 0
+chk '只发布 2 条（请求 2 条）' "$(count_records cf.example.com)" 2
+chk '403 的 4.4.4.4 没进 DNS' \
+	"$(awk -F'|' '$2=="cf.example.com" && $4=="4.4.4.4"' "$STORE" | wc -l)" 0
+chk '按 ttfb 取前 2 个 2xx' \
+	"$(awk -F'|' '$2=="cf.example.com"{printf "%s ",$4}' "$STORE" | tr -d '\n')" '5.5.5.5 6.6.6.6 '
+
+reset
+echo "=== 4d. 候选全被 HTTP 过滤 → 保留旧记录，不清空 ==="
+seed cf.example.com old4 9.9.9.9 cf-ipcheck
+cat >"$S/run/result.json" <<'JSON'
+{"items":[{"ip":"9.9.9.8","code":200}],
+ "dc_summary":[{"dc":"NRT","items":[
+  {"ip":"4.4.4.4","ttfb_ms":10,"code":403},
+  {"ip":"6.6.6.6","ttfb_ms":20,"code":500}]}]}
+JSON
+run_result >/dev/null 2>&1; rc=$?
+chk '退出码 0（跳过不是失败）' "$rc" 0
+chk '旧记录仍在' \
+	"$(awk -F'|' '$2=="cf.example.com" && $4=="9.9.9.9"' "$STORE" | wc -l)" 1
+chk '没有新增被过滤的 IP' \
+	"$(awk -F'|' '$2=="cf.example.com" && ($4=="4.4.4.4" || $4=="6.6.6.6")' "$STORE" | wc -l)" 0
+chk '日志说明保留旧记录' "$(has_log '保留现有 DNS 记录')" yes
+chk '汇总说明保留旧记录' "$(has_log '保留旧记录')" yes
 
 reset
 echo "=== 5. DELETE 失败且记录仍在 → 部分完成（退出码 6） ==="

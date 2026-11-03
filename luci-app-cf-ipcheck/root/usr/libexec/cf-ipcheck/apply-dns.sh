@@ -34,6 +34,8 @@
 #   · 任何失败都只追加一行日志，不做跨目标的回滚（避免覆盖他人改动）；
 #   · 写的时候**先加后删**：新增成功之后才删多余的旧记录。反过来（先删后加）一旦
 #     新增失败，解析就会少几条甚至空掉 —— 那是"把网站写挂"，比多留一条旧 IP 严重得多；
+#   · 有候选但全被 HTTP 过滤（4xx/5xx）时保留旧记录，不清空；只有本来就没有候选
+#     （机房没测到/源全挂）才按原有语义清空；
 #   · 同一时刻只允许一个同步在跑（mkdir 原子锁）：自动收尾与页面按钮是两条独立路径，
 #     同时算 diff 会各自基于同一份旧快照 POST/DELETE，结果是重复记录或一边删一边加；
 #   · 删除成功只记一行「删除 <IP>」；proxied/ttl/comment/id 不再刷进主日志
@@ -312,14 +314,26 @@ auto_name() { # $1=记录名 $2=序号
 # 来源优先级：--ip > result.json > best-ip.txt。
 # 去重是必须的：榜单偶尔会出现相邻两行同 IP（重复探测），不去重会让同一个 IP
 # 占掉好几个名额，反而把真正不同的候选挤出去。
-ranked_ips() {
+ranked_ips() { # $1=ok（默认，只发 2xx/3xx）/ all（不过滤，给保护规则用）
+	_mode=${1:-ok}
 	_raw=''
+	_result_items=0
 	if [ -n "$IP_ARG" ]; then
 		_raw=$(printf '%s' "$IP_ARG" | tr ',' '\n')
 	elif [ -f "$RUN_DIR/result.json" ] && [ -n "$JQ" ]; then
-		_raw=$("$JQ" -r '.items[]?.ip // empty' "$RUN_DIR/result.json" 2>/dev/null) || _raw=''
+		_result_items=$("$JQ" -r '[.items[]? | select(.ip != null)] | length' "$RUN_DIR/result.json" 2>/dev/null) || _result_items=0
+		case "$_result_items" in ''|*[!0-9]*) _result_items=0 ;; esac
+		if [ "$_mode" = all ]; then
+			_raw=$("$JQ" -r '.items[]?.ip // empty' "$RUN_DIR/result.json" 2>/dev/null) || _raw=''
+		else
+			# 只发布 2xx/3xx；4xx/5xx 虽然 TCP 可达，但代理节点拿去连会吃 403。
+			# 旧 result.json 没有 code 字段时保持原行为（全部候选）。
+			_raw=$("$JQ" -r '.items[]? | select((has("code") | not) or ((.code // 0) >= 200 and (.code // 0) < 400)) | .ip // empty' "$RUN_DIR/result.json" 2>/dev/null) || _raw=''
+		fi
 	fi
-	if [ -z "$_raw" ] && [ -f "$ETC_DIR/best-ip.txt" ]; then
+	# result.json 里本来有候选、只是全被 HTTP 过滤时，不能回退到 best-ip.txt，
+	# 否则过滤会被旧文件绕过去；只有 result.json 没条目时才回退。
+	if [ -z "$_raw" ] && [ "$_result_items" = 0 ] && [ -f "$ETC_DIR/best-ip.txt" ]; then
 		# 榜单形如 "1.2.3.4 # cf-ipcheck | SIN | 123ms"，也可能有裸 IP 行。
 		# 这里必须用 awk 而不是 `sed -n 's/...//p'`：sed 的 p 只打印**发生过替换**的行，
 		# 裸 IP 行没匹配到就不打印 —— 单 IP 时代只读第一行所以没暴露，多 IP 就少读一半。
@@ -747,13 +761,15 @@ CAND_TOTAL=$(printf '%s\n' "$CANDIDATES" | grep -c .)
 
 # 这些机房本轮的候选 IP：跨机房合并后按 ttfb 升序（每行一个）。
 # 数据取自 result.json 的 dc_summary（每块的 items 已按 ttfb 排好，这里再全局排一次）。
-colo_ips() { # $1=逗号分隔的机房码
+colo_ips() { # $1=逗号分隔的机房码 $2=ok（默认，只发 2xx/3xx）/ all（不过滤）
 	[ -n "$JQ" ] || return 1
 	[ -f "$RUN_DIR/result.json" ] || return 1
-	"$JQ" -r --arg codes ",$1," '
+	"$JQ" -r --arg codes ",$1," --arg mode "${2:-ok}" '
 		[ .dc_summary[]? | . as $r
 		  | select($codes | index("," + $r.dc + ","))
-		  | $r.items[]? | { ip: .ip, t: (.ttfb_ms // 1000000000) } ]
+		  | $r.items[]?
+		  | select($mode == "all" or (has("code") | not) or ((.code // 0) >= 200 and (.code // 0) < 400))
+		  | { ip: .ip, t: (.ttfb_ms // 1000000000) } ]
 		| sort_by(.t) | .[].ip' "$RUN_DIR/result.json" 2>/dev/null
 }
 
@@ -814,6 +830,7 @@ resolve_zone() {
 handle_target() {
 	_no=$1; _tot=$2; _spec=$3
 	WROTE=0
+	SKIPPED=0
 	_f=${_spec%%|*}; _rest=${_spec#*|}
 	_n=${_rest%%|*}; _rest=${_rest#*|}
 	_z=${_rest%%|*}; _rest2=${_rest#*|}
@@ -823,8 +840,10 @@ handle_target() {
 
 	if [ -n "$_colo" ]; then
 		_pool=$(colo_ips "$_colo")
+		_pool_raw=$(colo_ips "$_colo" all)
 	else
 		_pool=$(ranked_ips)
+		_pool_raw=$(ranked_ips all)
 	fi
 	if [ -n "$_idx" ]; then
 		# 自动编号：第 i 个名字拿第 i 颗（不这么取的话每个编号都是同一颗最快的）
@@ -842,6 +861,14 @@ handle_target() {
 	_cleanup=0
 	[ "$_n" = 0 ] && _cleanup=1
 	_tag="目标 $_no/$_tot $_f"
+	# 有候选、但全被 HTTP 过滤（4xx/5xx）时保留旧记录；直接清空会让解析断掉。
+	# 只有「本来就没有候选」才继续走原有的清空语义。
+	_raw_n=$(printf '%s\n' "$_pool_raw" | grep -c .)
+	if [ "$_cleanup" = 0 ] && [ "$_want_n" = 0 ] && [ "$_raw_n" -gt 0 ]; then
+		log "$_tag：候选 $_raw_n 个全部是 4xx/5xx，按保护规则保留现有 DNS 记录，不写入"
+		SKIPPED=1
+		return 0
+	fi
 	if [ "$_cleanup" = 0 ] && [ -n "$_colo" ] && [ "$_want_n" = 0 ]; then
 		# 这是配置里最危险的一种状态：机房被墙/没测到，而这个域名只挂这个机房。
 		# 按既定语义清空它 —— 但必须说得让人一眼看见，别让人几天后才发现解析空了。
@@ -1042,6 +1069,7 @@ _rc_all=0
 SUM_OK=0
 SUM_PARTIAL=0
 SUM_HARD=0
+SUM_KEEP=0
 SUM_ADD=0
 SUM_DEL=0
 _seen=0
@@ -1049,7 +1077,11 @@ while IFS= read -r _spec; do
 	[ -n "$_spec" ] || continue
 	_seen=$((_seen + 1))
 	if handle_target "$_seen" "$TARGET_TOTAL" "$_spec"; then
-		SUM_OK=$((SUM_OK + 1))
+		if [ "$SKIPPED" = 1 ]; then
+			SUM_KEEP=$((SUM_KEEP + 1))
+		else
+			SUM_OK=$((SUM_OK + 1))
+		fi
 	else
 		_r=$?
 		case "$_r" in
@@ -1063,14 +1095,16 @@ done <<EOF
 $TARGETS
 EOF
 
+_keep_note=''
+[ "$SUM_KEEP" -gt 0 ] && _keep_note="、$SUM_KEEP 个保留旧记录"
 if [ "$DRY" = 1 ]; then
 	printf '[dry-run] 共 %s 个目标（未联网、未写入）\n' "$TARGET_TOTAL"
 elif [ "$SUM_HARD" -eq 0 ] && [ "$SUM_PARTIAL" -eq 0 ]; then
-	log "DNS 同步完成：$SUM_OK 个记录名已与期望一致（新增 $SUM_ADD / 删除 $SUM_DEL）"
+	log "DNS 同步完成：$SUM_OK 个记录名已与期望一致$_keep_note（新增 $SUM_ADD / 删除 $SUM_DEL）"
 elif [ "$SUM_HARD" -eq 0 ]; then
-	log "DNS 同步部分完成：$SUM_OK 完成、$SUM_PARTIAL 部分完成（共 $TARGET_TOTAL 个记录名；已新增 $SUM_ADD / 已删除 $SUM_DEL）—— 清理或校验没做完，下一轮会接着做"
+	log "DNS 同步部分完成：$SUM_OK 完成、$SUM_PARTIAL 部分完成$_keep_note（共 $TARGET_TOTAL 个记录名；已新增 $SUM_ADD / 已删除 $SUM_DEL）—— 清理或校验没做完，下一轮会接着做"
 else
-	log "DNS 同步结束：$SUM_OK 完成、$SUM_PARTIAL 部分完成、$SUM_HARD 失败（共 $TARGET_TOTAL 个记录名；已新增 $SUM_ADD / 已删除 $SUM_DEL）—— 失败原因见上面各目标那行"
+	log "DNS 同步结束：$SUM_OK 完成、$SUM_PARTIAL 部分完成、$SUM_HARD 失败$_keep_note（共 $TARGET_TOTAL 个记录名；已新增 $SUM_ADD / 已删除 $SUM_DEL）—— 失败原因见上面各目标那行"
 fi
 
 # dns_sync_hook 会把退出码带回页面；多目标时按最后一个失败码报，

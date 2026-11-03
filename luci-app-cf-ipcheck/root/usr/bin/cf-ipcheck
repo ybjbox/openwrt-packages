@@ -1273,10 +1273,11 @@ dc_summary() {
 # $1 = dc.tsv（ip \t colo，可重复，后写覆盖）
 # $2 = qual.bps（qualified 的 8 列 + 第 9 列 bps，可空；文件不在时按空处理）
 # $3 = 机房码
-# stdout = 每行 `ip \t ttfb \t connect \t bps`（bps 空 = 本轮没测到吞吐）
+# stdout = 每行 `ip \t ttfb \t connect \t bps \t code`（bps 空 = 本轮没测到吞吐）
 # 排序：有吞吐的在前、按 bps 降序；没吞吐的在后、按 ttfb 升序 —— 展开后前几行
 # 就是这个机房里最快的几颗。这里**不截断**：截断与 items_total 在 dc_items /
 # write_outputs 里做，排序口径只此一份，避免两处各排一套。
+# 输出 5 列：ip / ttfb / connect / bps（可空）/ HTTP code；DNS 发布只用 2xx/3xx。
 dc_items_all() {
 	dia_dc=${1:-/dev/null}
 	dia_q=${2:-/dev/null}
@@ -1301,8 +1302,8 @@ dc_items_all() {
 		# 比较，于是 "-0000005000000" 排到了 "-0000010900000" 前面 —— 5MB/s 抢在
 		# 10.9MB/s 前面（真机自测抓到的）。现在有吞吐的用 1e12-bps，没测到的用
 		# 2e12+ttfb*1000：前者恒定小于后者，且 bps 越大键越小 → 降序成立。
-		if (b == "") printf "%015.0f\t%s\t%.1f\t%.1f\t\n", (2000000000000 + tt * 1000), $1, tt, cn
-		else printf "%015.0f\t%s\t%.1f\t%.1f\t%.0f\n", (1000000000000 - b), $1, tt, cn, b
+		if (b == "") printf "%015.0f\t%s\t%.1f\t%.1f\t\t%s\n", (2000000000000 + tt * 1000), $1, tt, cn, $2
+		else printf "%015.0f\t%s\t%.1f\t%.1f\t%.0f\t%s\n", (1000000000000 - b), $1, tt, cn, b, $2
 	}' "$dia_dc" "$dia_q" | sort | cut -f2-
 }
 
@@ -2334,7 +2335,7 @@ write_outputs() {
 	#
 	# r92：每个机房再带一份 items（展开明细）。数据源是 qual.bps —— 即本轮
 	# qualified 集合本身（含没测到吞吐的），所以「本轮哪些 IP 属于这个机房」与
-	# 汇总的 count 同源。每项只四个字段；数字在这里再过一遍校验，脏值退 0/null，
+	# 汇总的 count 同源。每项五个字段（含 HTTP code）；数字在这里再过一遍校验，脏值退 0/null，
 	# 绝不因为一条坏行把整份 result.json 打断（页面 JSON.parse 失败会整页空白）。
 	# items_total 只在超过 100 条时出现，界面据此显示「共 N 条」；没超过就不写。
 	dcsum_json='[]'
@@ -2357,7 +2358,8 @@ write_outputs() {
 					tt = num($2) ? sprintf("%.1f", $2 + 0) : "0.0"
 					cn = num($3) ? sprintf("%.1f", $3 + 0) : "0.0"
 					bp = ($4 ~ /^[0-9]+$/) ? sprintf("%.0f", $4 + 0) : "null"
-					printf "%s{\"ip\":\"%s\",\"ttfb_ms\":%s,\"connect_ms\":%s,\"speed_bps\":%s}", (n++ ? "," : ""), $1, tt, cn, bp
+					cd = ($5 ~ /^[0-9]+$/) ? sprintf("%d", $5 + 0) : "0"
+					printf "%s{\"ip\":\"%s\",\"code\":%s,\"ttfb_ms\":%s,\"connect_ms\":%s,\"speed_bps\":%s}", (n++ ? "," : ""), $1, cd, tt, cn, bp
 				}')
 				dcextra=''
 				if [ "$dctot" -gt 100 ]; then
@@ -4433,7 +4435,7 @@ check 'speed_unit=mb：10485760 B/s ⇒ 10.49（十进制）' \
 	printf '1.1.1.1\t200\t10.0\t5.0\t20.0\t90.0\tnone\ta.example\t\n1.1.1.2\t200\t300.0\t5.0\t400.0\t500.0\tnone\ta.example\t5000\n' >"$RUN_DIR/qual.bps"
 	write_outputs "$(printf '104.16.1.1\t200\t50.0\t60.0\t120.0\t400.0\tnone\twww.cloudflare.com')" 2 2 0 '{"none":1}'
 	check 'result.json：items 有吞吐在前、缺失写 null 不是 0、空机房是 []' \
-		"$(grep -cF '"dc_summary":[{"dc":"NRT","count":2,"ttfb_med":150.0,"best_ip":"1.1.1.1","items":[{"ip":"1.1.1.2","ttfb_ms":400.0,"connect_ms":300.0,"speed_bps":5000},{"ip":"1.1.1.1","ttfb_ms":20.0,"connect_ms":10.0,"speed_bps":null}]},{"dc":"LAX","count":1,"ttfb_med":275.0,"best_ip":"2.2.2.2","items":[]}]' "$RESULT")" '1'
+		"$(grep -cF '"dc_summary":[{"dc":"NRT","count":2,"ttfb_med":150.0,"best_ip":"1.1.1.1","items":[{"ip":"1.1.1.2","code":200,"ttfb_ms":400.0,"connect_ms":300.0,"speed_bps":5000},{"ip":"1.1.1.1","code":200,"ttfb_ms":20.0,"connect_ms":10.0,"speed_bps":null}]},{"dc":"LAX","count":1,"ttfb_med":275.0,"best_ip":"2.2.2.2","items":[]}]' "$RESULT")" '1'
 	# 超过 100 条：JSON 里只落 100 个 item，并在 dc 对象里补 items_total。
 	printf 'BIG\t150\t150.0\t10.9.0.1\n' >"$RUN_DIR/dc.summary"
 	cp "$dct3" "$RUN_DIR/dc.tsv"
