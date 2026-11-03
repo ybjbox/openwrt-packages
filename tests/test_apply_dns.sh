@@ -155,6 +155,12 @@ chk '403 的 4.4.4.4 没进 DNS' \
 	"$(awk -F'|' '$2=="cf.example.com" && $4=="4.4.4.4"' "$STORE" | wc -l)" 0
 chk '按 ttfb 取前 2 个 2xx' \
 	"$(awk -F'|' '$2=="cf.example.com"{printf "%s ",$4}' "$STORE" | tr -d '\n')" '5.5.5.5 6.6.6.6 '
+if [ "$rc" != 0 ]; then
+	echo "---- 4c apply-dns log (rc=$rc) ----"
+	sed -n '1,80p' "$LOG" 2>/dev/null
+	echo "---- 4c store ----"
+	cat "$STORE" 2>/dev/null
+fi
 
 reset
 echo "=== 4d. 候选全被 HTTP 过滤 → 保留旧记录，不清空 ==="
