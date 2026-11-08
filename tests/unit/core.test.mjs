@@ -61,8 +61,12 @@ function load() {
 
 const CFI = load();
 
+const makefile = fs.readFileSync(path.join(root, 'luci-app-cf-ipcheck', 'Makefile'), 'utf8');
+const pkgRelease = (makefile.match(/PKG_RELEASE:=(\d+)/) || [])[1];
+
 test('构建版本与包版本一致', () => {
-	assert.equal(CFI.build, 'r176');
+	assert.ok(pkgRelease, 'Makefile 里找不到 PKG_RELEASE');
+	assert.equal(CFI.build, 'r' + pkgRelease);
 });
 
 test('机房码：常见机场码有中文名，未知码不编造', () => {
