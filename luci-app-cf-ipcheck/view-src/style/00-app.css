@@ -720,3 +720,103 @@
 	.cfp .tbl tr.top { box-shadow: inset 2px 0 0 var(--cfi-primary); }
 	.cfp .cbi-section { padding: 14px; }
 }
+
+/* =====================================================================
+ * r177 可读性修补：不动版式，只收字号、间距与两处响应式缺陷。
+ * ===================================================================== */
+
+/* 日志工具栏：模式与动作分成两组，按钮边界保留 */
+.cfp[class] .log-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.cfp[class] .log-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.cfp[class] .log-bar .log-group + .log-group {
+	margin-left: auto; padding-left: 16px;
+	border-left: 1px solid var(--cfi-line);
+}
+
+/* 首选标记改成描边；首行不再重复画一条实心竖线 */
+.cfp[class] .tbl .lead {
+	background: transparent; color: var(--cfi-primary);
+	border: 1px solid color-mix(in srgb, var(--cfi-primary) 45%, var(--cfi-line));
+	padding: 0 6px; font-weight: 600;
+}
+.cfp[class] .tbl tr.top,
+.cfp[class] .tbl tbody tr.top td:first-child { box-shadow: none; }
+
+/* 小字下限 11px；数字不再用负字距 */
+.cfp[class] .mono,
+.cfp[class] .n { letter-spacing: 0; }
+.cfp[class] .tbl .sub { font-size: 11px; }
+.cfp[class] .tbl .lead { font-size: 11px; }
+.cfp[class] th .th-tip { font-size: 11px; }
+.cfp[class] .tbl tr.top .rk { font-weight: 600; }
+
+/* 回到 4px 网格 */
+.cfp[class] .prog { margin: 16px 0 0; }
+.cfp[class] .dnsrow { padding: 8px; }
+.cfp[class] .dnsrows-add { padding: 8px; }
+.cfp[class] .tbl-empty { padding: 16px 8px; }
+
+/* 420：吞吐标签、条形、数值保持一行，不再拆成两行 */
+@media (max-width: 767px) {
+	#view .cfp[class] .tbl td.c-spd { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+	#view .cfp[class] .tbl td.c-spd::before { flex: 0 0 auto; }
+	#view .cfp[class] .tbl td.c-spd .spd { width: auto; flex: 0 0 auto; justify-content: flex-end; }
+	#view .cfp[class] .log-bar { gap: 8px; }
+	#view .cfp[class] .log-group { display: contents; }
+	#view .cfp[class] .log-bar .log-group + .log-group {
+		margin-left: 0; padding-left: 0; border-left: 0;
+	}
+}
+
+/* 768–1152：Argon 会隐藏表头行；恢复表格语义 */
+@media (min-width: 768px) and (max-width: 1152px) {
+	#view .cfp[class] .tbl thead { display: table-header-group; }
+	#view .cfp[class] .tbl thead tr.table-titles { display: table-row; }
+	#view .cfp[class] .tbl th,
+	#view .cfp[class] .tbl td { display: table-cell; }
+}
+
+/* 1200px 以上：简单设置分组改两列字段，DNS 编辑器保持单列但整体加宽 */
+@media (min-width: 1200px) {
+	#view .cfp[class] #cfi-pane-set .cbi-section { max-width: 1120px; }
+	#view .cfp[class] #cfi-pane-set .cbi-section:not(.is-fold):is([data-group="basic"], [data-group="probe"], [data-group="probeAdv"], [data-group="gist"]) .cbi-section-node {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+		column-gap: 32px;
+	}
+	#view .cfp[class] #cfi-pane-set .cbi-section:not(.is-fold):is([data-group="basic"], [data-group="probe"], [data-group="probeAdv"], [data-group="gist"]) .cbi-section-node > .cbi-value {
+		display: flex; align-items: flex-start; gap: 16px;
+		padding: 12px 0; min-width: 0;
+		border-top: 1px solid var(--cfi-line);
+	}
+	#view .cfp[class] #cfi-pane-set .cbi-section:not(.is-fold):is([data-group="basic"], [data-group="probe"], [data-group="probeAdv"], [data-group="gist"]) .cbi-section-node > .cbi-value:nth-child(1),
+	#view .cfp[class] #cfi-pane-set .cbi-section:not(.is-fold):is([data-group="basic"], [data-group="probe"], [data-group="probeAdv"], [data-group="gist"]) .cbi-section-node > .cbi-value:nth-child(2) {
+		padding-top: 0; border-top: 0;
+	}
+	#view .cfp[class] #cfi-pane-set .cbi-section:not(.is-fold):is([data-group="basic"], [data-group="probe"], [data-group="probeAdv"], [data-group="gist"]) .cbi-value-title {
+		flex: 0 0 180px; width: auto; float: none;
+		margin: 0; padding-top: 9px; text-align: right; line-height: 1.45;
+	}
+	#view .cfp[class] #cfi-pane-set .cbi-section:not(.is-fold):is([data-group="basic"], [data-group="probe"], [data-group="probeAdv"], [data-group="gist"]) .cbi-value-field {
+		flex: 1 1 auto; width: auto; max-width: none; min-width: 0; margin: 0;
+	}
+	#view .cfp[class] #cfi-pane-set .cbi-section:not(.is-fold):is([data-group="basic"], [data-group="probe"], [data-group="probeAdv"], [data-group="gist"]) .cbi-value-field > * {
+		min-width: 0; max-width: 100%;
+	}
+	#view .cfp[class] #cfi-pane-set .cbi-section:not(.is-fold):is([data-group="basic"], [data-group="probe"], [data-group="probeAdv"], [data-group="gist"]) .cbi-value-field input:not([type="checkbox"]):not([type="radio"]),
+	#view .cfp[class] #cfi-pane-set .cbi-section:not(.is-fold):is([data-group="basic"], [data-group="probe"], [data-group="probeAdv"], [data-group="gist"]) .cbi-value-field select,
+	#view .cfp[class] #cfi-pane-set .cbi-section:not(.is-fold):is([data-group="basic"], [data-group="probe"], [data-group="probeAdv"], [data-group="gist"]) .cbi-value-field textarea {
+		width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box;
+	}
+	#view .cfp[class] #cfi-pane-set .cbi-section:not(.is-fold):is([data-group="basic"], [data-group="probe"], [data-group="probeAdv"], [data-group="gist"]) .cbi-value-description {
+		width: auto; max-width: none; margin-left: 0;
+	}
+	#view .cfp[class] #cfi-pane-set .cbi-section:not(.is-fold):is([data-group="basic"], [data-group="probe"], [data-group="probeAdv"], [data-group="gist"]) .cbi-section-node > .cbi-value[hidden] {
+		display: none;
+	}
+	#view .cfp[class] #cfi-pane-set .cbi-section:not(.is-fold):is([data-group="basic"], [data-group="probe"], [data-group="probeAdv"], [data-group="gist"]) .cbi-section-node > .cbi-value.hidden {
+		display: none;
+	}
+}
+/* CBI 依赖隐藏：form.js 用 .hidden 标记未激活的字段 */
+#view .cfp[class] #cfi-pane-set .cbi-value.hidden { display: none; }

@@ -24,7 +24,7 @@
 		if (it.loss != null && isFinite(Number(it.loss)) && Number(it.loss) > 0)
 			bits.push(CFI.T('丢包 %s%').format(String(Math.round(Number(it.loss) * 100))));
 		if (it.jitter_ms != null && isFinite(Number(it.jitter_ms)) && Number(it.jitter_ms) > 100)
-			bits.push(CFI.T('抖动 %s').format(F.ms(it.jitter_ms)));
+			bits.push(CFI.T('抖动 %s ms').format(F.ms(it.jitter_ms)));
 		if (it.ray_ok === 0)
 			bits.push(CFI.T('未验到 CF-RAY'));
 		return bits.join(' · ');

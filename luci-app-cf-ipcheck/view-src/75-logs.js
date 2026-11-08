@@ -70,7 +70,12 @@
 				el('span', { class: 'sub', text: CFI.T('引擎写的过程记录；出问题先看这里') })
 			]),
 			el('div', { class: 'log-bar' }, [
-				autoBtn.node, fullBtn.node, pauseBtn.node, followBtn.node, refreshBtn.node, copyBtn.node, filterSel
+				el('div', { class: 'log-group log-modes' }, [
+					autoBtn.node, fullBtn.node, pauseBtn.node, followBtn.node
+				]),
+				el('div', { class: 'log-group log-acts' }, [
+					refreshBtn.node, copyBtn.node, filterSel
+				])
 			]),
 			pausedNote,
 			logView.node

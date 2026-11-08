@@ -243,7 +243,7 @@ if [ -f "$ENGINE" ] && [ -f "$VIEW" ]; then
     # 目的是让「引擎写了但页面没读」「页面读了但引擎没写」两种单边改动都变红。
     # 为什么不直接正则扫引擎全文：Gist 载荷、Cloudflare /ips 的响应、自检里的
     # 样例 JSON 也都是 "key": 形状，扫全文会把它们误当契约（files/content/result）。
-    STATUS_KEYS="state started finished pool qualified usable intercepted counts domains items reason budget port enabled interval stage stage_done stage_total upload dc_show"
+    STATUS_KEYS="state started finished pool qualified usable intercepted counts domains items reason port enabled interval stage stage_done stage_total upload dc_show"
     ITEM_KEYS="ip code connect_ms tls_ms ttfb_ms total_ms colo speed_mbytes speed_mib domain loss jitter_ms net_ttfb_ms ray_ok"
     SOURCE_KEYS="url http rc ips cf_in"
 
@@ -271,9 +271,9 @@ if [ -f "$ENGINE" ] && [ -f "$VIEW" ]; then
     done
 
     # 覆盖数下限：契约表被误删一行时，两边的循环都会少跑一轮，看上去仍然全绿。
-    # 38 = STATUS 20 + ITEM 13 + SOURCE 5（r113 实测）。只增不减。
-    if [ "$nkeys" -lt 38 ]; then
-        echo "[FAIL] contract: 只核对了 $nkeys 个键，契约表至少应有 38 个（少的那几行被删了？）"
+    # 37 = STATUS 19 + ITEM 13 + SOURCE 5（P1+P2 移走 budget 后）。只增不减。
+    if [ "$nkeys" -lt 37 ]; then
+        echo "[FAIL] contract: 只核对了 $nkeys 个键，契约表至少应有 37 个（少的那几行被删了？）"
         rl6=1
     fi
 
@@ -314,8 +314,8 @@ fi
 # --- red-line-7: 字段声明只有一处 + 短说明留在页面、完整解释挂悬停 -----------
 # r117 起字段统一由 field(map, 'group', type, 'key', 标题, 短句, 长句) 声明：
 #   · 短句只写一次（option 的第 4 参与 help() 的第 2 参是同一个值）；
-#   · 分组写在第 2 个实参里，必须与 GROUP_OPTIONS 双向一致 —— dc_show 曾经漏登记，
-#     在页面上掉进「其它」组，直到 r117 才被发现；
+#   · 分组写在第 2 个实参里，必须与 GROUP_OPTIONS 双向一致 —— 分组表与字段声明
+#     对不上时字段会掉进「其它」组；
 #   · 短句仍要 ≤160 字节：真机量过 17 条长说明一共 2299px，会把榜单挤出屏幕。
 if [ -f "$VIEW" ] && [ -f "$ENGINE" ]; then
     rl7=0
@@ -340,8 +340,8 @@ if [ -f "$VIEW" ] && [ -f "$ENGINE" ]; then
     if [ "$nopts" -eq 0 ]; then
         echo "[FAIL] help-7: 从视图里一个字段都没提取到（field(...) 的形状变了？）"
         rl7=1
-    elif [ "$nopts" -lt 54 ]; then
-        echo "[FAIL] help-7: 只提取到 $nopts 个字段，r113 实测是 54 个（少了的字段没被本检查覆盖）"
+    elif [ "$nopts" -lt 33 ]; then
+        echo "[FAIL] help-7: 只提取到 $nopts 个字段，P1+P2 后应为 33 个（少了的字段没被本检查覆盖）"
         rl7=1
     fi
     if [ ! -s "$TMP_PAIRS" ]; then

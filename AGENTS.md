@@ -38,7 +38,7 @@
 sh tools/build-view.sh --check   # 产物与源一致（改完源码先跑 build）
 sh tests/lint.sh                 # 期望：all lint checks passed
 node --test tests/unit/*.test.mjs  # 纯逻辑 + 组件：六态/格式化/dns 往返/切片订阅/表格复用/日志增量/抽屉焦点
-node tests/contract.mjs          # 引擎↔ucode↔ACL↔uci↔字段表↔产物 166 条
+node tests/contract.mjs          # 引擎↔ucode↔ACL↔uci↔字段表↔产物 144 条
 node tests/smoke.mjs             # 最小 DOM 里跑一遍 render
 ```
 
