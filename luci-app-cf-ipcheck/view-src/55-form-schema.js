@@ -1,7 +1,7 @@
 (function (CFI) {
 	'use strict';
 
-	/* 字段说明：页面上只留一句短说明，完整解释挂悬停/点击展开。
+	/* 字段说明：短句默认收起、只留一个「?」；点开后短句与完整解释一起出现。
 	 * field() 让短句只写一次；分组归属在第 2 个实参里，同时供 lint 核对。 */
 	var HELP = {};
 
@@ -22,9 +22,12 @@
 			o.depends(field, value);
 	}
 
-	/* 渲染完成后把完整解释挂到字段旁：悬停保留 title，另加一个「?」按钮
-	 * 可点开/收起（触屏可达）。按钮挂在 .cbi-value-description 里，
-	 * 不在 .cbi-value-field 内 —— 后者会让 CBI 取值读错（r107 事故）。 */
+	/* 渲染完成后挂说明入口：短句默认不显示，只留一个「?」按钮；点开时短句与
+	 * 完整解释一起出现（触屏可达）。按钮挂在 .cbi-value-description 里，
+	 * 不在 .cbi-value-field 内 —— 后者会让 CBI 取值读错（r107 事故）。
+	 * 短句是 CBI 生成的裸文本节点，这里不搬动、不复制：只给容器加 data-cfi-help，
+	 * 由 CSS 把它缩成不占位；展开时切 data-cfi-open=1 恢复字号与行高。
+	 * 这样短句仍只有 field() 那一处出处，lint 的短句守卫与 33 字段表都不受影响。 */
 	function applyHelp(root) {
 		if (!root || !root.querySelectorAll)
 			return;
@@ -41,11 +44,14 @@
 			var desc = rows[i].querySelector('.cbi-value-description');
 			if (!desc || !desc.appendChild)
 				continue;
-			if (desc.setAttribute)
-				desc.setAttribute('title', HELP[key]);
 			if (desc.__cfiHelp)
 				continue;
 			desc.__cfiHelp = true;
+			if (desc.setAttribute) {
+				desc.setAttribute('title', HELP[key]);
+				desc.setAttribute('data-cfi-help', '1');
+				desc.setAttribute('data-cfi-open', '0');
+			}
 			var id = 'cfi-help-' + key;
 			var body = CFI.dom.el('div', { class: 'help-body', id: id, hidden: true, text: HELP[key] });
 			var btn = CFI.dom.el('button', {
@@ -53,15 +59,17 @@
 				'aria-expanded': 'false', 'aria-controls': id,
 				'aria-label': T('展开说明')
 			}, '?');
-			btn.addEventListener('click', (function (b, box) {
+			btn.addEventListener('click', (function (b, box, d) {
 				return function (ev) {
 					if (ev && ev.preventDefault)
 						ev.preventDefault();
 					var open = box.hidden;
 					box.hidden = !open;
+					if (d.setAttribute)
+						d.setAttribute('data-cfi-open', open ? '1' : '0');
 					b.setAttribute('aria-expanded', open ? 'true' : 'false');
 				};
-			})(btn, body));
+			})(btn, body, desc));
 			desc.appendChild(btn);
 			desc.appendChild(body);
 		}

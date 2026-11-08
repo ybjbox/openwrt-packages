@@ -649,6 +649,21 @@
 .cfp .cbi-section > h3 { margin: 0 0 6px; padding: 0; font-size: 16px; background: none; width: auto; border: 0; border-radius: 0; }
 .cfp .cfp-sec-hint { margin: 6px 0 14px; padding-left: 16px; color: var(--cfi-muted); font-size: 12.5px; line-height: 1.55; }
 .cfp .cbi-value-description { font-size: 13px; line-height: 1.65; color: var(--cfi-muted); padding-top: 6px; padding-bottom: 6px; }
+/* 字段短说明默认收起：CBI 生成的裸文本缩成 0 不占位，行里只留一个「?」入口。
+   裸文本节点没法单独选择，所以用容器字号/行高归零、再由 .help-q 与 .help-body
+   各自的显式字号恢复（两者本来就有 font-size，不吃继承）。
+   点开后 data-cfi-open=1：短句用正文色、完整解释用次文色，两段一起出现。
+   属性选择器显式写成串联，不用 :is()；规则放在基础区，不依赖媒体查询的源文件顺序。 */
+.cfp .cbi-value-description[data-cfi-help] {
+	font-size: 0; line-height: 0;
+	padding-top: 0; padding-bottom: 0;
+}
+.cfp .cbi-value-description[data-cfi-help] .help-q { margin-left: 0; }
+.cfp .cbi-value-description[data-cfi-help][data-cfi-open="1"] {
+	font-size: 13px; line-height: 1.65; color: inherit;
+	padding-top: 6px; padding-bottom: 6px;
+}
+.cfp .cbi-value-description[data-cfi-help][data-cfi-open="1"] .help-q { margin-left: 6px; }
 /* 设置分组：点标题展开/收起（80-set 给 h3 加 role / aria-expanded） */
 .cfp .cbi-section > h3.cfp-sec-toggle { display: flex; align-items: center; gap: 8px; min-height: 32px; cursor: pointer; user-select: none; }
 .cfp .cfp-sec-caret {

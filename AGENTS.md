@@ -18,7 +18,7 @@
   `probe`/`probeAdv`/`basic`/`gist` 在 ≥1200px 两列，1024/420 单列；字段依赖用 `dep()`。
 - 运行页修复 1024 表头、420 吞吐断行、11px 小字；日志桌面分模式/动作两组；
   首选描边、去首行竖线。**不要重做整页视觉**（“夜班仪表台”方向已被否决）。
-- 测试基线：build --check、lint、**30 unit、144 contract**、smoke。
+- 测试基线：build --check、lint、**32 unit、144 contract**、smoke。
 - 出包用 **25.12.2 SDK**；25.12.5 的 244MB SDK 下载会卡（详见接手指南 §3.4）。
 - 公网 SSH `op.403333.xyz:22845`，LuCI `https://op.403333.xyz:8888`；装完浏览器要硬刷新。
 

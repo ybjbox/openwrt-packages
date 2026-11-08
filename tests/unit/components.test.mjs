@@ -420,3 +420,67 @@ test('DNS 编辑器：改一行只标这一行，还原后回到原文', () => {
 	assert.doesNotMatch(ed.node.querySelectorAll('.dnsrow')[1].className, /dirty/);
 	assert.equal(add.querySelectorAll('.btn')[1].hidden, true);
 });
+
+/* ---- 9. 设置页功能备注：默认收起，点 ? 与完整解释一起展开 ---------------- */
+/* 短句是 CBI 生成的裸文本，不能搬进 .cbi-value-field（r107 取值事故）。
+ * 这里验证：短句留在原处、容器带收起标记、? 是唯一入口、点开后两段一起出现。 */
+test('设置说明：默认收起短句，点 ? 后短句与完整解释一起出现', () => {
+	/* HELP 表由 form.create() 在真机渲染时填充；这个沙箱只加载模块体，
+	 * 所以先注入一条，让 applyHelp 认得这个字段（同一个对象引用）。 */
+	const fullText = '关闭时后台只空转，不消耗流量。';
+	CFI.form.HELP.enabled = fullText;
+	const shortText = '关掉后不再自动跑。';
+	const desc = makeEl('div');
+	desc.className = 'cbi-value-description';
+	desc.appendChild(documentStub.createTextNode(shortText));
+
+	const label = { htmlFor: 'cbid.cf_ipcheck.global.enabled' };
+	const row = {
+		querySelector(sel) {
+			if (sel === 'label[for]')
+				return label;
+			if (sel === '.cbi-value-description')
+				return desc;
+			return null;
+		},
+		getAttribute() { return null; }
+	};
+	const rootStub = { querySelectorAll(sel) { return sel === '.cbi-value' ? [ row ] : []; } };
+
+	CFI.form.applyHelp(rootStub);
+
+	assert.equal(desc.getAttribute('data-cfi-help'), '1', '容器带收起标记');
+	assert.equal(desc.getAttribute('data-cfi-open'), '0', '默认不展开');
+	assert.equal(desc.childNodes[0].textContent, shortText, '短句仍在原处，没有搬 DOM');
+	const q = desc.childNodes.filter((n) => n.className === 'help-q')[0];
+	const body = desc.childNodes.filter((n) => n.className === 'help-body')[0];
+	assert.ok(q && body, '? 与完整解释都挂在 description 里');
+	assert.equal(body.hidden, true, '默认不显示完整解释');
+	assert.equal(q.getAttribute('aria-expanded'), 'false');
+	assert.equal(desc.getAttribute('title'), CFI.form.HELP.enabled, '悬停仍保留完整解释');
+
+	const click = () => q.dispatchEvent({ type: 'click', preventDefault() {} });
+	click();
+	assert.equal(desc.getAttribute('data-cfi-open'), '1', '点开后短句恢复显示');
+	assert.equal(body.hidden, false, '点开后完整解释一起出现');
+	assert.equal(q.getAttribute('aria-expanded'), 'true');
+	click();
+	assert.equal(desc.getAttribute('data-cfi-open'), '0', '再点一次收起');
+	assert.equal(body.hidden, true);
+	assert.equal(q.getAttribute('aria-expanded'), 'false');
+
+	const n = desc.childNodes.length;
+	CFI.form.applyHelp(rootStub);
+	assert.equal(desc.childNodes.length, n, '重复渲染不重复挂按钮');
+});
+
+test('设置说明：CSS 默认态把短句缩成 0、展开态恢复字号', () => {
+	const cssPath = path.join(root, 'luci-app-cf-ipcheck', 'htdocs', 'luci-static',
+		'resources', 'view', 'cf_ipcheck', 'settings.css');
+	const css = fs.readFileSync(cssPath, 'utf8');
+	assert.match(css, /\.cbi-value-description\[data-cfi-help\]\s*\{[^}]*font-size:\s*0/,
+		'默认态短句不占位');
+	assert.match(css, /\.cbi-value-description\[data-cfi-help\]\[data-cfi-open="1"\]\s*\{[^}]*font-size:\s*13px/,
+		'展开态恢复短句字号');
+	assert.ok(css.indexOf('data-cfi-help') >= 0, 'CSS 与 JS 用同一套属性名');
+});

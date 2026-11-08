@@ -311,12 +311,13 @@ else
     echo "[PASS] red-line-6: engine/view JSON contract holds"
 fi
 
-# --- red-line-7: 字段声明只有一处 + 短说明留在页面、完整解释挂悬停 -----------
+# --- red-line-7: 字段声明只有一处 + 短说明默认收起、完整解释点 ? 展开 ---------
 # r117 起字段统一由 field(map, 'group', type, 'key', 标题, 短句, 长句) 声明：
 #   · 短句只写一次（option 的第 4 参与 help() 的第 2 参是同一个值）；
 #   · 分组写在第 2 个实参里，必须与 GROUP_OPTIONS 双向一致 —— 分组表与字段声明
 #     对不上时字段会掉进「其它」组；
-#   · 短句仍要 ≤160 字节：真机量过 17 条长说明一共 2299px，会把榜单挤出屏幕。
+#   · 短句仍要 ≤160 字节：它默认收起，但点 ? 后要和完整解释一起出现，太长仍会把
+#     展开体撑成一堵墙（真机量过 17 条长说明合计 2299px）。
 if [ -f "$VIEW" ] && [ -f "$ENGINE" ]; then
     rl7=0
     TMP_PAIRS="/tmp/lint_fieldpairs.$$"
@@ -376,7 +377,7 @@ if [ -f "$VIEW" ] && [ -f "$ENGINE" ]; then
     done < "$TMP_GROUPS"
     rm -f "$TMP_PAIRS" "$TMP_GROUPS" "$TMP_OPT"
 
-    # 页面上常驻的那句必须短：field(...) 第二行的第 2 个 _('…') 就是短句。
+    # 点 ? 后要显示的那句必须短：field(...) 第二行的第 2 个 _('…') 就是短句。
     # 字面圆括号一律写成 [(]：`\(` 在 gawk 的动态正则里会被当成未转义分组。
     # LC_ALL=C 是必须的：gawk 在 UTF-8 locale 下 length() 数的是字符数，busybox awk 数的是字节。
     TMP_HELP="/tmp/lint_help.$$"
@@ -402,7 +403,7 @@ if [ -f "$VIEW" ] && [ -f "$ENGINE" ]; then
         }
         END { exit !bad }' "$VIEW" > "$TMP_HELP"
     if [ -s "$TMP_HELP" ]; then
-        echo "[FAIL] help-7: 以下短说明超过 160 字节（长解释应该只出现在悬停里）："
+        echo "[FAIL] help-7: 以下短句超过 160 字节（长解释只放在 ? 展开体里）："
         sed 's|^|       |' "$TMP_HELP"
         rl7=1
     fi
@@ -410,7 +411,7 @@ if [ -f "$VIEW" ] && [ -f "$ENGINE" ]; then
     if [ "$rl7" = 1 ]; then
         fail=1
     else
-        echo "[PASS] red-line-7: fields declared once; short text on page, detail on hover"
+        echo "[PASS] red-line-7: fields declared once; short text behind ?, detail on open"
     fi
 fi
 
@@ -630,11 +631,15 @@ if [ -f "$VIEW" ] && [ -f "$UC_FILE" ] && [ -f "$ACL_FILE" ] && [ -f "$ENGINE" ]
     TMP_PAIRS="/tmp/lint_pairs.$$"
     TMP_ACL="/tmp/lint_acl.$$"
     TMP_LABELS12="/tmp/lint_labels12.$$"
-    # 插件：方法名 = 它调的引擎子命令（只认 "=> sh('xxx')" 这种调用行，
-    # 不认函数定义行，否则会把 "sub" 当成子命令）。参数化调用写成
-    # sh('test-ip ' + ip)，这里只取引号里第一段字面量（子命令名），不拼参数。
-    awk '/^[[:space:]]*[a-z_]+:[[:space:]]*\{/ { n=$1; sub(/:.*/, "", n) }
-         /=>[[:space:]]*sh\(/ { if (match($0, /sh\(.[a-z-]+/)) {
+    # 插件：方法名 = 它调的引擎子命令。两种调用写法都要认：
+    #   无参方法  call: () => sh('status')
+    #   带参方法  call: (request) => { ... return sh('test-ip ' + ip + ' ' + mode); }
+    # 方法名只认「行尾就是 {」的定义行，否则 args: {…}, / call: … => { 会把 n 覆盖掉；
+    # 只取引号里第一段字面量（子命令名），不拼参数，也不认函数定义行（会把 sub 当子命令）。
+    # r146/r152 加的 check_source / test_ip 正是 return sh(...) 形态：旧写法整组漏掉，
+    # 于是「四方契约」对这两个带参方法形同虚设，只剩 contract.mjs 兜着。
+    awk '/^[[:space:]]*[a-z_]+:[[:space:]]*\{[[:space:]]*$/ { n=$1; sub(/:.*/, "", n) }
+         /(=>|return)[[:space:]]+sh\(/ { if (match($0, /sh\(.[a-z-]+/)) {
              v = substr($0, RSTART + 4, RLENGTH - 4); print n "=" v } }' \
         "$UC_FILE" > "$TMP_PAIRS"
     sed -n '/^case "${1:-}" in$/,/^esac$/p' "$ENGINE" |
@@ -660,10 +665,20 @@ if [ -f "$VIEW" ] && [ -f "$UC_FILE" ] && [ -f "$ACL_FILE" ] && [ -f "$ENGINE" ]
     fi
     npairs=$(grep -c . "$TMP_PAIRS" 2>/dev/null)
     [ -n "$npairs" ] || npairs=0
-    if [ "$npairs" -lt 9 ]; then
-        echo "[FAIL] ucode: 只提取到 $npairs 组 方法→子命令（r113 实测 9 组），有方法没被覆盖"
+    # 11 = 9 个无参方法 + check_source / test_ip 两个带参方法。
+    if [ "$npairs" -lt 11 ]; then
+        echo "[FAIL] ucode: 只提取到 $npairs 组 方法→子命令（应为 11 组），有方法没被覆盖"
         rl12=1
     fi
+    # 光有总数下限还不够：写法再变一次仍可能凑够 11 组别的行。两个带参方法点名守一次。
+    for req12 in check_source test_ip; do
+        if grep -q "^${req12}=" "$TMP_PAIRS"; then
+            echo "[PASS] ucode: 带参方法 $req12 已被四方契约覆盖"
+        else
+            echo "[FAIL] ucode: 带参方法 $req12 没被提取（return sh(...) 写法又变了？）"
+            rl12=1
+        fi
+    done
     while IFS='=' read -r m sub; do
         [ -n "$m" ] || continue
         # 1) 插件调的子命令必须是引擎分派表里的
