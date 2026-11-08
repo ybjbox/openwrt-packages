@@ -5,6 +5,11 @@
 与在 GitHub Actions 上跑测速的方案有本质区别：Actions 测的是数据中心的网络，
 不是你家宽带到 Cloudflare 的线路。优选 IP 只有在你自己的线路上测才有意义。
 
+> **当前版本 r177（2026-11-08）**：设置页从 54 项收成 **33 项**（21 项移出界面但 uci/引擎保留，
+> 12 项进「高级设置」，20 项常驻）；≥1200px 两列，1024/420 单列；DNS/Gist/速度/令牌路径按开关隐藏。
+> 运行页修复 1024 表头、420 吞吐断行、11px 小字与首选标记；日志工具栏桌面分模式/动作两组。
+> 已装机并做过公网实机复验。下面「配置项」表是**完整 uci 面**，不是设置页当前可见项。
+
 ## 为什么不用 ping 判定
 
 Cloudflare 是 anycast，同一个 IP 用 ICMP / TCP / HTTPS 测出来的延迟依次递增，
@@ -200,18 +205,35 @@ make menuconfig   # LuCI -> Applications -> luci-app-cf-ipcheck
 
 25.12 起官方包后端是 apk，没有 opkg，也不能手工搓 `.apk`（`ADBd` 归档 + 设备端
 apk 无 `mkpkg`）。不想重编固件的话：Actions → CI → Run workflow（`sdk_arch` 填本机
-`uci -q get openwrt.release.DISTRIB_ARCH` 对应的 `<arch>-<完整小版本>`），
+`uci -q get openwrt.release.DISTRIB_ARCH` 对应的 `<arch>-<完整小版本>`；
+当前设备用 `aarch64_cortex-a53-25.12.2`，25.12.5 的 244MB SDK 下载会卡）。
 下载 `luci-app-cf-ipcheck-*` 产物里的包文件，再：
 
 ```bash
-scp luci-app-cf-ipcheck_*_all.apk root@10.0.0.1:/tmp/
-ssh root@10.0.0.1 'apk add --allow-untrusted /tmp/luci-app-cf-ipcheck-*.apk'
+# 在家
+scp luci-app-cf-ipcheck-1.0.0-r177.apk root@10.0.0.1:/tmp/
+ssh root@10.0.0.1 'apk add --allow-untrusted /tmp/luci-app-cf-ipcheck-1.0.0-r177.apk'
+# 离家（当前环境）
+scp -P 22845 luci-app-cf-ipcheck-1.0.0-r177.apk root@op.403333.xyz:/tmp/
+ssh -p 22845 root@op.403333.xyz 'apk add --allow-untrusted /tmp/luci-app-cf-ipcheck-1.0.0-r177.apk'
 ```
 
-包是 `PKGARCH := all`，产物在 apk 记账里是 `A:noarch`，所以哪个架构的 SDK 编出来
+包当前是 `PKGARCH := all`，产物在 apk 记账里是 `A:noarch`，所以哪个架构的 SDK 编出来
 的都通用（与本仓库 luci-app-dhcp-comment 一致，已在真机核对）。
+装完浏览器要**硬刷新**：`?v=` 跟 luci-base，不跟本包版本走；否则会看到旧 UI。
 
 ## 验证状态
+
+### 2026-11-08 · r177（当前）
+
+- CI：run `42447242831` 成功；SDK 用 `aarch64_cortex-a53-25.12.2`；
+  APK `luci-app-cf-ipcheck-1.0.0-r177.apk`（181052 B，sha256 `bc4e092c…`）。
+- 设备 `apk add` 升级 r176→r177；配置 md5 `8617d656…`、54 条不变；daemon 在跑（空闲时 1 个进程）。
+- 公网 LuCI（无缓存上下文）设置页：6 分组、5 可见；字段 3/10/12(2 隐藏)/4/3；
+  probe/高级两列各 523px；运行页 10 行、无溢出、无 JS 报错。
+- 浏览器有旧 `settings.js/css` 缓存时必须硬刷新。
+
+### 2026-09-26（历史）
 
 2026-09-26 在 LibWrt 25.12.2 / qualcommax-ipq60xx（`aarch64_cortex-a53`）真机上验证：
 
@@ -307,6 +329,11 @@ ssh root@10.0.0.1 'apk add --allow-untrusted /tmp/luci-app-cf-ipcheck-*.apk'
 `form/rpc/ui/view` 直接编译执行 `load()`/`render()` 验的（含 luci.mk 压缩后的那一份）。
 
 ## 配置项
+
+> **r177 设置页只显示 33 项**：21 项仍可被 uci/引擎读取但不在页面（内部测速参数、`dc_show`、
+> `speed_unit`、DNS 备注/自动编号、Gist 文件名、`probe_user`、`annotate` 等），
+> 12 项在「高级设置」，20 项常驻。下表是**完整 uci 面**，不是页面可见项；
+> 不要因为某项没在界面就以为引擎不使用它。字段依赖隐藏见接手指南 §6.1/§6.3。
 
 | UCI 选项 | 默认 | 说明 |
 | :--- | :--- | :--- |

@@ -11,7 +11,7 @@
 | [**luci-app-dhcp-comment**](./luci-app-dhcp-comment) | LuCI DHCP 静态地址分配中文备注与活动租约列表显示增强 | OpenWrt 21.02 ~ 25.12 / ImmortalWrt (LuCI JS) | 🟢 已稳定 |
 | [**athena-custom**](./athena-custom) | 雅典娜（IPQ6018）路由器专属默认初始化配置与性能优化包 | OpenWrt 23.05 ~ 25.12 / ImmortalWrt (qualcommax) | 🟢 已稳定 |
 | [**sysupgrade-clash-cleaner**](./sysupgrade-clash-cleaner) | 固件保留配置升级时自动清理 OpenClash Smart 内核大文件缓存 | 所有 OpenWrt / ImmortalWrt 全系版本 | 🟢 已稳定 |
-| [**luci-app-cf-ipcheck**](./luci-app-cf-ipcheck) | 在本机实测 Cloudflare 优选 IP 的可用性与四段耗时，产出 ip.txt 并可上传 Gist | OpenWrt / ImmortalWrt 23.05 ~ 25.12 (LuCI JS) | 🟢 已真机验证（LibWrt 25.12.2 / aarch64_cortex-a53） |
+| [**luci-app-cf-ipcheck**](./luci-app-cf-ipcheck) | 在本机实测 Cloudflare 边界 IP 的可用性与四段耗时，产出 ip.txt，可写 Cloudflare DNS / 上传 Gist；设置已精简为 33 项（高级 12 / 常驻 20） | OpenWrt / ImmortalWrt 23.05 ~ 25.12 (LuCI JS) | 🟢 r177 已真机验证（LibWrt 25.12.2 / aarch64_cortex-a53） |
 
 ---
 
@@ -53,26 +53,29 @@ git clone https://github.com/ybjbox/openwrt-packages.git package/openwrt-package
 
 ## 🧪 开发与测试
 
-改完代码请跑一遍这几项（都在仓库根目录执行）：
+改完 `luci-app-cf-ipcheck` 请跑一遍这几项（都在仓库根目录执行）：
 
 ```bash
-# 1) 静态红线（POSIX sh 语法 / 跨包重复路径 / 视图陷阱 / 执行位 / JSON 契约 / 子命令名）
+# 1) 视图产物与源一致（改过 view-src 先跑 build）
+sh tools/build-view.sh --check
+
+# 2) 静态红线（POSIX sh 语法 / 跨包重复路径 / 视图陷阱 / 执行位 / JSON 契约 / 子命令名）
 sh tests/lint.sh
 
-# 2) cf-ipcheck 引擎离线回归（绝不联网）
-sh tests/test_cf_ipcheck.sh
+# 3) 视图纯逻辑 + 组件：30 条
+node --test tests/unit/*.test.mjs
 
-# 3) 引擎自带自检（离线，不联网；项数随可用工具有增减，不作硬指标）
-sh luci-app-cf-ipcheck/root/usr/bin/cf-ipcheck selftest
+# 4) 对外契约：144 条（含 33 个设置字段）
+node tests/contract.mjs
 
-# 4) LuCI 视图渲染桩测（需要 Node 22+，261 条断言）
-node tests/viewtest.mjs
+# 5) 最小 DOM 冒烟
+node tests/smoke.mjs
 ```
 
-第 4 项用 stub 把 `form / rpc / ui / view / E / _ / L` 注进 `new Function`，
-在 `return view.extend({` 前插一行导出钩子，从而直接调视图的私有函数
-（`renderTable` / `parseStatus` / `fmtTime` / `notify` …）断言渲染出的文字、列数与对齐类名。
-它**不联网、不依赖真实 DOM**，CI 里跑在单独的 ubuntu job 上（lint 那个 job 在 alpine 容器里，没有 Node）。
+`cf-ipcheck selftest` 与 `tests/test_cf_ipcheck.sh` 在 Windows 开发机上会因 BusyBox
+语义差异挂住，**由 CI 的 engine job 覆盖**，不要把它们当本地必跑项。
+CI 的 view job 会跑 `build --check`、unit、contract；SDK 构建要手动 dispatch，
+并且当前用 `aarch64_cortex-a53-25.12.2`（25.12.5 的 244MB SDK 下载会卡）。
 
 ---
 
