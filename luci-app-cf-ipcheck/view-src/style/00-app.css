@@ -776,47 +776,86 @@
 	#view .cfp[class] .tbl td { display: table-cell; }
 }
 
-/* 1200px 以上：简单设置分组改两列字段，DNS 编辑器保持单列但整体加宽 */
+/* 1200px 以上：简单设置分组改两列字段，DNS 编辑器保持单列但整体加宽。
+ * 分组用显式 [data-group] 选择器，避免 SDK 的 CssTidy 卡在 :is() 上。 */
 @media (min-width: 1200px) {
 	#view .cfp[class] #cfi-pane-set .cbi-section { max-width: 1120px; }
-	#view .cfp[class] #cfi-pane-set .cbi-section:not(.is-fold):is([data-group="basic"], [data-group="probe"], [data-group="probeAdv"], [data-group="gist"]) .cbi-section-node {
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="basic"]:not(.is-fold) .cbi-section-node,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probe"]:not(.is-fold) .cbi-section-node,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probeAdv"]:not(.is-fold) .cbi-section-node,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="gist"]:not(.is-fold) .cbi-section-node {
 		display: grid;
 		grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 		column-gap: 32px;
 	}
-	#view .cfp[class] #cfi-pane-set .cbi-section:not(.is-fold):is([data-group="basic"], [data-group="probe"], [data-group="probeAdv"], [data-group="gist"]) .cbi-section-node > .cbi-value {
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="basic"]:not(.is-fold) .cbi-section-node > .cbi-value,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probe"]:not(.is-fold) .cbi-section-node > .cbi-value,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probeAdv"]:not(.is-fold) .cbi-section-node > .cbi-value,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="gist"]:not(.is-fold) .cbi-section-node > .cbi-value {
 		display: flex; align-items: flex-start; gap: 16px;
 		padding: 12px 0; min-width: 0;
 		border-top: 1px solid var(--cfi-line);
 	}
-	#view .cfp[class] #cfi-pane-set .cbi-section:not(.is-fold):is([data-group="basic"], [data-group="probe"], [data-group="probeAdv"], [data-group="gist"]) .cbi-section-node > .cbi-value:nth-child(1),
-	#view .cfp[class] #cfi-pane-set .cbi-section:not(.is-fold):is([data-group="basic"], [data-group="probe"], [data-group="probeAdv"], [data-group="gist"]) .cbi-section-node > .cbi-value:nth-child(2) {
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="basic"]:not(.is-fold) .cbi-section-node > .cbi-value:nth-child(1),
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probe"]:not(.is-fold) .cbi-section-node > .cbi-value:nth-child(1),
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probeAdv"]:not(.is-fold) .cbi-section-node > .cbi-value:nth-child(1),
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="gist"]:not(.is-fold) .cbi-section-node > .cbi-value:nth-child(1),
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="basic"]:not(.is-fold) .cbi-section-node > .cbi-value:nth-child(2),
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probe"]:not(.is-fold) .cbi-section-node > .cbi-value:nth-child(2),
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probeAdv"]:not(.is-fold) .cbi-section-node > .cbi-value:nth-child(2),
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="gist"]:not(.is-fold) .cbi-section-node > .cbi-value:nth-child(2) {
 		padding-top: 0; border-top: 0;
 	}
-	#view .cfp[class] #cfi-pane-set .cbi-section:not(.is-fold):is([data-group="basic"], [data-group="probe"], [data-group="probeAdv"], [data-group="gist"]) .cbi-value-title {
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="basic"]:not(.is-fold) .cbi-value-title,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probe"]:not(.is-fold) .cbi-value-title,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probeAdv"]:not(.is-fold) .cbi-value-title,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="gist"]:not(.is-fold) .cbi-value-title {
 		flex: 0 0 180px; width: auto; float: none;
 		margin: 0; padding-top: 9px; text-align: right; line-height: 1.45;
 	}
-	#view .cfp[class] #cfi-pane-set .cbi-section:not(.is-fold):is([data-group="basic"], [data-group="probe"], [data-group="probeAdv"], [data-group="gist"]) .cbi-value-field {
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="basic"]:not(.is-fold) .cbi-value-field,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probe"]:not(.is-fold) .cbi-value-field,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probeAdv"]:not(.is-fold) .cbi-value-field,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="gist"]:not(.is-fold) .cbi-value-field {
 		flex: 1 1 auto; width: auto; max-width: none; min-width: 0; margin: 0;
 	}
-	#view .cfp[class] #cfi-pane-set .cbi-section:not(.is-fold):is([data-group="basic"], [data-group="probe"], [data-group="probeAdv"], [data-group="gist"]) .cbi-value-field > * {
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="basic"]:not(.is-fold) .cbi-value-field > *,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probe"]:not(.is-fold) .cbi-value-field > *,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probeAdv"]:not(.is-fold) .cbi-value-field > *,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="gist"]:not(.is-fold) .cbi-value-field > * {
 		min-width: 0; max-width: 100%;
 	}
-	#view .cfp[class] #cfi-pane-set .cbi-section:not(.is-fold):is([data-group="basic"], [data-group="probe"], [data-group="probeAdv"], [data-group="gist"]) .cbi-value-field input:not([type="checkbox"]):not([type="radio"]),
-	#view .cfp[class] #cfi-pane-set .cbi-section:not(.is-fold):is([data-group="basic"], [data-group="probe"], [data-group="probeAdv"], [data-group="gist"]) .cbi-value-field select,
-	#view .cfp[class] #cfi-pane-set .cbi-section:not(.is-fold):is([data-group="basic"], [data-group="probe"], [data-group="probeAdv"], [data-group="gist"]) .cbi-value-field textarea {
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="basic"]:not(.is-fold) .cbi-value-field input:not([type="checkbox"]):not([type="radio"]),
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probe"]:not(.is-fold) .cbi-value-field input:not([type="checkbox"]):not([type="radio"]),
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probeAdv"]:not(.is-fold) .cbi-value-field input:not([type="checkbox"]):not([type="radio"]),
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="gist"]:not(.is-fold) .cbi-value-field input:not([type="checkbox"]):not([type="radio"]),
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="basic"]:not(.is-fold) .cbi-value-field select,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probe"]:not(.is-fold) .cbi-value-field select,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probeAdv"]:not(.is-fold) .cbi-value-field select,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="gist"]:not(.is-fold) .cbi-value-field select,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="basic"]:not(.is-fold) .cbi-value-field textarea,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probe"]:not(.is-fold) .cbi-value-field textarea,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probeAdv"]:not(.is-fold) .cbi-value-field textarea,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="gist"]:not(.is-fold) .cbi-value-field textarea {
 		width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box;
 	}
-	#view .cfp[class] #cfi-pane-set .cbi-section:not(.is-fold):is([data-group="basic"], [data-group="probe"], [data-group="probeAdv"], [data-group="gist"]) .cbi-value-description {
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="basic"]:not(.is-fold) .cbi-value-description,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probe"]:not(.is-fold) .cbi-value-description,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probeAdv"]:not(.is-fold) .cbi-value-description,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="gist"]:not(.is-fold) .cbi-value-description {
 		width: auto; max-width: none; margin-left: 0;
 	}
-	#view .cfp[class] #cfi-pane-set .cbi-section:not(.is-fold):is([data-group="basic"], [data-group="probe"], [data-group="probeAdv"], [data-group="gist"]) .cbi-section-node > .cbi-value[hidden] {
-		display: none;
-	}
-	#view .cfp[class] #cfi-pane-set .cbi-section:not(.is-fold):is([data-group="basic"], [data-group="probe"], [data-group="probeAdv"], [data-group="gist"]) .cbi-section-node > .cbi-value.hidden {
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="basic"]:not(.is-fold) .cbi-section-node > .cbi-value[hidden],
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probe"]:not(.is-fold) .cbi-section-node > .cbi-value[hidden],
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probeAdv"]:not(.is-fold) .cbi-section-node > .cbi-value[hidden],
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="gist"]:not(.is-fold) .cbi-section-node > .cbi-value[hidden],
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="basic"]:not(.is-fold) .cbi-section-node > .cbi-value.hidden,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probe"]:not(.is-fold) .cbi-section-node > .cbi-value.hidden,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probeAdv"]:not(.is-fold) .cbi-section-node > .cbi-value.hidden,
+	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="gist"]:not(.is-fold) .cbi-section-node > .cbi-value.hidden {
 		display: none;
 	}
 }
+
 /* CBI 依赖隐藏：form.js 用 .hidden 标记未激活的字段 */
 #view .cfp[class] #cfi-pane-set .cbi-value.hidden { display: none; }
