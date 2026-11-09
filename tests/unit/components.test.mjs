@@ -479,7 +479,7 @@ test('设置说明：默认收起短句，点 ? 后短句与完整解释一起�
 	assert.equal(desc.childNodes.length + label.childNodes.length, n, '重复渲染不重复挂按钮');
 });
 
-test('设置说明：CSS 默认整行隐藏说明、展开态恢复，且改动标记不拉长柱', () => {
+test('设置说明：CSS 默认整行隐藏说明、展开态恢复、改动标记不拉长柱、? 不掉行', () => {
 	const cssPath = path.join(root, 'luci-app-cf-ipcheck', 'htdocs', 'luci-static',
 		'resources', 'view', 'cf_ipcheck', 'settings.css');
 	const css = fs.readFileSync(cssPath, 'utf8');
@@ -494,4 +494,11 @@ test('设置说明：CSS 默认整行隐藏说明、展开态恢复，且改动�
 	assert.ok(css.indexOf('data-cfi-help') >= 0, 'CSS 与 JS 用同一套属性名');
 	assert.doesNotMatch(css, /font-size:\s*0;\s*line-height:\s*0/,
 		'不再用 font-size:0 藏字（会留下孤零零的小问号）');
+	/* 两列布局标签列只有 180~192px，长标题换行会把跟着文字流的 ? 挤到第二行。
+	   所以 ? 必须绝对定位、标题必须留出跑道；窄屏 44px 热区要同步放宽。 */
+	assert.match(css, /\.cbi-value\s*>\s*\.cbi-value-title\s*\{[^}]*padding-right:\s*26px/,
+		'标题右侧给 ? 留 26px 固定跑道');
+	assert.match(css, /\.help-q\s*\{[^}]*position:\s*absolute;\s*right:\s*0/,
+		'? 绝对定位到标题右上角，不参与文字换行');
+	assert.match(css, /padding-right:\s*50px/, '窄屏 44px 热区的跑道同步放宽到 50px');
 });
