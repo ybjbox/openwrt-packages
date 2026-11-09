@@ -502,3 +502,34 @@ test('设置说明：CSS 默认整行隐藏说明、展开态恢复、改动标�
 		'? 绝对定位到标题右上角，不参与文字换行');
 	assert.match(css, /padding-right:\s*50px/, '窄屏 44px 热区的跑道同步放宽到 50px');
 });
+
+test('设置说明：7 处与引擎实现冲突的旧说法已清除、且已写成正确说法', () => {
+	const src = fs.readFileSync(path.join(root, 'luci-app-cf-ipcheck', 'view-src',
+		'55-form-schema.js'), 'utf8');
+	/* 2026-11-09 文案审查：这些句子曾与 cf-ipcheck / apply-dns.sh 的实际行为相反，
+	   改文案时不能把旧说法抄回来。证据见接手指南 §9 与当日工作日志。 */
+	const banned = [
+		'不参与排序',                 /* speed_probe：吞吐按权重参与排名 */
+		'排序规则是首字节时间升序',   /* keep_count：加权分降序才是第一键 */
+		'榜单会是空的',               /* dc_pick：无对应机房时退回不过滤 */
+		'跳过机房与吞吐两列',         /* canary_check：两列仍在，速度列显示 — */
+		'填 1 表示「自动」',          /* dns_ttl：填 1 实际写入 ttl=1 */
+		'一行一个机房',               /* dns_targets：每行是一条记录规则 */
+		'N × 单次字节数 = 每轮流量',  /* speed_count：该值不控制测速循环 */
+		'只对榜单前 N 个测吞吐',      /* 同上 */
+		'用带真实 SNI 的 HTTPS'       /* 页首：SNI 是不必要的专业术语 */
+	];
+	banned.forEach((s) => assert.ok(!src.includes(s), '旧说法不能回来：' + s));
+
+	const fixed = [
+		'会按「速度在排名里的权重」参与排名',
+		'排名会同时考虑网页响应速度和下载速度',
+		'会自动改回不限制，不会给出空结果',
+		'本轮不再测下载速度',
+		'填 1 就是缓存 1 秒，不是「自动」',
+		'每行填一条记录：域名、条数',
+		'实际会先粗测约 20 个地址',
+		'用真实网站域名，通过 HTTPS 连接逐个实测'
+	];
+	fixed.forEach((s) => assert.ok(src.includes(s), '修正后的说法必须存在：' + s));
+});
