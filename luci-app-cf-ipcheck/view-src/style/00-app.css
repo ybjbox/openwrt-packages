@@ -287,22 +287,35 @@
 	.cfp .cfp-src-edit .ctl { min-height: 44px; }
 }
 .cfp .chk { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
-.cfp .cbi-value.changed { box-shadow: inset 3px 0 0 var(--cfi-primary); }
+/* 「已改动」标记只给标题左侧一小段，不随字段高度拉成一根长柱
+   （记录名清单这种 400px+ 的字段原来会被 inset 3px 拉成一根蓝色长条）。 */
+.cfp .cbi-value.changed { box-shadow: none; }
+.cfp .cbi-value.changed > .cbi-value-title::before {
+	content: ''; position: absolute; left: -8px; top: 50%;
+	width: 3px; height: 18px; margin-top: -9px;
+	border-radius: 2px; background: var(--cfi-primary);
+}
+.cfp .cbi-value > .cbi-value-title { position: relative; }
 .cfp .cbi-value[hidden] { display: none; }
 .cfp .cbi-section[hidden] { display: none; }
+/* 「?」是字段标题旁的一颗小圆钮，不是正文里的下划线链接。
+   放在 .cbi-value-title 里；窄屏仍由 @media 放大到 44px 热区。 */
 .cfp .help-q {
 	display: inline-flex; align-items: center; justify-content: center;
-	width: 22px; height: 22px; min-width: 22px; min-height: 22px;
-	margin-left: 6px; padding: 0;
-	border: 0; border-radius: 4px; background: transparent;
-	color: inherit; font: inherit; font-size: 12px; font-weight: 600; line-height: 1;
-	text-decoration: underline dotted; text-underline-offset: 2px; cursor: pointer;
+	width: 18px; height: 18px; min-width: 18px; min-height: 18px;
+	margin-left: 6px; padding: 0; vertical-align: -1px;
+	border: 1px solid var(--cfi-line-strong); border-radius: 50%; background: transparent;
+	color: var(--cfi-muted); font: inherit; font-size: 11px; font-weight: 600; line-height: 1;
+	text-decoration: none; cursor: pointer;
 }
-.cfp .help-q { transition: color .15s ease, background-color .15s ease, text-decoration-color .15s ease; }
-.cfp .help-q:hover, .cfp .help-q[aria-expanded="true"] { color: inherit; background: color-mix(in srgb, var(--cfi-primary) 8%, transparent); text-decoration-style: solid; text-decoration-color: var(--cfi-primary); }
+.cfp .help-q { transition: color .15s ease, background-color .15s ease, border-color .15s ease; }
+.cfp .help-q:hover, .cfp .help-q[aria-expanded="true"] {
+	color: var(--cfi-primary); border-color: var(--cfi-primary);
+	background: color-mix(in srgb, var(--cfi-primary) 8%, transparent);
+}
 .cfp .help-q:focus-visible { outline: 2px solid var(--cfi-primary); outline-offset: 2px; }
 .cfp .help-body {
-	margin-top: 4px; padding: 6px 8px; border-left: 3px solid var(--cfi-line);
+	margin-top: 6px; padding: 8px 10px; border-left: 3px solid var(--cfi-line);
 	color: var(--cfi-muted); font-size: 12px; line-height: 1.65; max-width: 78ch;
 }
 .cfp .help-body[hidden] { display: none; }
@@ -647,23 +660,18 @@
 	.cfp .cbi-section { padding: 20px; }
 }
 .cfp .cbi-section > h3 { margin: 0 0 6px; padding: 0; font-size: 16px; background: none; width: auto; border: 0; border-radius: 0; }
-.cfp .cfp-sec-hint { margin: 6px 0 14px; padding-left: 16px; color: var(--cfi-muted); font-size: 12.5px; line-height: 1.55; }
+.cfp .cfp-sec-hint { margin: 4px 0 12px; color: var(--cfi-muted); font-size: 12.5px; line-height: 1.55; }
 .cfp .cbi-value-description { font-size: 13px; line-height: 1.65; color: var(--cfi-muted); padding-top: 6px; padding-bottom: 6px; }
-/* 字段短说明默认收起：CBI 生成的裸文本缩成 0 不占位，行里只留一个「?」入口。
-   裸文本节点没法单独选择，所以用容器字号/行高归零、再由 .help-q 与 .help-body
-   各自的显式字号恢复（两者本来就有 font-size，不吃继承）。
-   点开后 data-cfi-open=1：短句用正文色、完整解释用次文色，两段一起出现。
-   属性选择器显式写成串联，不用 :is()；规则放在基础区，不依赖媒体查询的源文件顺序。 */
-.cfp .cbi-value-description[data-cfi-help] {
-	font-size: 0; line-height: 0;
-	padding-top: 0; padding-bottom: 0;
-}
-.cfp .cbi-value-description[data-cfi-help] .help-q { margin-left: 0; }
+/* 字段短说明默认整行不显示：「?」已挪到标题旁，说明行里只剩 CBI 的裸短句和
+   默认 hidden 的完整解释，整行 display:none 即可，不必再用 font-size:0 藏字
+   （那样会留下一条 22px 的孤零零小问号）。点开后 data-cfi-open=1 恢复：
+   短句用正文色、完整解释用次文色，两段一起出现。
+   属性选择器显式串联，不用 :is()；放在基础区，不依赖媒体查询的源文件顺序。 */
+.cfp .cbi-value-description[data-cfi-help] { display: none; }
 .cfp .cbi-value-description[data-cfi-help][data-cfi-open="1"] {
-	font-size: 13px; line-height: 1.65; color: inherit;
+	display: block; font-size: 13px; line-height: 1.65; color: inherit;
 	padding-top: 6px; padding-bottom: 6px;
 }
-.cfp .cbi-value-description[data-cfi-help][data-cfi-open="1"] .help-q { margin-left: 6px; }
 /* 设置分组：点标题展开/收起（80-set 给 h3 加 role / aria-expanded） */
 .cfp .cbi-section > h3.cfp-sec-toggle { display: flex; align-items: center; gap: 8px; min-height: 32px; cursor: pointer; user-select: none; }
 .cfp .cfp-sec-caret {

@@ -5,10 +5,10 @@
 与在 GitHub Actions 上跑测速的方案有本质区别：Actions 测的是数据中心的网络，
 不是你家宽带到 Cloudflare 的线路。优选 IP 只有在你自己的线路上测才有意义。
 
-> **当前版本 r177（2026-11-08）**：设置页从 54 项收成 **33 项**（21 项移出界面但 uci/引擎保留，
+> **当前版本 r178（2026-11-08）**：设置页从 54 项收成 **33 项**（21 项移出界面但 uci/引擎保留，
 > 12 项进「高级设置」，20 项常驻）；≥1200px 两列，1024/420 单列；DNS/Gist/速度/令牌路径按开关隐藏。
-> 运行页修复 1024 表头、420 吞吐断行、11px 小字与首选标记；日志工具栏桌面分模式/动作两组。
-> 已装机并做过公网实机复验。下面「配置项」表是**完整 uci 面**，不是设置页当前可见项。
+> **字段短说明默认整行不显示**，标题旁一颗小圆 `?`；点开后短句与完整解释一起出现。
+> 已装机并做过公网无缓存实机复验。下面「配置项」表是**完整 uci 面**，不是设置页当前可见项。
 
 ## 为什么不用 ping 判定
 
@@ -211,11 +211,11 @@ apk 无 `mkpkg`）。不想重编固件的话：Actions → CI → Run workflow�
 
 ```bash
 # 在家
-scp luci-app-cf-ipcheck-1.0.0-r177.apk root@10.0.0.1:/tmp/
-ssh root@10.0.0.1 'apk add --allow-untrusted /tmp/luci-app-cf-ipcheck-1.0.0-r177.apk'
+scp luci-app-cf-ipcheck-1.0.0-r178.apk root@10.0.0.1:/tmp/
+ssh root@10.0.0.1 'apk add --allow-untrusted /tmp/luci-app-cf-ipcheck-1.0.0-r178.apk'
 # 离家（当前环境）
-scp -P 22845 luci-app-cf-ipcheck-1.0.0-r177.apk root@op.403333.xyz:/tmp/
-ssh -p 22845 root@op.403333.xyz 'apk add --allow-untrusted /tmp/luci-app-cf-ipcheck-1.0.0-r177.apk'
+scp -P 22845 luci-app-cf-ipcheck-1.0.0-r178.apk root@op.403333.xyz:/tmp/
+ssh -p 22845 root@op.403333.xyz 'apk add --allow-untrusted /tmp/luci-app-cf-ipcheck-1.0.0-r178.apk'
 ```
 
 包当前是 `PKGARCH := all`，产物在 apk 记账里是 `A:noarch`，所以哪个架构的 SDK 编出来
@@ -224,7 +224,16 @@ ssh -p 22845 root@op.403333.xyz 'apk add --allow-untrusted /tmp/luci-app-cf-ipch
 
 ## 验证状态
 
-### 2026-11-08 · r177（当前）
+### 2026-11-08 · r178（当前）
+
+- CI：run `42465520660` 三 job 全绿；SDK 用 `aarch64_cortex-a53-25.12.2`；
+  APK `luci-app-cf-ipcheck-1.0.0-r178.apk`（181146 B，sha256 `daf48262…`）。
+- 设备 `apk add` 升级 r177→r178；配置 md5 `8617d656…`、54 条不变；daemon 在跑。
+- 公网 LuCI（无缓存上下文）设置页：33 个字段说明全部默认收起（短句高度 0）、
+  6 个分组提示保留、`?` 展开/收起正常、1600 宽无溢出、无 JS 报错。
+- `ubus` 11 方法齐全；`apply-dns.sh` 执行位 `-rwxr-xr-x`。
+
+### 2026-11-08 · r177（历史）
 
 - CI：run `42447242831` 成功；SDK 用 `aarch64_cortex-a53-25.12.2`；
   APK `luci-app-cf-ipcheck-1.0.0-r177.apk`（181052 B，sha256 `bc4e092c…`）。

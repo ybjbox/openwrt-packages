@@ -198,10 +198,9 @@
 				});
 			}
 		});
-		var host = el('div', { class: 'dnsrows-host' }, [
-			el('p', { class: 'note' }, CFI.T('一行一个机房；同一个记录名写多行（不同机房）会自动合并。zone 按记录名自动推导，一般不用填。')),
-			ed.node
-		]);
+	/* 不再在表格上方常驻一句说明：它和字段标题旁「?」里的完整解释重复，
+	 * 而且占了标题行右侧一整条（DNS 分组尤其显乱）。用法说明统一走 ? 入口。 */
+	var host = el('div', { class: 'dnsrows-host' }, [ ed.node ]);
 		try {
 			var frame = ta.parentNode || box;
 			var outer = (frame && frame.parentNode) || frame;

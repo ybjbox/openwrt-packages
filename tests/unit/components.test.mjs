@@ -434,7 +434,8 @@ test('设置说明：默认收起短句，点 ? 后短句与完整解释一起�
 	desc.className = 'cbi-value-description';
 	desc.appendChild(documentStub.createTextNode(shortText));
 
-	const label = { htmlFor: 'cbid.cf_ipcheck.global.enabled' };
+	const label = makeEl('label');
+	label.htmlFor = 'cbid.cf_ipcheck.global.enabled';
 	const row = {
 		querySelector(sel) {
 			if (sel === 'label[for]')
@@ -452,12 +453,16 @@ test('设置说明：默认收起短句，点 ? 后短句与完整解释一起�
 	assert.equal(desc.getAttribute('data-cfi-help'), '1', '容器带收起标记');
 	assert.equal(desc.getAttribute('data-cfi-open'), '0', '默认不展开');
 	assert.equal(desc.childNodes[0].textContent, shortText, '短句仍在原处，没有搬 DOM');
-	const q = desc.childNodes.filter((n) => n.className === 'help-q')[0];
+	const q = label.childNodes.filter((n) => n.className === 'help-q')[0];
 	const body = desc.childNodes.filter((n) => n.className === 'help-body')[0];
-	assert.ok(q && body, '? 与完整解释都挂在 description 里');
+	assert.ok(q, '? 挂在字段标题旁，不再孤零零占说明行');
+	assert.equal(desc.childNodes.filter((n) => n.className === 'help-q').length, 0,
+		'说明行里不能再有 ?（否则又多一条 22px 空行）');
+	assert.ok(body, '完整解释仍在说明行里');
 	assert.equal(body.hidden, true, '默认不显示完整解释');
 	assert.equal(q.getAttribute('aria-expanded'), 'false');
-	assert.equal(desc.getAttribute('title'), CFI.form.HELP.enabled, '悬停仍保留完整解释');
+	assert.equal(q.getAttribute('aria-controls'), body.getAttribute('id'), '按钮指向展开体');
+	assert.ok(q.getAttribute('title'), '按钮自带悬停提示');
 
 	const click = () => q.dispatchEvent({ type: 'click', preventDefault() {} });
 	click();
@@ -469,18 +474,24 @@ test('设置说明：默认收起短句，点 ? 后短句与完整解释一起�
 	assert.equal(body.hidden, true);
 	assert.equal(q.getAttribute('aria-expanded'), 'false');
 
-	const n = desc.childNodes.length;
+	const n = desc.childNodes.length + label.childNodes.length;
 	CFI.form.applyHelp(rootStub);
-	assert.equal(desc.childNodes.length, n, '重复渲染不重复挂按钮');
+	assert.equal(desc.childNodes.length + label.childNodes.length, n, '重复渲染不重复挂按钮');
 });
 
-test('设置说明：CSS 默认态把短句缩成 0、展开态恢复字号', () => {
+test('设置说明：CSS 默认整行隐藏说明、展开态恢复，且改动标记不拉长柱', () => {
 	const cssPath = path.join(root, 'luci-app-cf-ipcheck', 'htdocs', 'luci-static',
 		'resources', 'view', 'cf_ipcheck', 'settings.css');
 	const css = fs.readFileSync(cssPath, 'utf8');
-	assert.match(css, /\.cbi-value-description\[data-cfi-help\]\s*\{[^}]*font-size:\s*0/,
-		'默认态短句不占位');
-	assert.match(css, /\.cbi-value-description\[data-cfi-help\]\[data-cfi-open="1"\]\s*\{[^}]*font-size:\s*13px/,
-		'展开态恢复短句字号');
+	assert.match(css, /\.cbi-value-description\[data-cfi-help\]\s*\{[^}]*display:\s*none/,
+		'默认态说明整行不占位');
+	assert.match(css, /\.cbi-value-description\[data-cfi-help\]\[data-cfi-open="1"\]\s*\{[^}]*display:\s*block/,
+		'展开态恢复整行');
+	assert.match(css, /\.cbi-value\.changed\s*\{\s*box-shadow:\s*none/,
+		'已改动字段不再用整行 inset 边框拉成长柱');
+	assert.match(css, /\.cbi-value\.changed\s*>\s*\.cbi-value-title::before/,
+		'改动标记改为标题旁的短竖线');
 	assert.ok(css.indexOf('data-cfi-help') >= 0, 'CSS 与 JS 用同一套属性名');
+	assert.doesNotMatch(css, /font-size:\s*0;\s*line-height:\s*0/,
+		'不再用 font-size:0 藏字（会留下孤零零的小问号）');
 });

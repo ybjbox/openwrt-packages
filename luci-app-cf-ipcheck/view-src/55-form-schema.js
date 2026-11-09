@@ -22,12 +22,14 @@
 			o.depends(field, value);
 	}
 
-	/* 渲染完成后挂说明入口：短句默认不显示，只留一个「?」按钮；点开时短句与
-	 * 完整解释一起出现（触屏可达）。按钮挂在 .cbi-value-description 里，
-	 * 不在 .cbi-value-field 内 —— 后者会让 CBI 取值读错（r107 事故）。
-	 * 短句是 CBI 生成的裸文本节点，这里不搬动、不复制：只给容器加 data-cfi-help，
-	 * 由 CSS 把它缩成不占位；展开时切 data-cfi-open=1 恢复字号与行高。
-	 * 这样短句仍只有 field() 那一处出处，lint 的短句守卫与 33 字段表都不受影响。 */
+	/* 渲染完成后挂说明入口：「?」紧跟字段标题，说明整行默认不占位；点开时短句与
+	 * 完整解释一起出现（触屏可达）。按钮挂在 .cbi-value-title（label）里，
+	 * 不碰 .cbi-value-field —— 后者会让 CBI 取值读错（r107 事故）。
+	 * HTML 规范保证 label 内的 button 不会触发 label 对关联控件的激活行为，
+	 * 所以点「?」不会误改 checkbox/input。短句是 CBI 生成的裸文本节点，这里不搬动、
+	 * 不复制：只给容器加 data-cfi-help，由 CSS 把整行缩成不占位；展开时切
+	 * data-cfi-open=1 恢复字号与行高。短句仍只有 field() 那一处出处，
+	 * lint 的短句守卫与 33 字段表都不受影响。 */
 	function applyHelp(root) {
 		if (!root || !root.querySelectorAll)
 			return;
@@ -48,7 +50,6 @@
 				continue;
 			desc.__cfiHelp = true;
 			if (desc.setAttribute) {
-				desc.setAttribute('title', HELP[key]);
 				desc.setAttribute('data-cfi-help', '1');
 				desc.setAttribute('data-cfi-open', '0');
 			}
@@ -57,7 +58,7 @@
 			var btn = CFI.dom.el('button', {
 				class: 'help-q', type: 'button',
 				'aria-expanded': 'false', 'aria-controls': id,
-				'aria-label': T('展开说明')
+				'aria-label': T('展开说明'), title: T('展开说明')
 			}, '?');
 			btn.addEventListener('click', (function (b, box, d) {
 				return function (ev) {
@@ -70,7 +71,11 @@
 					b.setAttribute('aria-expanded', open ? 'true' : 'false');
 				};
 			})(btn, body, desc));
-			desc.appendChild(btn);
+			/* 有标题就挂在标题旁；没有标题（异常结构）仍退回说明行，不至于丢入口。 */
+			if (lab && lab.appendChild)
+				lab.appendChild(btn);
+			else
+				desc.appendChild(btn);
 			desc.appendChild(body);
 		}
 	}
