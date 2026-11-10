@@ -801,3 +801,23 @@ test('已改动：dns_targets 的换行与分号单行算同一份清单', () =>
 	ta.value = 'a.example.com 1 @NRT\nb.example.com 2 @KIX';
 	assert.equal(ch.test(row), false, '改回原值（哪怕格式不同）不再标记');
 });
+
+/* r188：移动端主按钮撑成整行。
+ * 390px 屏上「立即测速」曾占 186px（是「刷新」78px 的 2.4 倍），因为它带着
+ * flex:1 1 auto —— 拿的不是自己该有的宽度，而是状态 chip 与刷新之外的剩余空间，
+ * 一直顶到右边缘，四个字居中在长条里像进度条。改成自然宽度 + margin-left:auto 靠右。 */
+test('移动端头部：主按钮用自然宽度并靠右，不再吃剩余空间', () => {
+	const css = fs.readFileSync(
+		path.join(root, 'luci-app-cf-ipcheck', 'view-src', 'style', '00-app.css'), 'utf8');
+	const m = [...css.matchAll(/@media\s*\(max-width:\s*767px\)\s*\{[\s\S]*?\n\}/g)];
+	const mob = m.map((x) => x[0]).find((b) => b.indexOf('.cfp-head-acts') >= 0);
+	assert.ok(mob, '存在含 .cfp-head-acts 的 max-width:767px 断点');
+	assert.match(mob, /\.cfp-head-acts\s*\.btn\.primary\s*\{[^}]*flex:\s*0 0 auto/,
+		'主按钮取自然宽度，不再伸成整行');
+	assert.match(mob, /\.cfp-head-acts\s*\.btn\.primary\s*\{[^}]*margin-left:\s*auto/,
+		'主按钮靠右，与左侧 chip / 刷新拉开主次');
+	assert.doesNotMatch(mob, /\.cfp-head-acts\s*\.btn\.primary\s*\{[^}]*flex:\s*1 1 auto/,
+		'不能退回 flex:1 1 auto（会让按钮吃掉剩余宽度）');
+	assert.match(mob, /\.cfp-head-acts\s*\.btn\s*\{[^}]*min-height:\s*44px/,
+		'触控热区仍要 44px');
+});
