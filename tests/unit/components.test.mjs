@@ -21,10 +21,6 @@ String.prototype.format = function () {
 };
 
 /* ---- 极简 DOM ---------------------------------------------------------- */
-function clsOf(sel) {
-	return sel.charAt(0) === '.' ? sel.slice(1) : '';
-}
-
 function makeEl(tag) {
 	const n = {
 		tagName: String(tag).toUpperCase(),
@@ -66,11 +62,18 @@ function makeEl(tag) {
 		dispatchEvent(ev) { (this.handlers[ev.type] || []).forEach((f) => f.call(this, ev)); },
 		focus() { documentStub.activeElement = this; },
 		querySelectorAll(sel) {
-			const want = clsOf(String(sel).trim());
+			/* 支持逗号分隔的「.class / 标签名」组合：80-set.js 的已改动判定要按
+			   'input, select, textarea' 取一行里的全部控件。 */
+			const parts = String(sel).split(',').map((s) => s.trim()).filter(Boolean);
+			const hit = (node) => parts.some((p) => {
+				if (p.charAt(0) === '.')
+					return String(node.className || '').split(/\s+/).indexOf(p.slice(1)) >= 0;
+				return String(node.tagName || '').toLowerCase() === p.toLowerCase();
+			});
 			const out = [];
 			const walk = (node) => {
 				node.childNodes.forEach((c) => {
-					if (want && String(c.className || '').split(/\s+/).indexOf(want) >= 0) out.push(c);
+					if (hit(c)) out.push(c);
 					walk(c);
 				});
 			};
@@ -642,4 +645,58 @@ test('设置说明：7 处与引擎实现冲突的旧说法已清除、且已写
 		'用真实网站域名，通过 HTTPS 连接逐个实测'
 	];
 	fixed.forEach((s) => assert.ok(src.includes(s), '修正后的说法必须存在：' + s));
+});
+
+/* ---- 4. 「已改动」按控件逐个记基线 ------------------------------------ */
+test('已改动：后插入的控件不算改动，改原有控件才算', () => {
+	const row = makeEl('div');
+	row.className = 'cbi-value';
+	const ta = makeEl('textarea');
+	ta.value = 'nrt.example.com';
+	row.appendChild(ta);
+
+	const ch = CFI.form.changed;
+	assert.ok(ch && ch.snapshot && ch.test, '80-set 要把逐控件判定挂到 CFI.form.changed');
+
+	ch.snapshot(row);
+
+	/* DNS 编辑器在 update() 里才 mount：这一行从 1 个控件长到 16 个。
+	   旧写法把整行拼成一个值串，串长永远对不上，任何点击都判成已改动。 */
+	const added = [];
+	for (let i = 0; i < 15; i++) {
+		const c = makeEl(i % 3 === 0 ? 'select' : 'input');
+		c.value = i % 3 === 0 ? 'NRT' : 'x' + i;
+		row.appendChild(c);
+		added.push(c);
+	}
+	assert.equal(ch.test(row), false, '新插入的控件首次见到只补基线，不算改动');
+
+	ta.value = 'other.example.com';
+	assert.equal(ch.test(row), true, '改原有控件仍然要检出');
+
+	ta.value = 'nrt.example.com';
+	assert.equal(ch.test(row), false, '改回原值就不再标记');
+
+	added[0].value = 'SIN';
+	assert.equal(ch.test(row), true, '新控件补完基线后，用户改它仍能检出');
+
+	added[0].value = 'NRT';
+	assert.equal(ch.test(row), false, '新控件改回也不再标记');
+});
+
+test('已改动：复选框按勾选状态比较，不按 value 字符串', () => {
+	const row = makeEl('div');
+	row.className = 'cbi-value';
+	const cb = makeEl('input');
+	cb.type = 'checkbox';
+	cb.checked = true;
+	cb.value = 'on';
+	row.appendChild(cb);
+
+	const ch = CFI.form.changed;
+	ch.snapshot(row);
+	assert.equal(ch.test(row), false, '初始不标改动');
+
+	cb.checked = false;
+	assert.equal(ch.test(row), true, '取消勾选要检出');
 });

@@ -46,6 +46,41 @@
 		return null;
 	}
 
+	/* 「已改动」按控件逐个记基线，不把整行拼成一个值串。
+	 * 原因：DNS 编辑器是在 update() 里才 mount 进来的，晚于 render 末尾的
+	 * snapshotValues —— 「记录名清单」行快照时只有 1 个控件，之后变成 16 个
+	 * （5 段 DNS 子行 + 地址框），串长永远对不上，于是任何一次点击都会把它
+	 * 标成「已改动」，而它的值根本没变（真机实测 NRT→NRT，select 连事件都没收到）。
+	 * 改成逐控件记：新插入的控件首次见到就补记基线、不算改动，既不会误判，
+	 * 用户之后真去改它仍然能被检出。 */
+	function ctrlVal(c) {
+		if (c.type === 'checkbox' || c.type === 'radio')
+			return c.checked ? '1' : '0';
+		return String(c.value == null ? '' : c.value);
+	}
+
+	function snapRow(row) {
+		var ctrls = row.querySelectorAll('input, select, textarea');
+		for (var i = 0; i < ctrls.length; i++)
+			ctrls[i].__cfiOrig = ctrlVal(ctrls[i]);
+	}
+
+	function rowChanged(row) {
+		var ctrls = row.querySelectorAll('input, select, textarea');
+		var changed = false;
+		for (var i = 0; i < ctrls.length; i++) {
+			var c = ctrls[i];
+			var v = ctrlVal(c);
+			if (c.__cfiOrig === undefined) {
+				c.__cfiOrig = v;
+				continue;
+			}
+			if (c.__cfiOrig !== v)
+				changed = true;
+		}
+		return changed;
+	}
+
 	function mount(actions) {
 		var host = el('div', { class: 'set-body' });
 		var mapnode = null;
@@ -155,31 +190,19 @@
 			return true;
 		}
 
-		function rowValues(row) {
-			var out = [];
-			var ctrls = row.querySelectorAll('input, select, textarea');
-			for (var i = 0; i < ctrls.length; i++) {
-				var c = ctrls[i];
-				if (c.type === 'checkbox' || c.type === 'radio')
-					out.push(c.checked ? '1' : '0');
-				else
-					out.push(String(c.value == null ? '' : c.value));
-			}
-			return out.join('\u0001');
-		}
-
 		function snapshotValues() {
 			Array.prototype.slice.call(host.querySelectorAll('.cbi-value')).forEach(function (row) {
-				row.__orig = rowValues(row);
+				row.__cfiSnap = true;
+				snapRow(row);
 			});
 		}
 
 		function applyChanged() {
 			Array.prototype.slice.call(host.querySelectorAll('.cbi-value')).forEach(function (row) {
-				if (row.__orig == null)
+				if (!row.__cfiSnap)
 					return;
-				var changed = rowValues(row) !== row.__orig;
-				var has = String(row.className).indexOf('changed') >= 0;
+				var changed = rowChanged(row);
+				var has = /(^|\s)changed(\s|$)/.test(String(row.className));
 				if (changed && !has)
 					row.className = String(row.className).replace(/\s*changed\b/g, '') + ' changed';
 				else if (!changed && has)
@@ -244,6 +267,11 @@
 
 		return { node: host, render: render, update: update, expandGroup: expandGroup };
 	}
+
+	/* 逐控件的「已改动」判定单独挂出来：单测要能直接喂一行控件验它，
+	 * 不必把整张 CBI 表单装配起来。 */
+	CFI.form = CFI.form || {};
+	CFI.form.changed = { snapshot: snapRow, test: rowChanged };
 
 	CFI.panels = CFI.panels || {};
 	CFI.panels.set = { mount: mount };
