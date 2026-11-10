@@ -137,6 +137,15 @@
 							var room = box.getBoundingClientRect().left
 								- sec.getBoundingClientRect().left;
 							t.setAttribute('data-flip', room < 300 ? '1' : '0');
+							/* 纵向余量：浮层默认贴在标题下方 6px 向下展开，底部越界就翻上去
+							   （r186 真机：贴底那行浮层 top 999 / bottom 1055，视口高 1000，
+							   图标正常显形却什么都看不到）。高度定不了 —— 摘要 1~3 行，
+							   56~90px —— 所以直接量 offsetHeight：visibility:hidden 仍有布局。 */
+							var vb = box.getBoundingClientRect();
+							var vh = window.innerHeight
+								|| (document.documentElement && document.documentElement.clientHeight) || 0;
+							var need = t.offsetHeight || 56;
+							t.setAttribute('data-vflip', vh && vb.bottom + 6 + need > vh ? '1' : '0');
 						};
 					})(tip));
 				}

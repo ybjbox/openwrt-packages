@@ -580,6 +580,11 @@ test('设置说明：多个字段时每个 ? 只操作自己的说明（var 闭�
 		'resources', 'view', 'cf_ipcheck', 'settings.js'), 'utf8');
 	assert.match(js, /addEventListener\('click', \(function \(b, box, d\)/,
 		'监听器必须用 IIFE 固化参数，直接引用 var 会让所有 ? 都指向最后一个字段');
+	/* r187：纵向避让和水平翻转一样，只能在 mouseenter 里量 —— 浮层高度 56~90px 不定，
+	   窗口高度也不定，纯 CSS 判不出来。 */
+	assert.match(js, /setAttribute\('data-vflip'/,
+		'贴底避让要按实测余量设 data-vflip，CSS 里只有「翻上去」这一半规则');
+	assert.match(js, /offsetHeight/, '浮层高度必须量：摘要 1~3 行，56~90px，写死会误判');
 });
 
 test('设置说明：超长短句在摘要里截断，不把整段塞进浮层', () => {
@@ -631,9 +636,18 @@ test('设置说明：CSS 默认整行隐藏说明、展开态恢复、改动标�
 	assert.doesNotMatch(css, /font-size:\s*0;\s*line-height:\s*0/,
 		'不再用 font-size:0 藏字（会留下孤零零的小问号）');
 	/* 两列布局标签列只有 180~192px，长标题换行会把跟着文字流的 ? 挤到第二行。
-	   所以 ? 必须绝对定位、标题必须留出跑道；窄屏 44px 热区要同步放宽。 */
-	assert.match(css, /\.cbi-value\s*>\s*\.cbi-value-title\s*\{[^}]*padding-right:\s*26px/,
-		'标题右侧给 ? 留 26px 固定跑道');
+	   所以 ? 必须绝对定位、标题必须留出跑道；窄屏 44px 热区要同步放宽。
+	   r187：跑道收到 18px（正好等于 ? 的宽度），文字到控件的视觉间距交给列间距 8px，
+	   两段合计 26px。原来 26 + 16 = 42px，常态 ? 不可见时那段空白没人解释。 */
+	assert.match(css, /\.cbi-value\s*>\s*\.cbi-value-title\s*\{[^}]*padding-right:\s*18px/,
+		'标题右侧给 ? 留 18px 固定跑道（= ? 自身宽度）');
+	assert.match(css, /align-items:\s*flex-start;\s*gap:\s*8px;\s*padding:\s*12px 0/,
+		'两列字段列间距 8px：跑道 18 + 间距 8 = 文字到控件 26px');
+	/* r187：贴底悬停时浮层必须翻到标题上方，否则整块画在折叠线以下，悬停等于没反应。 */
+	assert.match(css, /\.help-tip\[data-vflip="1"\]\s*\{[^}]*bottom:\s*100%/,
+		'贴底时浮层翻到标题上方');
+	assert.match(css, /\.help-tip\[data-vflip="1"\]\s*\{[^}]*top:\s*auto/,
+		'翻上去时不能再留 top:100%，否则会被拉成整屏高');
 	assert.match(css, /\.help-q\s*\{[^}]*position:\s*absolute;\s*right:\s*0/,
 		'? 绝对定位到标题右上角，不参与文字换行');
 	/* r182：44px 是触控热区指标，不是视觉尺寸。圆圈本体收到 20px，用 ::after 把
