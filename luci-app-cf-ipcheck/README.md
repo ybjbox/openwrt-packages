@@ -5,12 +5,15 @@
 与在 GitHub Actions 上跑测速的方案有本质区别：Actions 测的是数据中心的网络，
 不是你家宽带到 Cloudflare 的线路。优选 IP 只有在你自己的线路上测才有意义。
 
-> **当前版本 r180（2026-11-09）**：设置页从 54 项收成 **33 项**（21 项移出界面但 uci/引擎保留，
+> **当前版本 r182（2026-11-10）**：设置页从 54 项收成 **33 项**（21 项移出界面但 uci/引擎保留，
 > 12 项进「高级设置」，20 项常驻）；≥1200px 两列，1024/420 单列；DNS/Gist/速度/令牌路径按开关隐藏。
-> **字段短说明默认整行不显示**，标题右上角一颗小圆 `?`（绝对定位、不随长标题换行掉行，
-> 33 个字段位置统一）；点开后短句与完整解释一起出现。
-> r179 修掉了 r178 初版的孤立问号、蓝色长柱与重复说明；r180 再把两列长标题下掉行的 `?`
-> 全局钉到标题右上角。已装机并做公网无缓存实机复验。
+> **字段短说明默认整行不显示**，标题旁一颗小圆 `?`（桌面绝对定位、不随长标题换行掉行，
+> 33 个字段位置统一；窄屏 20px 视觉 + 44px 热区、紧跟标题）；点开后短句与完整解释一起出现。
+> r179 修掉了 r178 初版的孤立问号、蓝色长柱与重复说明；r180 把两列长标题下掉行的 `?`
+> 全局钉到标题右上角；r181 把 33 个字段的文案改得更通俗，并修正 7 处与功能不符的说明。
+> r182 按视觉审查修掉四件事：桌面端 58px 纯主色空色带、卡片与页面底完全同色、
+> ≤600px 时 33 条字段说明全部露出、窄屏 44px 问号脱离标题；并修好「点 `?` 会误改
+> 同字段开关」的缺陷（label 转发点击，需在捕获阶段拦截）。
 > 下面「配置项」表是**完整 uci 面**，不是设置页当前可见项。
 
 ## 为什么不用 ping 判定
@@ -214,11 +217,11 @@ apk 无 `mkpkg`）。不想重编固件的话：Actions → CI → Run workflow�
 
 ```bash
 # 在家
-scp luci-app-cf-ipcheck-1.0.0-r180.apk root@10.0.0.1:/tmp/
-ssh root@10.0.0.1 'apk add --allow-untrusted /tmp/luci-app-cf-ipcheck-1.0.0-r180.apk'
+scp luci-app-cf-ipcheck-1.0.0-r181.apk root@10.0.0.1:/tmp/
+ssh root@10.0.0.1 'apk add --allow-untrusted /tmp/luci-app-cf-ipcheck-1.0.0-r181.apk'
 # 离家（当前环境）
-scp -P 22845 luci-app-cf-ipcheck-1.0.0-r180.apk root@op.403333.xyz:/tmp/
-ssh -p 22845 root@op.403333.xyz 'apk add --allow-untrusted /tmp/luci-app-cf-ipcheck-1.0.0-r180.apk'
+scp -P 22845 luci-app-cf-ipcheck-1.0.0-r181.apk root@op.403333.xyz:/tmp/
+ssh -p 22845 root@op.403333.xyz 'apk add --allow-untrusted /tmp/luci-app-cf-ipcheck-1.0.0-r181.apk'
 ```
 
 包当前是 `PKGARCH := all`，产物在 apk 记账里是 `A:noarch`，所以哪个架构的 SDK 编出来
@@ -227,7 +230,16 @@ ssh -p 22845 root@op.403333.xyz 'apk add --allow-untrusted /tmp/luci-app-cf-ipch
 
 ## 验证状态
 
-### 2026-11-09 · r180（当前）
+### 2026-11-09 · r181（当前）
+
+- CI：run `42598841182` 三 job 全绿；SDK 用 `aarch64_cortex-a53-25.12.2`；
+  APK `luci-app-cf-ipcheck-1.0.0-r181.apk`（181046 B，sha256 `44fca906…`）；约 35 分钟。
+- 设备 `apk add` 升级 r180→r181；配置 md5 `8617d656…`、54 条不变；daemon 在跑。
+- 33 个设置字段文案通俗化，并修正 7 处与引擎实现冲突的说法（字段名称/功能不变）。
+  真机无缓存复验：新文案全部生效、旧说法清零、33 个 `?` 齐全、无乱码、0 个 JS 报错。
+- `ubus` 11 方法齐全；`apply-dns.sh` 执行位 `-rwxr-xr-x`。
+
+### 2026-11-09 · r180（历史）
 
 - CI：run `42559634943` 三 job 全绿；SDK 用 `aarch64_cortex-a53-25.12.2`；
   APK `luci-app-cf-ipcheck-1.0.0-r180.apk`（181162 B，sha256 `8f8d7292…`）；约 15 分钟完成。

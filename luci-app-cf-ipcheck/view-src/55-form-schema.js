@@ -25,11 +25,20 @@
 	/* 渲染完成后挂说明入口：「?」紧跟字段标题，说明整行默认不占位；点开时短句与
 	 * 完整解释一起出现（触屏可达）。按钮挂在 .cbi-value-title（label）里，
 	 * 不碰 .cbi-value-field —— 后者会让 CBI 取值读错（r107 事故）。
-	 * HTML 规范保证 label 内的 button 不会触发 label 对关联控件的激活行为，
-	 * 所以点「?」不会误改 checkbox/input。短句是 CBI 生成的裸文本节点，这里不搬动、
-	 * 不复制：只给容器加 data-cfi-help，由 CSS 把整行缩成不占位；展开时切
+	 * 注意 label 内的 button **会**触发 label 对关联控件的激活（r182 真机实测：
+	 * 点「启用定时实测」的 ? 直接把开关从开切成关），不能指望规范豁免，
+	 * 必须按下面那样在 label 的捕获阶段把事件拦下来。短句是 CBI 生成的裸文本节点，
+	 * 这里不搬动、不复制：只给容器加 data-cfi-help，由 CSS 把整行缩成不占位；展开时切
 	 * data-cfi-open=1 恢复字号与行高。短句仍只有 field() 那一处出处，
 	 * lint 的短句守卫与 33 字段表都不受影响。 */
+	/* 展开/收起说明：按钮自身点击与 label 捕获拦截两处共用（ES5 写法，定义在循环外）。 */
+	function toggleHelp(b, box, d) {
+		var open = box.hidden;
+		box.hidden = !open;
+		if (d.setAttribute)
+			d.setAttribute('data-cfi-open', open ? '1' : '0');
+		b.setAttribute('aria-expanded', open ? 'true' : 'false');
+	}
 	function applyHelp(root) {
 		if (!root || !root.querySelectorAll)
 			return;
@@ -60,17 +69,30 @@
 				'aria-expanded': 'false', 'aria-controls': id,
 				'aria-label': T('展开说明'), title: T('展开说明')
 			}, '?');
-			btn.addEventListener('click', (function (b, box, d) {
-				return function (ev) {
-					if (ev && ev.preventDefault)
+			/* 「?」挂在 label[for] 里，而 label 会把点击转发给关联控件 —— 真机实测：
+			   点「启用定时实测」的 ? 会把这个开关从开切成关（checked true→false，行上还
+			   出现「已改动」标记），用户想看说明却改了配置。
+			   试过并在真机上否掉的三种拦法：按钮自身的 click preventDefault（无效）、
+			   mousedown preventDefault（无效，激活发生在更早）、label 捕获阶段只
+			   preventDefault（无效）。只有「label 捕获阶段 stopPropagation + 手动展开」
+			   能同时做到不改控件、又把说明打开 —— 代价是按钮收不到这次 click，
+			   所以展开逻辑抽成 toggleHelp 给两处共用。 */
+			btn.addEventListener('click', function (ev) {
+				if (ev && ev.preventDefault)
+					ev.preventDefault();
+				toggleHelp(btn, body, desc);
+			});
+			if (lab && lab.addEventListener) {
+				lab.addEventListener('click', function (ev) {
+					if (!ev || ev.target !== btn)
+						return;
+					if (ev.preventDefault)
 						ev.preventDefault();
-					var open = box.hidden;
-					box.hidden = !open;
-					if (d.setAttribute)
-						d.setAttribute('data-cfi-open', open ? '1' : '0');
-					b.setAttribute('aria-expanded', open ? 'true' : 'false');
-				};
-			})(btn, body, desc));
+					if (ev.stopPropagation)
+						ev.stopPropagation();
+					toggleHelp(btn, body, desc);
+				}, true);
+			}
 			/* 有标题就挂在标题旁；没有标题（异常结构）仍退回说明行，不至于丢入口。 */
 			if (lab && lab.appendChild)
 				lab.appendChild(btn);

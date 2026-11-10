@@ -477,14 +477,39 @@ test('设置说明：默认收起短句，点 ? 后短句与完整解释一起�
 	const n = desc.childNodes.length + label.childNodes.length;
 	CFI.form.applyHelp(rootStub);
 	assert.equal(desc.childNodes.length + label.childNodes.length, n, '重复渲染不重复挂按钮');
+
+	/* r182：label[for] 会把点击转发给关联控件。真机实测点「启用定时实测」的 ?
+	   会把开关从开切成关（checked true→false），所以必须在 label 的捕获阶段拦下：
+	   preventDefault 阻止激活，stopPropagation 让按钮收不到这次点击，
+	   再手动展开一次补回来。三种只拦按钮自身的写法都在真机上验过、无效。 */
+	const guard = (label.handlers.click || [])[0];
+	assert.ok(guard, 'label 上必须挂点击拦截，否则点 ? 会连带改控件');
+	let prevented = false, stopped = false;
+	desc.setAttribute('data-cfi-open', '0');
+	body.hidden = true;
+	guard.call(label, {
+		target: q,
+		preventDefault() { prevented = true; },
+		stopPropagation() { stopped = true; }
+	});
+	assert.equal(prevented, true, '拦截要阻止 label 激活控件');
+	assert.equal(stopped, true, '拦截要挡住按钮自己的 click，避免展开两次');
+	assert.equal(desc.getAttribute('data-cfi-open'), '1', '拦截之后说明仍要打开');
+	assert.equal(body.hidden, false);
+	assert.equal(q.getAttribute('aria-expanded'), 'true');
+
+	/* 点其它位置（不是 ?）不能拦：否则标题点击聚焦、复选框切换全废 */
+	let p2 = false;
+	guard.call(label, { target: label, preventDefault() { p2 = true; }, stopPropagation() {} });
+	assert.equal(p2, false, '点标题本身不能拦，label 的原生行为要保留');
 });
 
 test('设置说明：CSS 默认整行隐藏说明、展开态恢复、改动标记不拉长柱、? 不掉行', () => {
 	const cssPath = path.join(root, 'luci-app-cf-ipcheck', 'htdocs', 'luci-static',
 		'resources', 'view', 'cf_ipcheck', 'settings.css');
 	const css = fs.readFileSync(cssPath, 'utf8');
-	assert.match(css, /\.cbi-value-description\[data-cfi-help\]\s*\{[^}]*display:\s*none/,
-		'默认态说明整行不占位');
+	assert.match(css, /#view\s+\.cfp\s+\.cbi-value-description\[data-cfi-help\]:not\(\[data-cfi-open="1"\]\)\s*\{[^}]*max-height:\s*0[^}]*overflow:\s*hidden/,
+		'默认态说明不占位（零高度塌陷 + 裁切）');
 	assert.match(css, /\.cbi-value-description\[data-cfi-help\]\[data-cfi-open="1"\]\s*\{[^}]*display:\s*block/,
 		'展开态恢复整行');
 	assert.match(css, /\.cbi-value\.changed\s*\{\s*box-shadow:\s*none/,
@@ -500,7 +525,33 @@ test('设置说明：CSS 默认整行隐藏说明、展开态恢复、改动标�
 		'标题右侧给 ? 留 26px 固定跑道');
 	assert.match(css, /\.help-q\s*\{[^}]*position:\s*absolute;\s*right:\s*0/,
 		'? 绝对定位到标题右上角，不参与文字换行');
-	assert.match(css, /padding-right:\s*50px/, '窄屏 44px 热区的跑道同步放宽到 50px');
+	/* r182：44px 是触控热区指标，不是视觉尺寸。圆圈本体收到 20px，用 ::after 把
+	   热区补回 44px，并回到行内紧跟标题文字。不能再退回「圆圈本体 44px + 50px 跑道」——
+	   420 下标签左对齐、文字只有 84px 宽，44px 的圆圈离文字 60px，看起来不属于任何字段。 */
+	assert.match(css, /\.help-q\s*\{[^}]*width:\s*20px[^}]*height:\s*20px/,
+		'窄屏圆圈视觉尺寸 20px');
+	assert.match(css, /\.help-q::after\s*\{[^}]*inset:\s*-12px/,
+		'窄屏用 ::after 把热区补回 44px');
+	assert.doesNotMatch(css, /padding-right:\s*50px/,
+		'窄屏不再留 50px 跑道（问号已回到行内）');
+	assert.doesNotMatch(css, /\.help-q\s*\{[^}]*width:\s*44px/,
+		'圆圈本体不再长成 44px');
+	/* r182：Argon 的 cascade.css v2.4.7 在 ≤600 给 .cbi-value-description 打了
+	   display:block 的强制优先声明。只提特异性压不住（实测 767 是 0/33 隐藏、
+	   600 和 420 却是 33/33 全露出），而构建期禁强制优先（CssTidy 合并后不可控），
+	   所以不跟 display 对抗：显式 block，两边都是 block，再压成零高度。 */
+	assert.match(css, /#view\s+\.cfp\s+\.cbi-value-description\[data-cfi-help\]:not\(\[data-cfi-open="1"\]\)\s*\{[^}]*padding-top:\s*0/,
+		'padding 必须归零：它不计入 max-height，留着仍会剩 12px 空隙');
+	assert.match(css, /\.cbi-value-description\[data-cfi-help\]\[data-cfi-open="1"\]\s*\{[^}]*max-height:\s*none/,
+		'展开态要解除高度限制');
+	assert.doesNotMatch(css, /!important/,
+		'样式表里不许出现强制优先声明（构建期合并选择器后行为不可控）');
+	/* r182：桌面端那条 58px 纯主色空带要隐藏，但 ≤767 时它是移动端导航栏
+	   （汉堡 + 站点名），隐藏会让侧栏菜单打不开 —— 所以只能写一次、只限桌面。 */
+	assert.match(css, /header\.bg-primary\s*\{\s*display:\s*none/,
+		'桌面端隐藏空色带');
+	assert.equal((css.match(/header\.bg-primary/g) || []).length, 1,
+		'空色带只写一次：≤767 那条 header 是导航栏，不能被一起隐藏');
 });
 
 test('设置说明：7 处与引擎实现冲突的旧说法已清除、且已写成正确说法', () => {
