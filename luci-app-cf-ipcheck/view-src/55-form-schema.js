@@ -63,6 +63,13 @@
 				desc.setAttribute('data-cfi-open', '0');
 			}
 			var id = 'cfi-help-' + key;
+			/* 悬停摘要就用短句本身：它本来就是一句话，不再另写一份文案，
+			   也就没有第二处出处要对齐。必须在 appendChild(body) 之前取 ——
+			   之后 desc.textContent 会把完整解释一起读进来。 */
+			var short = String(desc.textContent == null ? '' : desc.textContent)
+				.replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+			if (short.length > 76)
+				short = short.slice(0, 75) + '…';
 			var body = CFI.dom.el('div', { class: 'help-body', id: id, hidden: true, text: HELP[key] });
 			var btn = CFI.dom.el('button', {
 				class: 'help-q', type: 'button',
@@ -103,8 +110,14 @@
 				})(btn, body, desc), true);
 			}
 			/* 有标题就挂在标题旁；没有标题（异常结构）仍退回说明行，不至于丢入口。 */
-			if (lab && lab.appendChild)
+			if (lab && lab.appendChild) {
 				lab.appendChild(btn);
+				/* 悬停摘要挂在按钮**后面**：CSS 用 .help-q:hover ~ .help-tip 取它，
+				   顺序反了就不出浮层。没有标题时不挂 —— 说明行是零高度的，浮层没有锚点。 */
+				if (short)
+					lab.appendChild(CFI.dom.el('span',
+						{ class: 'help-tip', 'aria-hidden': 'true', text: short }));
+			}
 			else
 				desc.appendChild(btn);
 			desc.appendChild(body);

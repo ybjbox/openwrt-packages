@@ -467,6 +467,18 @@ test('设置说明：默认收起短句，点 ? 后短句与完整解释一起�
 	assert.equal(q.getAttribute('aria-controls'), body.getAttribute('id'), '按钮指向展开体');
 	assert.ok(q.getAttribute('title'), '按钮自带悬停提示');
 
+	/* r186：悬停摘要。摘要直接用短句，不另写文案；必须排在按钮**后面**，因为 CSS
+	   用 .help-q:hover ~ .help-tip 取它，顺序反了浮层不出来；也不能挂进说明行 ——
+	   那一行是零高度的，浮层没有锚点。 */
+	const tip = label.childNodes.filter((n) => n.className === 'help-tip')[0];
+	assert.ok(tip, '标题旁挂一个悬停摘要');
+	assert.equal(tip.textContent, shortText, '摘要就是短句，没有第二处文案');
+	assert.equal(tip.getAttribute('aria-hidden'), 'true', '摘要对读屏隐藏（内容由展开体提供）');
+	assert.equal(label.childNodes.indexOf(tip), label.childNodes.indexOf(q) + 1,
+		'摘要紧跟按钮：兄弟选择器认顺序');
+	assert.equal(desc.childNodes.filter((n) => n.className === 'help-tip').length, 0,
+		'摘要不能挂进零高度的说明行');
+
 	const click = () => q.dispatchEvent({ type: 'click', preventDefault() {} });
 	click();
 	assert.equal(desc.getAttribute('data-cfi-open'), '1', '点开后短句恢复显示');
@@ -566,6 +578,39 @@ test('设置说明：多个字段时每个 ? 只操作自己的说明（var 闭�
 		'监听器必须用 IIFE 固化参数，直接引用 var 会让所有 ? 都指向最后一个字段');
 });
 
+test('设置说明：超长短句在摘要里截断，不把整段塞进浮层', () => {
+	/* 浮层只有 268px 宽、两行左右，短句上限 76 字。超长的（目前最长 42 字）先截断，
+	   避免某个字段文案改长后浮层突然长成一块挡住半屏。 */
+	const long = '这条短句故意写得比七十六个字要长一些，用来验证摘要会在边界处截断而不是整段塞进浮层里。'
+		+ '如果这里没有被截断，浮层就会变成一大块，遮住下面的字段，也会把右侧的控件盖住。';
+	assert.ok(long.length > 76, '夹具本身要够长');
+	CFI.form.HELP.__long = '完整解释';
+	const d = makeEl('div');
+	d.className = 'cbi-value-description';
+	d.appendChild(documentStub.createTextNode(long));
+	const l = makeEl('label');
+	l.htmlFor = 'cbid.cf_ipcheck.global.__long';
+	CFI.form.applyHelp({
+		querySelectorAll(sel) {
+			if (sel !== '.cbi-value') return [];
+			return [ {
+				querySelector(s) {
+					if (s === 'label[for]') return l;
+					if (s === '.cbi-value-description') return d;
+					return null;
+				},
+				getAttribute() { return null; }
+			} ];
+		}
+	});
+
+	const tip = l.childNodes.filter((n) => n.className === 'help-tip')[0];
+	assert.ok(tip, '摘要仍要生成');
+	assert.equal(tip.textContent.length, 76, '截到 75 字 + 一个省略号');
+	assert.equal(tip.textContent.slice(-1), '…', '截断处要有省略号');
+	assert.ok(long.indexOf(tip.textContent.slice(0, 20)) === 0, '保留原文开头，不是重新拼的');
+});
+
 test('设置说明：CSS 默认整行隐藏说明、展开态恢复、改动标记不拉长柱、? 不掉行', () => {
 	const cssPath = path.join(root, 'luci-app-cf-ipcheck', 'htdocs', 'luci-static',
 		'resources', 'view', 'cf_ipcheck', 'settings.css');
@@ -598,6 +643,19 @@ test('设置说明：CSS 默认整行隐藏说明、展开态恢复、改动标�
 		'窄屏不再留 50px 跑道（问号已回到行内）');
 	assert.doesNotMatch(css, /\.help-q\s*\{[^}]*width:\s*44px/,
 		'圆圈本体不再长成 44px');
+	/* r186：入口改成「悬停才出现」，并钉在标题首行。原来 top:50% 居中的是整个标题盒，
+	   盒上有 9px 内边距，实际比首行文字中心高 4.2px；标题换行时还会落到两行之间。 */
+	assert.match(css, /\.help-q\s*\{[^}]*top:\s*10px/, '? 钉在标题首行，不再按盒子垂直居中');
+	assert.match(css, /\.help-q\s*\{[^}]*opacity:\s*0;/, '常态不可见，悬停才淡入');
+	assert.match(css, /\.cbi-value-title:hover\s+\.help-q/, '只跟标题显形：跟整行会让沿途每行闪一下');
+	assert.match(css, /\.cbi-value-title:hover\s+\.help-tip\s*\{[^}]*visibility:\s*visible/,
+		'悬停标题浮出摘要');
+	assert.match(css, /\.help-tip\s*\{[^}]*pointer-events:\s*none/,
+		'浮层不能接指针事件：它挂在 label[for] 里，能接就能改控件');
+	assert.match(css, /\.help-q\[aria-expanded="true"\]\s*~\s*\.help-tip\s*\{[^}]*opacity:\s*0/,
+		'展开全文后要收起摘要，否则同一段话出现两遍');
+	assert.match(css, /@media\s*\(hover:\s*none\)\s*\{[^}]*\.help-q\s*\{[^}]*opacity:\s*1/,
+		'触屏没有悬停：入口必须常显，否则永远点不到');
 	/* r182：Argon 的 cascade.css v2.4.7 在 ≤600 给 .cbi-value-description 打了
 	   display:block 的强制优先声明。只提特异性压不住（实测 767 是 0/33 隐藏、
 	   600 和 420 却是 33/33 全露出），而构建期禁强制优先（CssTidy 合并后不可控），
