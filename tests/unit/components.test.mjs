@@ -478,6 +478,10 @@ test('设置说明：默认收起短句，点 ? 后短句与完整解释一起�
 		'摘要紧跟按钮：兄弟选择器认顺序');
 	assert.equal(desc.childNodes.filter((n) => n.className === 'help-tip').length, 0,
 		'摘要不能挂进零高度的说明行');
+	/* 左列字段的跑道离卡片左边只有 20px 上下，浮层向左展开会伸出卡片；鼠标进入标题时
+	   量一次余量决定翻不翻转。这里只验证挂上了（布局只在浏览器里成立，桩里量不了）。 */
+	assert.equal((label.handlers.mouseenter || []).length, 1, '标题上要挂一次余量测量');
+	assert.doesNotThrow(() => (label.handlers.mouseenter || [])[0].call(label), '没有布局信息时不能抛错');
 
 	const click = () => q.dispatchEvent({ type: 'click', preventDefault() {} });
 	click();

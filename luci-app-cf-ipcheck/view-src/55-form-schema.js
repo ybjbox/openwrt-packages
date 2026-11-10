@@ -114,9 +114,32 @@
 				lab.appendChild(btn);
 				/* 悬停摘要挂在按钮**后面**：CSS 用 .help-q:hover ~ .help-tip 取它，
 				   顺序反了就不出浮层。没有标题时不挂 —— 说明行是零高度的，浮层没有锚点。 */
-				if (short)
-					lab.appendChild(CFI.dom.el('span',
-						{ class: 'help-tip', 'aria-hidden': 'true', text: short }));
+				if (short) {
+					var tip = CFI.dom.el('span',
+						{ class: 'help-tip', 'aria-hidden': 'true', text: short });
+					lab.appendChild(tip);
+					/* 两列布局里左列字段的标题距卡片左边只有 20px 上下，浮层默认向左展开
+					   会伸出卡片 60 多像素。鼠标进入标题时量一次余量，不够就翻到右侧 ——
+					   布局由 CSS 决定，只有浏览器知道这一刻的列宽，所以只能在这里量。 */
+					lab.addEventListener('mouseenter', (function (t) {
+						return function () {
+							var box = t.parentNode;
+							var sec = box;
+							if (!box || !box.getBoundingClientRect)
+								return;
+							while (sec && sec.parentNode) {
+								if (/(^|\s)cbi-section(\s|$)/.test(String(sec.className || '')))
+									break;
+								sec = sec.parentNode;
+							}
+							if (!sec || !sec.getBoundingClientRect)
+								return;
+							var room = box.getBoundingClientRect().left
+								- sec.getBoundingClientRect().left;
+							t.setAttribute('data-flip', room < 300 ? '1' : '0');
+						};
+					})(tip));
+				}
 			}
 			else
 				desc.appendChild(btn);

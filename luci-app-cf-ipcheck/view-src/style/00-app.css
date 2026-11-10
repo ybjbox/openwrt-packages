@@ -351,6 +351,9 @@
 .cfp .cbi-value > .cbi-value-title .help-q[aria-expanded="true"] ~ .help-tip {
 	opacity: 0; visibility: hidden;
 }
+/* 两列布局里左列字段的跑道离卡片左边缘只有 20px 上下，向左展开会伸出卡片 60 多像素。
+   JS 在鼠标进入标题时量一次余量，不够就把浮层翻到跑道右侧（data-flip=1）。 */
+.cfp .help-tip[data-flip="1"] { right: auto; left: 0; }
 /* 浮层要盖住下一行：后面兄弟元素默认画在它上面，只加 z-index 不够（未被定位） */
 .cfp .cbi-value:hover { position: relative; z-index: 3; }
 /* 没有悬停能力的设备（平板、手机）：入口必须常显，否则永远点不到它。
