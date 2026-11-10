@@ -77,21 +77,30 @@
 			   preventDefault（无效）。只有「label 捕获阶段 stopPropagation + 手动展开」
 			   能同时做到不改控件、又把说明打开 —— 代价是按钮收不到这次 click，
 			   所以展开逻辑抽成 toggleHelp 给两处共用。 */
-			btn.addEventListener('click', function (ev) {
-				if (ev && ev.preventDefault)
-					ev.preventDefault();
-				toggleHelp(btn, body, desc);
-			});
-			if (lab && lab.addEventListener) {
-				lab.addEventListener('click', function (ev) {
-					if (!ev || ev.target !== btn)
-						return;
-					if (ev.preventDefault)
+			/* 必须用 IIFE 把 b/box/d 固化进闭包：本函数在 for 循环里，btn/body/desc
+			   都是 var（函数作用域），直接引用的话所有监听器都会指向**最后一个**
+			   字段 —— r182 首版就是这么错的，表现为除最后一个字段外，其余「?」
+			   既不拦 label 也不展开（真机：24 个可见「?」坏 8 个）。
+			   r183 改回 IIFE 形式，逐字段各自独立。 */
+			btn.addEventListener('click', (function (b, box, d) {
+				return function (ev) {
+					if (ev && ev.preventDefault)
 						ev.preventDefault();
-					if (ev.stopPropagation)
-						ev.stopPropagation();
-					toggleHelp(btn, body, desc);
-				}, true);
+					toggleHelp(b, box, d);
+				};
+			})(btn, body, desc));
+			if (lab && lab.addEventListener) {
+				lab.addEventListener('click', (function (b, box, d) {
+					return function (ev) {
+						if (!ev || ev.target !== b)
+							return;
+						if (ev.preventDefault)
+							ev.preventDefault();
+						if (ev.stopPropagation)
+							ev.stopPropagation();
+						toggleHelp(b, box, d);
+					};
+				})(btn, body, desc), true);
 			}
 			/* 有标题就挂在标题旁；没有标题（异常结构）仍退回说明行，不至于丢入口。 */
 			if (lab && lab.appendChild)

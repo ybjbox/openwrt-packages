@@ -504,6 +504,65 @@ test('设置说明：默认收起短句，点 ? 后短句与完整解释一起�
 	assert.equal(p2, false, '点标题本身不能拦，label 的原生行为要保留');
 });
 
+test('设置说明：多个字段时每个 ? 只操作自己的说明（var 闭包隔离）', () => {
+	/* r182 首版把监听器写成直接引用循环变量 btn/body/desc，而它们是 var（函数作用域），
+	   结果所有监听器都闭包到**最后一个**字段：真机上 24 个可见 ? 里 8 个既不展开、
+	   也拦不住 label 转发（点一下就把同字段的开关改了）。单个字段的桩测不出这个问题，
+	   这里用两行把它锁住。 */
+	CFI.form.HELP.__iso1 = '解释一';
+	CFI.form.HELP.__iso2 = '解释二';
+	function mkRow(key) {
+		const d = makeEl('div');
+		d.className = 'cbi-value-description';
+		d.appendChild(documentStub.createTextNode('短句' + key));
+		const l = makeEl('label');
+		l.htmlFor = 'cbid.cf_ipcheck.global.' + key;
+		const row = {
+			querySelector(sel) {
+				if (sel === 'label[for]')
+					return l;
+				if (sel === '.cbi-value-description')
+					return d;
+				return null;
+			},
+			getAttribute() { return null; }
+		};
+		return { d, l, row };
+	}
+	const a = mkRow('__iso1');
+	const b = mkRow('__iso2');
+	CFI.form.applyHelp({
+		querySelectorAll(sel) { return sel === '.cbi-value' ? [ a.row, b.row ] : []; }
+	});
+
+	const qa = a.l.childNodes.filter((n) => n.className === 'help-q')[0];
+	const qb = b.l.childNodes.filter((n) => n.className === 'help-q')[0];
+	assert.ok(qa && qb, '两个字段各挂一个 ?');
+
+	qa.dispatchEvent({ type: 'click', preventDefault() {} });
+	assert.equal(a.d.getAttribute('data-cfi-open'), '1', '第一个字段的 ? 展开自己的说明');
+	assert.equal(b.d.getAttribute('data-cfi-open'), '0', '不能顺手把最后一个字段的说明打开');
+	assert.equal(qa.getAttribute('aria-expanded'), 'true');
+	assert.equal(qb.getAttribute('aria-expanded'), 'false', '其他字段的按钮状态不受影响');
+
+	qa.dispatchEvent({ type: 'click', preventDefault() {} });
+	assert.equal(a.d.getAttribute('data-cfi-open'), '0', '再点收起');
+
+	/* label 捕获也要认自己的按钮：拿另一个字段的按钮过来，必须放行 */
+	let pd = false, sp = false;
+	const guardA = (a.l.handlers.click || [])[0];
+	assert.ok(guardA, '第一行的 label 也要挂拦截（不能只有最后一行有）');
+	guardA.call(a.l, { target: qb, preventDefault() { pd = true; }, stopPropagation() { sp = true; } });
+	assert.equal(pd, false, '别的字段的按钮经过本行 label 时不能拦');
+	assert.equal(sp, false);
+
+	/* 源码层面再钉一次：参数必须由 IIFE 固化，不能直接引用循环变量 */
+	const js = fs.readFileSync(path.join(root, 'luci-app-cf-ipcheck', 'htdocs', 'luci-static',
+		'resources', 'view', 'cf_ipcheck', 'settings.js'), 'utf8');
+	assert.match(js, /addEventListener\('click', \(function \(b, box, d\)/,
+		'监听器必须用 IIFE 固化参数，直接引用 var 会让所有 ? 都指向最后一个字段');
+});
+
 test('设置说明：CSS 默认整行隐藏说明、展开态恢复、改动标记不拉长柱、? 不掉行', () => {
 	const cssPath = path.join(root, 'luci-app-cf-ipcheck', 'htdocs', 'luci-static',
 		'resources', 'view', 'cf_ipcheck', 'settings.css');
