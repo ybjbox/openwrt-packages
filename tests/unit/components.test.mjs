@@ -700,3 +700,28 @@ test('已改动：复选框按勾选状态比较，不按 value 字符串', () =
 	cb.checked = false;
 	assert.equal(ch.test(row), true, '取消勾选要检出');
 });
+
+test('已改动：dns_targets 的换行与分号单行算同一份清单', () => {
+	/* r184 装机后实测：手写的 5 行清单（124 字符）被 DNS 编辑器第一次回写
+	   规范成「分号 + 空格」单行（128 字符），域名一个没变，行上却一直挂
+	   changed，改回原值也不消。按解析结果归一后再比就能消除这种假差异。 */
+	const row = makeEl('div');
+	row.className = 'cbi-value';
+	row.setAttribute('data-name', 'dns_targets');
+	const ta = makeEl('textarea');
+	ta.value = 'a.example.com 1 @NRT\nb.example.com 2 @KIX';
+	row.appendChild(ta);
+
+	const ch = CFI.form.changed;
+	ch.snapshot(row);
+	assert.equal(ch.test(row), false, '初始不标改动');
+
+	ta.value = 'a.example.com 1 @NRT; b.example.com 2 @KIX';
+	assert.equal(ch.test(row), false, '格式规范化（换行→分号）不算改动');
+
+	ta.value = 'a.example.com 1 @NRT; c.example.com 2 @KIX';
+	assert.equal(ch.test(row), true, '真改域名仍然要检出');
+
+	ta.value = 'a.example.com 1 @NRT\nb.example.com 2 @KIX';
+	assert.equal(ch.test(row), false, '改回原值（哪怕格式不同）不再标记');
+});
