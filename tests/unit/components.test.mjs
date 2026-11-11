@@ -859,3 +859,74 @@ test('榜单表格：列宽固定，不随内容长度重排', () => {
 	assert.match(css, /@media \(max-width: 767px\) \{\s*\.cfp \.tbl \{ table-layout: auto; min-width: 0; \}/,
 		'移动端撤掉固定布局与 min-width，否则手机出现 600px 横向溢出');
 });
+
+/* r190：层次（审查 P2-2）与尺度（P2-4）收口。
+ * 五处 z-index 裸数字（1/3/5/6/10050）没有名字，读代码时看不出谁该盖住谁；
+ * 圆角有 2/3/4/6/7/8 六档，同一个「小控件」在三个地方三种圆角。这里锁两件事：
+ *   ① z-index 只允许 var(--cfi-z-*)；四档必须递增，顶层要压过主题通知（9000）；
+ *   ② 层次/尺度令牌必须定义在 :root —— .cfp-tip 是挂在 body 上的（表头问号的
+ *      说明要逃出 .tbl-scroll 的裁剪），继承不到 .cfp 上的令牌，写进 .cfp 就静默失效
+ *      （z-index 变 auto，气泡被表格盖住）。 */
+test('层次：z-index 只走命名令牌，且令牌挂在 :root', () => {
+	const css = fs.readFileSync(
+		path.join(root, 'luci-app-cf-ipcheck', 'view-src', 'style', '00-app.css'), 'utf8');
+	const bare = [...css.matchAll(/z-index:\s*([^;}]+)/g)]
+		.map((m) => m[1].trim())
+		.filter((v) => !/^var\(--cfi-z-[a-z]+\)$/.test(v));
+	assert.deepEqual(bare, [], '不再出现裸 z-index 数字，一律走 var(--cfi-z-*)');
+
+	const defs = {};
+	for (const m of css.matchAll(/--cfi-z-([a-z]+):\s*(\d+);/g))
+		defs[m[1]] = Number(m[2]);
+	assert.deepEqual(Object.keys(defs).sort(), ['head', 'pop', 'row', 'top'], '四档：行 < 表头 < 浮层 < 顶层');
+	assert.ok(defs.row < defs.head, '行悬停要低于 sticky 表头');
+	assert.ok(defs.head < defs.pop, '表头要低于行内浮层（说明气泡、列菜单）');
+	assert.ok(defs.top > 9000, '挂 body 的顶层浮层要压过主题的 .alert（9000）');
+
+	const at = css.indexOf(':root {');
+	assert.ok(at >= 0, '存在 :root 令牌块');
+	const rootBlock = css.slice(at, css.indexOf('}', at));
+	assert.match(rootBlock, /--cfi-z-top:/, '层次令牌定义在 :root，body 上的 .cfp-tip 才拿得到');
+	assert.match(rootBlock, /--cfi-r-md:/, '圆角令牌同处理（弹窗 .cfi-modal 也在 body 子树里）');
+});
+
+test('圆角：收成三档令牌，裸值只剩胶囊与圆形', () => {
+	const css = fs.readFileSync(
+		path.join(root, 'luci-app-cf-ipcheck', 'view-src', 'style', '00-app.css'), 'utf8');
+	const allowed = ['0', '50%', '999px', 'inherit'];
+	const bare = [...css.matchAll(/border-radius:\s*([^;}]+)/g)]
+		.map((m) => m[1].trim())
+		.filter((v) => !/^var\(--cfi-(r-sm|r-md|radius)\)$/.test(v) && !allowed.includes(v));
+	assert.deepEqual(bare, [], '2/3/4/6/7/8px 六档已归到 var(--cfi-r-sm|--cfi-r-md|--cfi-radius)');
+
+	const defs = {};
+	for (const m of css.matchAll(/--cfi-(radius|r-sm|r-md):\s*(\d+)px;/g))
+		defs[m[1] === 'radius' ? 'card' : m[1].slice(2)] = Number(m[2]);
+	assert.deepEqual(defs, { sm: 4, md: 8, card: 12 }, '三档：4 / 8 / 12');
+});
+
+/* 字号不走令牌（没有换肤需求，var() 只会让压缩产物更长），改为守一条阶梯：
+ * 任何新写的 font-size 落在既有刻度上，越阶值在评审时就会红。
+ * r190 归位了三个越阶值：12.5→12、13.5→13、26→24。 */
+test('字号：只用认定阶梯上的离散值', () => {
+	const css = fs.readFileSync(
+		path.join(root, 'luci-app-cf-ipcheck', 'view-src', 'style', '00-app.css'), 'utf8');
+	const LADDER = [10, 11, 12, 13, 14, 15, 16, 18, 20, 24];
+	const off = [...css.matchAll(/font-size:\s*([\d.]+)px/g)]
+		.map((m) => Number(m[1]))
+		.filter((v) => !LADDER.includes(v));
+	assert.deepEqual([...new Set(off)].sort((a, b) => a - b), [],
+		'字号越阶：' + LADDER.join('/') + ' 之外的刻度要先讨论再进');
+});
+
+/* 版面节奏只抽「栅格间距」与「卡片内距」两个旋钮；控件内部的小间距与控件高度
+ * 绑定（按钮 36px 高配 6px 14px 内距），继续写字面量。 */
+test('版面节奏：栅格间距与卡片内距走同一对令牌', () => {
+	const css = fs.readFileSync(
+		path.join(root, 'luci-app-cf-ipcheck', 'view-src', 'style', '00-app.css'), 'utf8');
+	assert.match(css, /\.cfp-main \{[^}]*gap:\s*var\(--cfi-gap\)/);
+	assert.match(css, /\.cfp-side \{[^}]*gap:\s*var\(--cfi-gap\)/);
+	assert.match(css, /\.cfp \.card \{[^}]*padding:\s*var\(--cfi-pad\)/);
+	assert.match(css, /--cfi-gap:\s*18px;/, '间距档 18px');
+	assert.match(css, /--cfi-pad:\s*20px;/, '内距档 20px');
+});
