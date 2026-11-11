@@ -821,3 +821,41 @@ test('移动端头部：主按钮用自然宽度并靠右，不再吃剩余空�
 	assert.match(mob, /\.cfp-head-acts\s*\.btn\s*\{[^}]*min-height:\s*44px/,
 		'触控热区仍要 44px');
 });
+
+/* r189：设置页暗色下 5 张卡片与页面底完全同色。
+ * 设置页的分组由 CBI 生成（.cbi-section），不是插件的 .card —— r182 为「卡片浮起 5%」
+ * 抬的 --cfi-card 只被 .card 消费，暗色下这 5 块仍与页面底同为 #1e1e1e（对比 1.00），
+ * 只能靠 1px 描边认出边界。主题把底色写死成 `.cbi-section{background:#1e1e1e}` 并带
+ * 强制优先，而构建期禁止强制优先声明，所以插件用内阴影（画在背景之上、内容之下）
+ * 把卡片色补上。 */
+test('设置页：暗色下分组卡用内阴影补上卡片色，暗色块里没有硬编码底色', () => {
+	const css = fs.readFileSync(
+		path.join(root, 'luci-app-cf-ipcheck', 'view-src', 'style', '00-app.css'), 'utf8');
+	const start = css.indexOf('@media (prefers-color-scheme: dark)');
+	const end = css.indexOf('@media (prefers-reduced-motion', start);
+	assert.ok(start >= 0 && end > start, '存在 prefers-color-scheme: dark 块');
+	const dark = css.slice(start, end);
+	assert.match(dark, /#cfi-pane-set\s+\.cbi-section\s*\{[^}]*box-shadow:\s*inset[^;]*var\(--cfi-card\)/,
+		'设置页分组卡在暗色下补上卡片底色，不再与页面底同色');
+	assert.doesNotMatch(dark, /[^-]background:\s*#1e1e1e/,
+		'暗色块里的底色不再硬编码，统一走 --background-color');
+	assert.doesNotMatch(dark, /!important/,
+		'不能用强制优先声明（构建期禁止），只能靠特异性或内阴影');
+});
+
+/* r189：榜单 7 列的宽度随内容跳动。
+ * 列宽原来由内容决定 —— 机房名在「NRT 东京 / SIN 新加坡」之间变、延迟位数变、
+ * IP 变长，都会带动整表重排（r188 实测最大位移 210.8px）。改成固定布局后列宽
+ * 只由百分比决定；min-width 让更窄的桌面档横向滚动，而不是把列压到装不下。 */
+test('榜单表格：列宽固定，不随内容长度重排', () => {
+	const css = fs.readFileSync(
+		path.join(root, 'luci-app-cf-ipcheck', 'view-src', 'style', '00-app.css'), 'utf8');
+	assert.match(css, /\.cfp \.tbl \{[^}]*table-layout:\s*fixed/,
+		'表格用固定布局，列宽不再由内容决定');
+	const pcts = [...css.matchAll(/\.cfp \.tbl > thead > tr > th:nth-child\((\d)\) \{ width: ([\d.]+)%; \}/g)];
+	assert.equal(pcts.length, 7, '7 列都指定了宽度');
+	assert.equal(pcts.map((m) => Number(m[1])).join(','), '1,2,3,4,5,6,7', '列序号连续');
+	assert.equal(pcts.reduce((s, m) => s + Number(m[2]), 0), 100, '7 列宽度合计 100%');
+	assert.match(css, /@media \(max-width: 767px\) \{\s*\.cfp \.tbl \{ table-layout: auto; min-width: 0; \}/,
+		'移动端撤掉固定布局与 min-width，否则手机出现 600px 横向溢出');
+});
