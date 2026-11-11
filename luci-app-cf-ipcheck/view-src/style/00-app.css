@@ -96,13 +96,12 @@
    已删；留一条说明，免得以后有人以为标签条漏了底色。 */
 .cfp-tabs .cbi-tabmenu {
 	display: flex; gap: 0; margin: 0; padding: 0; list-style: none;
-	background: none; border-radius: 0;
-	border-bottom: 1px solid var(--cfi-line); overflow-x: auto;
+	background: none; border-radius: 0; overflow-x: auto;
 }
 .cfp .cfp-tabs .cbi-tabmenu > li.cbi-tab, .cfp .cfp-tabs .cbi-tabmenu > li { background: transparent; border: 0; border-radius: 0; }
 .cfp-tabs .cbi-tab > a { background: none; }
 .cfp-tabs .cbi-tab > a {
-	display: block; padding: 8px 14px; min-height: 40px; box-sizing: border-box;
+	display: block; box-sizing: border-box;
 	color: var(--cfi-muted); text-decoration: none; white-space: nowrap;
 	border-bottom: 2px solid transparent;
 }
@@ -168,8 +167,6 @@
 .cfp .btn.cbi-button:not(.primary):not(.danger):not(.cbi-button-add) { color: inherit; background: transparent; border-color: var(--cfi-line-strong); }
 /* 原生 DynamicList 的「+」：主题锁死白字；透明底会变成白字白底，保持主色填充 */
 .cfp .btn.cbi-button.cbi-button-add { background: var(--cfi-primary-strong); border-color: var(--cfi-primary-strong); }
-.cfp .btn.primary { color: var(--cfi-on-primary); }
-.cfp .btn.is-danger { color: var(--cfi-bad); }
 .cfp .btn .bi { width: 1em; height: 1em; display: inline-flex; align-items: center; justify-content: center; opacity: .85; }
 .cfp .btn .bi > svg { display: block; width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .cfp .btn.busy { opacity: .8; pointer-events: none; }
@@ -180,14 +177,13 @@
 	border-top-color: transparent; border-radius: 50%; animation: cfi-spin .8s linear infinite;
 }
 @keyframes cfi-spin { to { transform: rotate(360deg); } }
-.cfp .btn.link { color: inherit; }
 .cfp .btn.link:hover { border-color: var(--cfi-primary); background: color-mix(in srgb, var(--cfi-primary) 12%, var(--cfi-card)); }
 
 /* ---- 提示 / 空态 / 进度 ---------------------------------------------- */
 .cfp .msg {
 	display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline;
 	padding: 8px 10px; margin: 0 0 10px; border-left: 3px solid var(--cfi-line-strong);
-	font-size: 13px;
+	font-size: 13px; line-height: 1.65;
 }
 .cfp .msg.warn { border-left-color: var(--cfi-warn); }
 .cfp .msg.bad { border-left-color: var(--cfi-bad); }
@@ -206,7 +202,6 @@
 .cfp .step.done .step-l::before { content: '✓ '; color: var(--cfi-ok); }
 
 /* ---- 榜单表格 -------------------------------------------------------- */
-.cfp .tbl-scroll { overflow: auto; max-height: min(62vh, 600px); border-top: 1px solid var(--cfi-line); border-bottom: 1px solid var(--cfi-line); }
 .cfp .tbl { width: 100%; border-collapse: collapse; font-size: 14px; white-space: nowrap; background: transparent; }
 .cfp .tbl th, .cfp .tbl td { padding: 6px 8px; border-bottom: 1px solid var(--cfi-line); }
 .cfp .tbl th {
@@ -253,33 +248,24 @@
 .cfp .cols-menu .chk { display: flex; align-items: center; gap: 6px; font-size: 12px; }
 
 /* ---- 机房分布 -------------------------------------------------------- */
-.cfp .dcs { border-top: 1px solid var(--cfi-line); }
+/* 这里只放「骨架」：位置、盒类型、指针。尺寸与配色由下面 730 行之后的精修层给，
+   r191 把两边重复的声明删掉了 —— 同一属性写两遍，改一处漏一处。 */
 .cfp .dc { border-bottom: 1px solid var(--cfi-line); }
-.cfp .dc > summary {
-	position: relative; display: grid;
-	grid-template-columns: minmax(6em, max-content) 5em 7em minmax(8em, 1fr);
-	gap: 10px; align-items: center;
-	padding: 6px 8px 6px 20px; cursor: pointer; list-style: none; font-size: 13px;
-}
+.cfp .dc > summary { position: relative; display: grid; align-items: center; cursor: pointer; list-style: none; }
 .cfp .dc > summary::-webkit-details-marker { display: none; }
 .cfp .dc > summary::before {
-	content: ''; position: absolute; left: 6px; top: 50%; margin-top: -3px;
+	content: ''; position: absolute; top: 50%; margin-top: -3px;
 	width: 0; height: 0; border-left: 5px solid var(--cfi-muted);
 	border-top: 4px solid transparent; border-bottom: 4px solid transparent;
 }
 .cfp .dc[open] > summary::before { transform: rotate(90deg); }
-.cfp .dcitems { padding: 2px 0 6px; }
-.cfp .dcitem {
-	display: grid; grid-template-columns: minmax(0, 1fr) 4.6em 5.4em auto;
-	gap: 6px; align-items: center; padding: 5px 8px 5px 2.4em; font-size: 13px;
-}
+.cfp .dcitem { display: grid; align-items: center; }
 .cfp .dcacts { display: flex; gap: 4px; justify-content: flex-end; }
-.cfp .dcitem .dcacts .btn.link { min-height: 26px; height: 26px; padding: 2px 7px; font-size: 11px; line-height: 1; }
+.cfp .dcitem .dcacts .btn.link { line-height: 1; }
 .cfp .dcres {
-	grid-column: 1 / -1; padding: 2px 0 0; font-size: 12px;
+	grid-column: 1 / -1; padding: 2px 0 0;
 	line-height: 1.6; color: var(--cfi-muted); white-space: pre-line;
 }
-.cfp .dc-note { padding: 2px 8px 0 2.4em; font-size: 12px; }
 
 /* ---- 日志 ------------------------------------------------------------ */
 .cfp .log-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
@@ -463,21 +449,21 @@
 .cfp .tleg { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; }
 .cfp .tleg-i { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--cfi-muted); }
 .cfp .tleg-i .sw { width: 10px; height: 3px; flex: 0 0 auto; }
-.cfp .msg { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; padding: 8px 10px; border-left: 3px solid var(--cfi-line-strong); line-height: 1.65; }
-.cfp .msg.warn { border-left-color: var(--cfi-warn); }
 
 /* ---- 窄屏 ------------------------------------------------------------ */
 @media (max-width: 767px) {
+	/* 这两条必须留在媒体块里、且靠后写：构建期 CssTidy 会把同名选择器的顶层规则
+	   合并成一条（只留最后一次的值），再把媒体块整体挪到文件末尾 —— 所以最终生效的是
+	   媒体块里的值，源文件里「谁在后面」不代表产物里谁赢。r191 曾按源顺序误判它们
+	   是死声明删掉，真机 390px 下 Tab 从 44px 掉回 39px、机房首列从 max-content
+	   变刚性 77px，已撤回。 */
 	.cfp-tabs .cbi-tab > a { padding: 8px 12px; min-height: 44px; }
 	.cfp-status-line { gap: 8px; }
 	.cfp-status-acts { width: 100%; margin-left: 0; }
 	.cfp-status-acts .btn { flex: 1 1 auto; justify-content: center; min-height: 44px; }
 	.cfp .ro { flex-basis: 45%; }
 	.cfp .ro:nth-child(odd) { border-left: 0; padding-left: 0; }
-	.cfp .tbl-scroll { max-height: 60vh; }
 	.cfp .tbl .c-tcp, .cfp .tbl .c-tls, .cfp .tbl .c-total, .cfp .tbl .c-domain { display: none; }
-	.cfp .board-tools { width: 100%; }
-	.cfp .board-tools .ctl { flex: 1 1 6em; }
 	.cfp input.ctl[type="search"] { flex: 1 1 100%; width: auto; }
 	.cfp .dc > summary { grid-template-columns: minmax(5.5em, max-content) 4em 6em minmax(0, 1fr); }
 	.cfp .dnsrow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
@@ -714,7 +700,6 @@
 }
 #view .cfp .tbl thead th + th { box-shadow: inset 1px 0 0 var(--cfi-line); }
 .cfp .tbl td { font-size: 14px; padding: 10px; }
-.cfp .tbl .ip { font-size: 14px; }
 .cfp .tbl .lead {
 	display: inline-block; margin-left: 6px; padding: 1px 6px;
 	border-radius: 999px; background: var(--cfi-primary-strong);
@@ -803,11 +788,13 @@
 	.cfp .dc-note { padding-left: var(--dc-ip-pad); }
 }
 
-/* 诊断/设置：原生 section 也套同一张卡 */
+/* 诊断/设置：原生 section 也套同一张卡。
+   内距不写在这里 —— 它在所有断点都被改写（≥768 走 --cfi-pad，≤767 走 14px），
+   r191 前这里那个 18px 从来没生效过，删掉免得让人以为默认是 18。 */
 .cfp .cbi-section {
 	background: var(--cfi-card); border: 1px solid var(--cfi-line);
 	border-radius: var(--cfi-radius); box-shadow: var(--cfi-shadow);
-	padding: 18px; margin: 0 0 16px;
+	margin: 0 0 16px;
 }
 @media (min-width: 1200px) {
 	.cfp #cfi-pane-set .cbi-section { max-width: 960px; }

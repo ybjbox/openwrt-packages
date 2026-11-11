@@ -1,0 +1,103 @@
+/* CSS 层叠卫生检查（r191 起）。
+ *
+ * 背景：构建期 CssTidy 会做两件事 —— ① 同一个选择器的多条规则合并成一条，只留
+ * **最后一次**的值；② 把 @media 块整体挪到文件末尾。所以产物里的层叠顺序和源文件
+ * 里写的顺序**不是一回事**：源文件里「后面那条会覆盖前面那条」在产物里经常反过来。
+ *
+ * 推论：不能按源文件顺序判断哪条声明是死的。r191 一开始就是这么判的，删掉了移动端
+ * Tab 的 44px 与机房首列的 max-content，真机 390px 下立刻变形，只能撤回。
+ *
+ * 这里只锁一条**在任何顺序下都成立**的规则：同一个（媒体条件 + 选择器）里，
+ * 同一个属性不许出现两次。这种重复无论怎么排序都是多余的，改一处漏一处。
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const root = path.join(here, '..', '..');
+const CSS = path.join(root, 'luci-app-cf-ipcheck', 'view-src', 'style', '00-app.css');
+
+const read = () => fs.readFileSync(CSS, 'utf8').replace(/\/\*[\s\S]*?\*\//g, ' ');
+
+/* 递归解析：返回 [{ media, sel, props[] }]。@media 的媒体条件参与分组键。 */
+function parseRules(css) {
+	const rules = [];
+	(function walk(lo, hi, media) {
+		let i = lo;
+		while (i < hi) {
+			const j = css.indexOf('{', i);
+			if (j < 0 || j >= hi) break;
+			const selRaw = css.slice(i, j).trim();
+			let depth = 1;
+			let k = j + 1;
+			while (k < hi && depth) {
+				const c = css[k];
+				if (c === '{') depth++;
+				else if (c === '}') depth--;
+				k++;
+			}
+			const bodyLo = j + 1;
+			const bodyHi = k - 1;
+			if (selRaw.startsWith('@media')) {
+				walk(bodyLo, bodyHi, selRaw.replace(/\s+/g, ' ').trim());
+			}
+			else if (!selRaw.startsWith('@')) {
+				const props = css.slice(bodyLo, bodyHi).split(';')
+					.map((d) => (d.match(/^\s*([a-zA-Z-]+)\s*:/) || [])[1])
+					.filter(Boolean)
+					.map((p) => p.toLowerCase());
+				rules.push({
+					media,
+					sel: selRaw.replace(/\s+/g, ' ').replace(/\s*,\s*/g, ', ').trim(),
+					props
+				});
+			}
+			i = k;
+		}
+	})(0, css.length, '');
+	return rules;
+}
+
+test('CSS：同一（媒体条件 + 选择器）里没有重复属性', () => {
+	const groups = new Map();
+	for (const r of parseRules(read())) {
+		const key = `${r.media}||${r.sel}`;
+		if (!groups.has(key)) groups.set(key, []);
+		groups.get(key).push(...r.props);
+	}
+	const bad = [];
+	for (const [key, props] of groups) {
+		const seen = new Set();
+		const dup = new Set();
+		for (const p of props) {
+			if (seen.has(p)) dup.add(p);
+			seen.add(p);
+		}
+		if (dup.size) {
+			const [media, sel] = key.split('||');
+			bad.push(`${media ? media + '  ' : '顶层  '}${sel} → ${[...dup].join(', ')}`);
+		}
+	}
+	assert.deepEqual(bad, [],
+		'下列规则在同一媒体条件下重复声明了同一属性；CssTidy 会合并成一条，'
+		+ '写两遍只会造成「改一处漏一处」：\n  ' + bad.join('\n  '));
+});
+
+test('CSS：移动端 Tab 与机房列宽留在媒体块里，不被顶层规则顶掉', () => {
+	/* 这两条在源文件里排在顶层同类规则**前面**，看着像死声明；但产物里 @media 块
+	   会被挪到末尾，实际生效的正是它们。r191 误删过一次，这里锁住。 */
+	const rules = parseRules(read());
+	const mobile = rules.filter((r) => r.media === '@media (max-width: 767px)');
+	const tab = mobile.find((r) => r.sel === '.cfp-tabs .cbi-tab > a');
+	assert.ok(tab, '移动端仍有一条 .cfp-tabs .cbi-tab > a 规则');
+	assert.match(tab.props.join(' '), /min-height/,
+		'移动端 Tab 必须显式给 min-height，否则掉回顶层的 39px');
+
+	const dc = mobile.find((r) => r.sel === '.cfp .dc > summary');
+	assert.ok(dc, '移动端仍有一条 .cfp .dc > summary 规则');
+	assert.match(dc.props.join(' '), /grid-template-columns/,
+		'移动端机房首列要 max-content，允许按机房名长度撑开');
+});
