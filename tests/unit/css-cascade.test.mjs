@@ -101,3 +101,26 @@ test('CSS：移动端 Tab 与机房列宽留在媒体块里，不被顶层规则
 	assert.match(dc.props.join(' '), /grid-template-columns/,
 		'移动端机房首列要 max-content，允许按机房名长度撑开');
 });
+
+test('CSS：展开态说明文字顶回 opacity，次文色只稀释一次', () => {
+	/* r192（审查 P1-1）：Argon 的 cascade.css 给 .cbi-value-description 挂了
+	   opacity:.5，插件只改 color 不改透明度时，13px 说明被对折成
+	   2.81:1（浅）/ 3.62:1（暗）。修法是显式 opacity:1 + 次文色（5.41 / 6.28）。
+	   次文色 --cfi-muted 本身是 color-mix(… 74%, transparent)，带 α0.74；
+	   子元素如果再用一次就会叠成 α0.55（12px 正文掉到约 3.0:1），所以
+	   .help-body 必须继承父级颜色，不能自己再写 var(--cfi-muted)。 */
+	const css = read();
+	const open = css.match(
+		/\.cfp \.cbi-value-description\[data-cfi-help\]\[data-cfi-open="1"\]\s*\{([^}]*)\}/
+	);
+	assert.ok(open, '没有找到展开态规则');
+	assert.match(open[1], /opacity:\s*1\s*;/,
+		'展开态必须显式 opacity:1，否则被主题的 .5 对折');
+	assert.match(open[1], /color:\s*var\(--cfi-muted\)/,
+		'展开态用次文色，与同页分组提示同一视觉重量');
+
+	const body = css.match(/\.cfp \.help-body\s*\{([^}]*)\}/);
+	assert.ok(body, '没有找到 .help-body 规则');
+	assert.match(body[1], /color:\s*inherit/,
+		'.help-body 要继承父级颜色，二次套 --cfi-muted 会把 α 叠成 0.55');
+});
