@@ -124,3 +124,19 @@ test('CSS：展开态说明文字顶回 opacity，次文色只稀释一次', () 
 	assert.match(body[1], /color:\s*inherit/,
 		'.help-body 要继承父级颜色，二次套 --cfi-muted 会把 α 叠成 0.55');
 });
+
+test('CSS：暗色复选框在边框内侧补一圈内阴影', () => {
+	/* r193（审查 P2-1）：暗色下未勾选复选框只有 #3c3c3c 描边（1.28:1），
+	   主题把 border-color 写死并带强制优先，插件改不动边框 —— 只能在边框内侧
+	   用内阴影补一圈（实测 rgb(132,132,132) on #2b2b2e = 3.77:1）。
+	   这条测试守三件事：规则在暗色块里、用的是 box-shadow 而不是 border、
+	   且不去碰 outline（那是焦点指示的通道，抢了会把键盘焦点吃掉）。 */
+	const rules = parseRules(read());
+	const dark = rules.filter((r) => r.media === '@media (prefers-color-scheme: dark)');
+	const hit = dark.find((r) => /input\[type=checkbox\]/.test(r.sel));
+	assert.ok(hit, '暗色块里应有一条复选框描边规则');
+	assert.ok(hit.props.includes('box-shadow'),
+		'用内阴影补环：border-color 被主题的强制优先锁死');
+	assert.ok(!hit.props.includes('outline'),
+		'不要动 outline：键盘焦点靠它，插件的选择器会盖掉主题的焦点样式');
+});
