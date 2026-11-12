@@ -204,3 +204,29 @@ test('CSS：P3 三处可读性收口（首选徽标 / 问号间距 / 显示密�
 	assert.match(pwBody, /background-color:\s*#64748b/,
 		'按钮底色压深到 #64748b，白字才够 4.5:1');
 });
+
+test('CSS：显示密码按钮有键盘焦点环，且不波及其它按钮（审查 P2-1）', () => {
+	/* r195：LuCI 核心生成的 button.cbi-button-neutral 被主题 .cbi-button:focus
+	   清掉 outline，键盘聚焦后常态/焦点像素最大差只有 13/255。补一条与插件其它
+	   控件同款的 2px 主色环；靠特异性压过主题，不需要强制优先。
+	   作用域必须限定在 control-group 内的这个按钮，只挂 :focus-visible
+	   （鼠标点击不该出现环）。 */
+	const css = read();
+	const sel = '.cfp .cbi-value-field .control-group > button.cbi-button-neutral:focus-visible';
+	const at = css.indexOf(sel);
+	assert.ok(at >= 0, '没有找到按钮的 :focus-visible 规则');
+	const open = css.indexOf('{', at);
+	const body = css.slice(open + 1, css.indexOf('}', open));
+	assert.match(body, /outline:\s*2px solid var\(--cfi-primary\)/,
+		'焦点环要跟插件其它控件同款（2px 主色）');
+	assert.match(body, /outline-offset:\s*2px/,
+		'焦点环要外移 2px，否则贴着同色边框看不出来');
+	assert.ok(!/!\s*important/.test(body), '靠特异性压过主题，不许用强制优先');
+
+	const plain = css.indexOf('.cfp .cbi-value-field .control-group > button.cbi-button-neutral {');
+	assert.ok(plain >= 0, '按钮基础规则仍在');
+	const plainBody = css.slice(css.indexOf('{', plain) + 1, css.indexOf('}', plain));
+	assert.ok(!/outline/.test(plainBody), '常态不该画焦点环（只给键盘用）');
+	assert.ok(!/\.cfp button:focus-visible/.test(css),
+		'作用域不许放宽到 .cfp 下所有按钮');
+});

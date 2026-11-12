@@ -882,6 +882,14 @@
 .cfp .cbi-value-field .control-group > button.cbi-button-neutral {
 	background-color: #64748b; border-color: #64748b; color: #fff;
 }
+/* r195（审查 P2-1）：这个按钮由 LuCI 核心生成，主题给 .cbi-button:focus 写了
+   outline:0，键盘聚焦时只剩一条 α0.1 的淡阴影 —— 常态与焦点两帧像素最大差
+   只有 13/255，肉眼分不出来（同页的 ? 与分组标题都有 2px 主色环）。
+   补一条与插件其它控件同款的焦点环。选择器多带三层祖先，特异性高于主题那条，
+   不需要强制优先。只挂 :focus-visible：鼠标点击不出现环，键盘 Tab 才出现。 */
+.cfp .cbi-value-field .control-group > button.cbi-button-neutral:focus-visible {
+	outline: 2px solid var(--cfi-primary); outline-offset: 2px;
+}
 .cfp .cbi-section > h3.cfp-sec-toggle { display: flex; align-items: center; gap: 8px; min-height: 32px; cursor: pointer; user-select: none; }
 .cfp .cfp-sec-caret {
 	width: 0; height: 0; flex: 0 0 auto;
