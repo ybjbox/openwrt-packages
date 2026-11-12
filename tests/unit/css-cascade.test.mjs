@@ -140,3 +140,67 @@ test('CSS：暗色复选框在边框内侧补一圈内阴影', () => {
 	assert.ok(!hit.props.includes('outline'),
 		'不要动 outline：键盘焦点靠它，插件的选择器会盖掉主题的焦点样式');
 });
+
+test('CSS：P3 三处可读性收口（首选徽标 / 问号间距 / 显示密码按钮）', () => {
+	/* r194（审查 P3-1/2/3）：
+	   ① 11px 的「首选」徽标用主色原色只有 4.20:1（浅）/ 3.36:1（暗），
+	      浅色改用 --cfi-primary-strong（5.21:1），暗色在暗色块里提亮到
+	      70% 主色 + 30% 白（5.46:1）；基础规则不许再写回 var(--cfi-primary)。
+	   ② 768–1199 是主题的 table-cell 两列布局，控件左缘贴在标题列右缘，
+	      「?」占满 18px 跑道 → 间距 0。修法是把跑道加到 26px、问号右移 8px；
+	      这条必须留在 768–1199 的媒体块里，别影响 ≥1200 的 flex + gap:8。
+	   ③ 密码框的「显示密码」按钮是 LuCI 核心生成的，白字 on #8898aa 只有
+	      2.95:1；压深到 #64748b 后 4.76:1。 */
+	const css = read();
+	/* parseRules 只收属性名，这里要核对具体值，直接按块取正文。 */
+	const mediaRange = (q) => {
+		const at = css.indexOf(q);
+		assert.ok(at >= 0, `没有找到 ${q}`);
+		let i = css.indexOf('{', at), depth = 1, j = i + 1;
+		while (j < css.length && depth) { if (css[j] === '{') depth++; else if (css[j] === '}') depth--; j++; }
+		return [i, j];
+	};
+	const mediaBody = (q) => { const [i, j] = mediaRange(q); return css.slice(i + 1, j - 1); };
+	const ruleBody = (text, sel) => {
+		const at = text.indexOf(sel);
+		if (at < 0) return '';
+		const open = text.indexOf('{', at);
+		if (open < 0) return '';
+		return text.slice(open + 1, text.indexOf('}', open));
+	};
+	const [ds, de] = mediaRange('@media (prefers-color-scheme: dark)');
+	const base = css.slice(0, ds) + css.slice(de);
+
+	const leadBody = (base.match(/\.cfp\[class\] \.tbl \.lead\s*\{([^}]*)\}/g) || []).join(' ');
+	assert.ok(leadBody, '没有找到首选徽标的基础规则');
+	assert.match(leadBody, /color:\s*var\(--cfi-lead\)/,
+		'徽标字色要走令牌，不能直接用 --cfi-primary（浅色只有 4.20:1）');
+	assert.match(base, /--cfi-lead:\s*var\(--cfi-primary-strong\)/,
+		'浅色令牌应是深一档的主色（5.21:1）');
+
+	const darkBody = mediaBody('@media (prefers-color-scheme: dark)');
+	assert.match(darkBody, /--cfi-lead:\s*color-mix\(in srgb, var\(--cfi-primary\) 70%, #fff\)/,
+		'暗色令牌要提亮到 70% 主色 + 30% 白（5.46:1）');
+	assert.ok(!/\.cfp\[class\] \.tbl \.lead\s*\{/.test(darkBody),
+		'暗色块里不要再写同选择器覆盖：基础规则在源文件里排在后面，会把暗色压回去');
+
+	const gapBody = mediaBody('@media (min-width: 768px) and (max-width: 1199px)');
+	assert.match(ruleBody(gapBody, '.cfp .cbi-value > .cbi-value-title'), /padding-right:\s*26px/,
+		'768–1199 的标题跑道要加到 26px，给问号让出 8px');
+	assert.match(ruleBody(gapBody, '.cfp .help-q'), /right:\s*8px/,
+		'问号右移 8px 才不贴控件');
+
+	/* dns 组在宽屏也不走两列 flex，单独补一次；作用域必须限定在 data-group="dns"。
+	   注意 @media (min-width:1200px) 在文件里有多块，这里直接对整份源文匹配。 */
+	assert.match(css,
+		/\.cfp #cfi-pane-set \.cbi-section\[data-group="dns"\] \.cbi-value > \.cbi-value-title\s*\{\s*padding-right:\s*26px/,
+		'dns 组在 ≥1200 也要留 8px 跑道');
+	assert.match(css,
+		/\.cfp #cfi-pane-set \.cbi-section\[data-group="dns"\] \.help-q\s*\{\s*right:\s*8px/,
+		'dns 组的问号在 ≥1200 也要右移 8px');
+
+	const pwBody = ruleBody(base, '.cfp .cbi-value-field .control-group > button.cbi-button-neutral');
+	assert.ok(pwBody, '没有找到「显示密码」按钮的覆盖规则');
+	assert.match(pwBody, /background-color:\s*#64748b/,
+		'按钮底色压深到 #64748b，白字才够 4.5:1');
+});
