@@ -386,7 +386,8 @@ ssh -p 22845 root@op.403333.xyz 'apk add --allow-untrusted /tmp/luci-app-cf-ipch
 | UCI 选项 | 默认 | 说明 |
 | :--- | :--- | :--- |
 | `enabled` | `0` | 定时实测总开关；关闭时后台只空转 60 秒一轮，打开后一分钟内开始，无需重启服务 |
-| `interval_hours` | `6` | 定时周期 |
+| `interval_hours` | `6` | 定时周期（小时）；仅当 `daily_times` 留空时生效 |
+| `daily_times` | 空 | 每天固定测速时刻，逗号分隔的 24 小时制 `HH:MM`（如 `02:00,08:00,14:00,20:00`），最多 12 个。留空 = 只按周期跑；填写后完全按时刻跑，错过不补跑，手动测速不影响 |
 | `probe_domains` | `www.cloudflare.com` | **必填**，逗号分隔；必须是真正解析到 Cloudflare 后面的域名（节点域名 / Worker 域名） |
 | `probe_port` | `443` | 探测端口 |
 | `use_official_ranges` | `0` | 是否把官方网段也铺进池子（默认关，避免近六千个 /24 采样挤掉社区优选） |
@@ -528,8 +529,9 @@ cf-ipcheck selftest   # 离线自检，不联网
   段表而它半天变不了一次；不缓存时"点一下检测"最坏要阻塞 20+16 秒，会顶穿 rpcd 对
   `file.exec` 的超时（页面表现成"检测失败"，而实际是结果被掐在半路）。拉不到就退回过期缓存
   并记日志；缓存写不下去也不会拖死本轮（写重定向失败是 shell 级错误，故放子 shell 里做）。
-- **`daemon` 按 60 秒一片睡**：每片重读配置，改 `interval_hours` 或关总开关一分钟内生效，
-  不依赖 uci 的 reload 触发是否真把 procd 实例拉起来。
+- **`daemon` 按最多 60 秒一片睡**：每片重读配置，改 `interval_hours` / `daily_times`
+  或关总开关一分钟内生效，不依赖 uci 的 reload 触发是否真把 procd 实例拉起来。
+  按时刻表跑时每片睡 `min(60, 距离下一触发点)` —— 时刻是绝对点，睡过头会直接跳过它。
 - **ACL 只放开 `/usr/bin/cf-ipcheck` 的 `exec`**：早先还顺带授意了 4 条 `file.read`
   （status/result/best-ip），而页面从头到尾只走 `file.exec` —— 白要权限。
 - **可执行文件一律按绝对路径找（`find_bin`）**：rpcd 起子进程时给的 PATH 不含 `/sbin`，
@@ -607,7 +609,9 @@ uci 分不清“显式留空”和“没这一项”（实测 `uci -q get` 对�
 
 往 `/etc/crontabs/root` 里塞条目会和别的插件（自动重启等）互相覆盖，且改完配置要
 重启才生效。这里由 procd 常驻 `cf-ipcheck daemon`，每轮开始时重新读 UCI，
-所以**改周期、换域名、开关都在页面上保存即生效**。
+所以**改周期、改每天时刻、换域名、开关都在页面上保存即生效**。r196 起的
+`daily_times` 也走同一套守门：引擎按「严格晚于此刻的最早触发点」算下一轮，
+不额外写 crontab、不写去重文件，开机错过不补跑、手动测速不扰动时刻表。
 
 ## 卸载
 

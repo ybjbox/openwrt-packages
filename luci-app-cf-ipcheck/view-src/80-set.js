@@ -254,8 +254,9 @@
 				host.appendChild(bar);
 				/* 整张 map 节点进面板：字段留在 map 子树里，CBI 才采得到值 */
 				host.appendChild(node);
-				CFI.form.applyHelp(node);
-				snapshotValues();
+			CFI.form.applyHelp(node);
+			CFI.form.applyDailyPreview(node);
+			snapshotValues();
 				host.addEventListener('input', markChanged, true);
 				host.addEventListener('change', markChanged, true);
 				host.addEventListener('keyup', markChanged, true);

@@ -525,6 +525,19 @@ load_config() {
 	C_TOKEN=$(cfg token_file '/etc/cf-ipcheck.token')
 	C_GISTTOK=$(cfg gist_token '')
 	C_INTERVAL=$(cfg_range interval_hours 6 1 168)
+	# r196：每天固定时刻。留空 = 旧的「每 interval_hours 小时」；填了就完全按时刻表
+	# 走，interval_hours 不再参与守门（但仍随 status 给页面显示）。
+	# 整条非法就退回旧周期，而不是丢掉坏项：只丢坏项会变成「看着配了 4 个、实际
+	# 跑 2 个」，静默少跑比报错更难查；每轮约 105MB，宁可回到熟悉的周期并写告警。
+	_daily_raw=$(cfg daily_times '')
+	C_DAILY=$(daily_times_norm "$_daily_raw")
+	if [ "$C_DAILY" = BAD ]; then
+		cfg_warn "每天测速时刻 daily_times 格式不合法（<$(printf '%s' "$_daily_raw" | cut -c1-48)>），退回按周期 $C_INTERVAL 小时"
+		C_DAILY=''
+	elif [ -n "$_daily_raw" ] && [ -z "$C_DAILY" ]; then
+		cfg_warn "每天测速时刻 daily_times 没有可用时刻，退回按周期 $C_INTERVAL 小时"
+		C_DAILY=''
+	fi
 	C_UPLOAD=$(cfg upload_gist 0)
 	# 日志上限（KB）。下限 16 KB 是因为再小就等于「一轮日志还没写完就被截掉」，
 	# 想不起作用就把这一项填大，而不是填 0 —— 0 会让日志无限长，正是要防的事。
@@ -2651,6 +2664,82 @@ due_gap() {
 	printf '%s\n' "$left"
 }
 
+# ---------------- 每天固定时刻（r196）--------------------------------------
+# 用户只想在自己指定的几个时刻跑，不要「每 N 小时」漂移，也不要 cron。
+# 判据是「严格晚于此刻的最早触发点」，于是：
+#   · 开机/重启跨过几个时刻 → 直接算下一个未来时刻，天然不补跑；
+#   · 手动「立即测速」写 lastrun → 这里根本不看 lastrun，天然不扰动；
+#   · 一轮跑完 now 已越过该点 → 自动落到下一个点，不需要额外的去重文件。
+# 所以不用往 /etc 再写一份 nextrun，少一处持久状态、少一处 flash 写入。
+# 代价：daemon 必须睡到「min(60, 剩余秒数)」，否则睡过头会直接跳过触发点
+#（旧 due_gap 是相对 lastrun 算的，睡过头仍会得到 0，所以旧代码没这个坑）。
+
+# 把用户填的一串时刻整理成 HH:MM,HH:MM（去重、按时刻排序）。
+# 非法（格式不对 / 越界 / 超过 12 个）一律输出 BAD，由 load_config 整条回退。
+# 定宽 5 位秒数做字典序 sort，不用 sort -n（BusyBox 对大数排序会出错，r130 踩过）。
+daily_times_norm() {
+	[ -n "${1:-}" ] || { printf '%s' ''; return 0; }
+	printf '%s\n' "$1" | tr ',; \t' '\n' | awk '
+		/^$/ { next }
+		{
+			t = $0
+			if (t !~ /^[0-9][0-9]?:[0-9][0-9]$/) { print "000000 BAD"; next }
+			split(t, p, ":")
+			h = p[1] + 0; m = p[2] + 0
+			if (h > 23 || m > 59 || length(p[2]) != 2) { print "000000 BAD"; next }
+			s = h * 3600 + m * 60
+			if (seen[s]++) next
+			printf "%05d %02d:%02d\n", s, h, m
+		}' | sort -u | awk '
+		/BAD$/ { bad = 1 }
+		{ if (!bad) lines[++n] = $2 }
+		END {
+			if (bad || n > 12) { print "BAD"; exit }
+			out = ""
+			for (i = 1; i <= n; i++) out = out (i > 1 ? "," : "") lines[i]
+			print out
+		}'
+}
+
+# 下一个触发点的绝对 epoch。$1 给定时是自检用的模拟 now（配 CFIP_DAY0 一起用）。
+# day0 = 本地今天 00:00 对应的 epoch：只用 date +%H/%M/%S 这三个 BusyBox 一定
+# 认得的格式，再让 awk 做算术（"08" 在 awk 里是十进制 8，在 $(( )) 里会被当八进制）。
+# 不解析任何日期字符串，也就绕开了 ISO 串 / 本地时区解释差异那个老坑。
+daily_next_epoch() {
+	now=${1:-}
+	if [ -z "$now" ]; then
+		now=$(date +%s)
+		set -- $(date '+%H %M %S')
+		day0=$(awk -v n="$now" -v h="$1" -v m="$2" -v s="$3" \
+			'BEGIN { printf "%d", n - (h * 3600 + m * 60 + s) }')
+	else
+		day0=${CFIP_DAY0:-0}
+	fi
+	printf '%s\n' "$C_DAILY" | tr ',' '\n' | awk -v now="$now" -v day0="$day0" '
+		/^$/ { next }
+		{
+			split($0, p, ":")
+			t = p[1] * 3600 + p[2] * 60
+			cand = day0 + t
+			if (cand > now && (best == 0 || cand < best)) best = cand
+			if (first == 0 || t < first) first = t
+		}
+		END {
+			if (best == 0) best = day0 + 86400 + first
+			printf "%d", best
+		}'
+}
+
+# daemon 的守门入口：留空时刻表就完全走旧的 due_gap。
+schedule_due() {
+	[ -n "${C_DAILY:-}" ] || { due_gap; return 0; }
+	n=$(daily_next_epoch)
+	now=$(date +%s)
+	left=$((n - now))
+	[ "$left" -gt 0 ] 2>/dev/null || left=0
+	printf '%s\n' "$left"
+}
+
 # ---------------- DNS 同步（可选，默认关）---------------------------------
 # 把榜首 IP 写进 Cloudflare 的指定 A 记录。为什么是独立脚本而不是写在这里：
 # HTTP + 令牌 + 记录幂等 是另一套关注点，和「测量」正交；塞进来会让这个 4000 行的
@@ -3184,7 +3273,7 @@ do_run() {
 merge_cfg() {
 	# upload 也带上：页面的「上传 Gist」那一环节只有开了才会走，
 	# 不给这个信息就只能让那条一直挂着「待做」骗人。
-	awk -v e="\"enabled\":$(cfg_num enabled 0),\"interval\":$C_INTERVAL,\"upload\":$(cfg_num upload_gist 0)$(next_run_epoch)" '
+	awk -v e="\"enabled\":$(cfg_num enabled 0),\"interval\":$C_INTERVAL,\"daily_times\":\"$(json_str "$C_DAILY")\",\"upload\":$(cfg_num upload_gist 0)$(next_run_epoch)" '
 		{ if ((i = match($0, /\}[ \t]*$/)) > 0) $0 = substr($0, 1, i - 1) "," e "}" }
 		{ print }'
 }
@@ -3197,6 +3286,11 @@ merge_cfg() {
 # lastrun 读不到（首次安装、内容被弄脏）就整个键都不给，让页面退回老算法，
 # 而不是给一个看起来对的 0。
 next_run_epoch() {
+	# r196：配了每天时刻就按时刻表给下一轮；留空才走旧的 lastrun + 周期。
+	if [ -n "${C_DAILY:-}" ]; then
+		printf ',"next_run":%s' "$(daily_next_epoch)"
+		return 0
+	fi
 	lr=$(last_run_epoch)
 	[ "$lr" -gt 0 ] 2>/dev/null || return 0
 	gap=$((C_INTERVAL * 3600))
@@ -3287,7 +3381,7 @@ do_diag() {
 		# 打成什么形状（真机上就是重复行 / 带下标 / 数组式这三种在打架）。
 		uci_list=$(printf '%s\n' "$( "$UCI_BIN" -q show "$CONF.@global[0].community_sources" 2>&1 | head -n 3 | tr '\n' '~' )" | cut -c1-260)
 	fi
-	printf '{"has_uci":%s,"uci":"%s","su":"%s","curl":"%s","jq":"%s","devnull_is_chardev":%s,"null_dev":"%s","sink_writable":%s,"run_dir_mode":"%s","sources":%s,"domains":"%s","port":"%s","budget":"%s","official":"%s","reuse":"%s","colo":"%s","colo_domain":"%s","canary":"%s","probe_user":"%s","speed":"%s","speed_count":"%s","speed_bytes":"%s","speed_domain":"%s","interval":"%s","upload":"%s","logkb":"%s","log_bytes":"%s","run_dir":"%s","etc_dir":"%s","uci_show":"%s","uci_get_probe_port":"%s","uci_get_rc":%s,"uci_list_raw":"%s","dns_sync":%s,"apply_dns":"%s","apply_dns_ok":%s,"dns_targets_set":%s,"dns_targets":"%s"}\n' \
+	printf '{"has_uci":%s,"uci":"%s","su":"%s","curl":"%s","jq":"%s","devnull_is_chardev":%s,"null_dev":"%s","sink_writable":%s,"run_dir_mode":"%s","sources":%s,"domains":"%s","port":"%s","budget":"%s","official":"%s","reuse":"%s","colo":"%s","colo_domain":"%s","canary":"%s","probe_user":"%s","speed":"%s","speed_count":"%s","speed_bytes":"%s","speed_domain":"%s","interval":"%s","daily_times":"%s","upload":"%s","logkb":"%s","log_bytes":"%s","run_dir":"%s","etc_dir":"%s","uci_show":"%s","uci_get_probe_port":"%s","uci_get_rc":%s,"uci_list_raw":"%s","dns_sync":%s,"apply_dns":"%s","apply_dns_ok":%s,"dns_targets_set":%s,"dns_targets":"%s"}\n' \
 		"$HAS_UCI" "$(json_str "${UCI_BIN:-}")" "$(json_str "${SU_BIN:-}")" \
 		"$(json_str "${CURL_BIN:-}")" "$(json_str "${JQ_BIN:-}")" \
 		"$([ -c /dev/null ] && printf 1 || printf 0)" "$(json_str "$NULL_DEV")" \
@@ -3298,6 +3392,7 @@ do_diag() {
 		"$(json_str "$C_COLOR")" "$(json_str "$C_COLODOMAIN")" "$(json_str "$C_CANARY")" \
 		"$(json_str "${C_PUSER:-root}")" "$(json_str "$C_SPEED")" "$(json_str "$C_SPEEDN")" \
 		"$(json_str "$C_SPEEDKB")" "$(json_str "$C_SPEEDDOM")" "$(json_str "$C_INTERVAL")" \
+		"$(json_str "${C_DAILY:-}")" \
 		"$(json_str "$C_UPLOAD")" "$(json_str "$C_LOGKB")" \
 		"$(json_str "${LOGSZ:-0}")" \
 		"$(json_str "$RUN_DIR")" "$(json_str "$ETC_DIR")" \
@@ -4154,6 +4249,33 @@ selftest() {
 	C_INTERVAL=6
 	rm -f "$LAST_RUN"
 
+	# ---- r196 每天固定时刻（纯算术，用 CFIP_DAY0 把「今天 00:00」钉死）----
+	CFIP_DAY0=1000000000
+	C_DAILY='02:00,08:00,14:00,20:00'
+	check '时刻整理：去重、排序、补前导零' "$(daily_times_norm '20:00,08:00,08:00,2:00')" '02:00,08:00,20:00'
+	check '时刻整理：留空就是没配' "$(daily_times_norm '')" ''
+	check '时刻整理：小时越界整条 BAD（不静默丢项）' "$(daily_times_norm '08:00,25:00')" 'BAD'
+	check '时刻整理：分钟越界整条 BAD' "$(daily_times_norm '08:60')" 'BAD'
+	check '时刻整理：超过 12 个整条 BAD' \
+		"$(daily_times_norm '00:00,01:00,02:00,03:00,04:00,05:00,06:00,07:00,08:00,09:00,10:00,11:00,12:00')" 'BAD'
+	check '下一轮：当天 03:00 → 08:00' \
+		"$(daily_next_epoch $((CFIP_DAY0 + 3 * 3600)))" "$((CFIP_DAY0 + 8 * 3600))"
+	check '下一轮：当天 21:00 → 次日 02:00' \
+		"$(daily_next_epoch $((CFIP_DAY0 + 21 * 3600)))" "$((CFIP_DAY0 + 86400 + 2 * 3600))"
+	check '下一轮：恰好 08:00 起轮后落到 14:00（不会重复触发）' \
+		"$(daily_next_epoch $((CFIP_DAY0 + 8 * 3600)))" "$((CFIP_DAY0 + 14 * 3600))"
+	check '状态：时刻表模式下仍给页面 next_run' \
+		"$(next_run_epoch | grep -c ',"next_run":[0-9]')" '1'
+	printf '%s\n' "$(date +%s)" >"$LAST_RUN"
+	check '守门：刚手动跑过也不影响时刻表' \
+		"$([ "$(schedule_due)" -gt 0 ] && echo ok || echo ng)" 'ok'
+	C_DAILY=''
+	sd=$(schedule_due); dg=$(due_gap)
+	check '守门：时刻表留空时与旧周期完全一致（差 ≤1 秒）' \
+		"$([ $((sd - dg)) -le 1 ] && [ $((dg - sd)) -le 1 ] && echo ok || echo ng)" 'ok'
+	unset CFIP_DAY0
+	rm -f "$LAST_RUN"
+
 	# ---- r71 邻居扩展 / 多样本验证 / 净速率 / CSV / 响应头取证（全部离线）----
 	# 临时文件一律放 $ETC_DIR 下的子目录：ST_SCRATCH 在 CFIP_* 显式设置时是空的，
 	# 而 $ETC_DIR 两条路径下都在（无 CFIP 时它就是 scratch/etc，不会碰真目录）。
@@ -4557,20 +4679,19 @@ case "${1:-}" in
 					 sleep 60
 					 continue
 				 fi
-				 # 周期守门：距离上一轮起轮不满 interval_hours 就不跑。
+				 # 守门：留空 daily_times 时按 interval_hours，填了就按每天固定时刻。
 				 # 没有这道门的话，procd 的 reload 触发（改完 UCI 点「保存并应用」
 				 # → init.d 的 reload_service = stop+start）会让每次改配置都白烧一轮
 				 # ——真机一轮约 104.86MB，而他改的往往只是一条源地址。
-				 # 按 60 秒一片睡、每片重读配置：关掉总开关或把周期改短都能在一分钟内
-				 # 反映出来，不必等完一觉。
-				 left=$(due_gap)
+				 # 每片最多睡 60 秒，且睡到 min(60,left)：时刻表是绝对时刻，睡过头
+				 # 会直接跳过那个点（旧 due_gap 相对 lastrun，睡过头仍得到 0）。
+				 # 每片重读配置：关总开关、改周期、改时刻表都能在一分钟内反映。
+				 left=$(schedule_due)
 				 while [ "$left" -gt 0 ]; do
-					 sleep 60
-					 left=$((left - 60))
-					 [ "$left" -gt 0 ] || break
+					 if [ "$left" -lt 60 ]; then sleep "$left"; else sleep 60; fi
 					 load_config
 					 [ "$(cfg enabled 0)" = 1 ] || break
-					 left=$(due_gap)
+					 left=$(schedule_due)
 				 done
 				 [ "$(cfg enabled 0)" = 1 ] || continue
 				 do_run || log '本轮异常结束'

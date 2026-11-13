@@ -66,7 +66,7 @@ for (const [ method ] of pairs)
 ok('RPC 对象名一致', /var RPC_OBJECT = 'luci\.cf-ipcheck'/.test(view) && /luci\.cf-ipcheck/.test(uc));
 
 /* ---- JSON 契约键（引擎写、视图读） ------------------------------------ */
-const STATUS = 'state started finished pool qualified usable intercepted counts domains items reason port enabled interval stage stage_done stage_total upload dc_show'.split(' ');
+const STATUS = 'state started finished pool qualified usable intercepted counts domains items reason port enabled interval daily_times stage stage_done stage_total upload dc_show'.split(' ');
 const ITEMS = 'ip code connect_ms tls_ms ttfb_ms total_ms colo speed_mbytes domain loss jitter_ms net_ttfb_ms ray_ok'.split(' ');
 const SOURCES = 'url http rc ips cf_in'.split(' ');
 for (const k of [ ...STATUS, ...ITEMS, ...SOURCES ]) {
@@ -81,10 +81,10 @@ ok('吞吐废弃键不进视图', !/speed_mbps|speed_mibs/.test(view));
 
 /* ---- uci：默认配置 ↔ 引擎读取 ↔ 视图字段 ------------------------------ */
 const confKeys = [...conf.matchAll(/^\toption\s+([a-z_]+)/gm)].map((m) => m[1]);
-ok('默认配置 55 个 option', confKeys.length === 55, String(confKeys.length));
+ok('默认配置 56 个 option', confKeys.length === 56, String(confKeys.length));
 const fields = [...view.matchAll(/field\([a-z]+, '[A-Za-z]+', form\.[A-Za-z]+, '([a-z_]+)'/g)]
 	.map((m) => m[1]);
-ok('视图 field() 声明 33 个字段', fields.length === 33, String(fields.length));
+ok('视图 field() 声明 34 个字段', fields.length === 34, String(fields.length));
 for (const k of fields)
 	ok('字段 ' + k + ' 在默认配置里', confKeys.includes(k) || conf.indexOf('	list ' + k + ' ') >= 0);
 ok('隐藏兼容键保留但不在界面', confKeys.includes('dns_record') && confKeys.includes('dns_proxied') &&

@@ -236,11 +236,12 @@ test('store：run 指纹覆盖进度与机房', () => {
 	assert.notEqual(k3, k4, '机房分布变了必须重画');
 });
 
-test('字段表：33 个字段 + 高级分组，短句与分组双向可查', () => {
+test('字段表：34 个字段 + 高级分组，短句与分组双向可查', () => {
 	const groups = CFI.form.OPTIONS;
 	let n = 0;
 	Object.keys(groups).forEach((g) => { n += groups[g].length; });
-	assert.equal(n, 33);
+	assert.equal(n, 34); // r196 起 basic 多一个 daily_times
+	assert.ok(groups.basic.indexOf('daily_times') >= 0);
 	assert.equal(groups.probe.length, 10);
 	assert.equal(groups.probeAdv.length, 12);
 	assert.equal(groups.dns.length, 4);

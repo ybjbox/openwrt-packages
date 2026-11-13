@@ -890,6 +890,13 @@
 .cfp .cbi-value-field .control-group > button.cbi-button-neutral:focus-visible {
 	outline: 2px solid var(--cfi-primary); outline-offset: 2px;
 }
+/* r196：「每天测速时刻」输入框下面的实时预览（未来 5 次 + 每天流量估算）。
+   整块只套一次次文色；子元素若再套 --cfi-muted 会叠成 α0.55（r192 实测
+   12px 正文掉到 2.07:1）。 */
+.cfp .cfp-daily-preview {
+	margin-top: 6px; font-size: 12px; line-height: 1.6;
+	color: var(--cfi-muted); overflow-wrap: break-word;
+}
 .cfp .cbi-section > h3.cfp-sec-toggle { display: flex; align-items: center; gap: 8px; min-height: 32px; cursor: pointer; user-select: none; }
 .cfp .cfp-sec-caret {
 	width: 0; height: 0; flex: 0 0 auto;

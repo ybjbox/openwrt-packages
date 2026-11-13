@@ -104,7 +104,7 @@
 		busy = busy || {};
 		var it = (st.items || [])[0];
 		return [ st.state, st.reason, st.intercepted, st.finished, st.started,
-			st.enabled, st.interval, st.next_run, st.port,
+			st.enabled, st.interval, st.daily_times, st.next_run, st.port,
 			Math.floor((st.staleFor || 0) / 10),
 			it && it.ip ? it.ip : '',
 			busy.run ? 1 : 0, busy.stop ? 1 : 0, busy.refresh ? 1 : 0 ].join('|');

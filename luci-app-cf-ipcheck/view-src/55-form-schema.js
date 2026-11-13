@@ -155,8 +155,108 @@
 			desc.appendChild(body);
 		}
 	}
+	/* ---- 每天固定时刻（r196）--------------------------------------------
+	 * 引擎用「严格晚于此刻的最早触发点」守门；这里的解析必须与引擎的
+	 * daily_times_norm() 同口径，否则页面说 14:00、引擎 02:00 才放行。
+	 * 同一组样例向量锁在 tests/unit/daily-times.test.mjs 与引擎 selftest。 */
+	function parseDailyTimes(raw) {
+		var parts = String(raw || '').split(/[,;\s]+/);
+		var secs = [], seen = {}, i, m, h, mi, sec;
+		for (i = 0; i < parts.length; i++) {
+			if (!parts[i])
+				continue;
+			m = /^(\d{1,2}):(\d{2})$/.exec(parts[i]);
+			if (!m)
+				return null;
+			h = Number(m[1]); mi = Number(m[2]);
+			if (h > 23 || mi > 59)
+				return null;
+			sec = h * 3600 + mi * 60;
+			if (!seen[sec]) { seen[sec] = 1; secs.push(sec); }
+		}
+		secs.sort(function (a, b) { return a - b; });
+		return secs.length > 12 ? null : secs;
+	}
+
+	function dailyNorm(secs) {
+		var out = [], i, h, m;
+		for (i = 0; i < secs.length; i++) {
+			h = Math.floor(secs[i] / 3600);
+			m = Math.floor((secs[i] % 3600) / 60);
+			out.push((h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m);
+		}
+		return out.join(',');
+	}
+
+	function pad2(n) { return (n < 10 ? '0' : '') + n; }
+
+	function nextFive(secs, nowSec) {
+		var d = new Date(nowSec * 1000);
+		var day0 = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() / 1000;
+		var out = [], cur = nowSec, guard = 0, best = 0, i, cand;
+		while (out.length < 5 && guard < 400) {
+			best = 0;
+			for (i = 0; i < secs.length; i++) {
+				cand = day0 + secs[i];
+				if (cand > cur && (best === 0 || cand < best))
+					best = cand;
+			}
+			if (!best) {
+				day0 += 86400;
+				best = day0 + secs[0];
+			}
+			out.push(best);
+			cur = best;
+			guard++;
+		}
+		return out;
+	}
+
+	/* 渲染完成后把「未来 5 次」预览挂到输入框下面：改一个字就重算，不用先保存。
+	 * 只挂一个字段，没有循环变量，不需要 IIFE 固化参数。 */
+	function applyDailyPreview(root) {
+		if (!root || !root.querySelector)
+			return;
+		var row = root.querySelector('.cbi-value[data-name="daily_times"]');
+		if (!row)
+			return;
+		var input = row.querySelector('input');
+		var fieldBox = row.querySelector('.cbi-value-field') || row;
+		var out = CFI.dom.el('div', { 'class': 'cfp-daily-preview' });
+		fieldBox.appendChild(out);
+		var ivRow = root.querySelector('.cbi-value[data-name="interval_hours"]');
+		var ivInput = ivRow && ivRow.querySelector('input');
+		var update = function () {
+			var raw = input ? String(input.value || '') : '';
+			var secs = parseDailyTimes(raw);
+			var txt, k, d, list, nx;
+			if (!raw.replace(/[,;\s]+/g, '')) {
+				txt = CFI.T('留空：按每 %s 小时循环（旧行为）')
+					.format(ivInput && ivInput.value ? ivInput.value : '6');
+			} else if (!secs || !secs.length) {
+				txt = CFI.T('时刻格式不对：请用逗号分隔的 24 小时制 HH:MM，最多 12 个');
+			} else {
+				list = [];
+				nx = nextFive(secs, Math.floor(Date.now() / 1000));
+				for (k = 0; k < nx.length; k++) {
+					d = new Date(nx[k] * 1000);
+					list.push(pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + ' '
+						+ pad2(d.getHours()) + ':' + pad2(d.getMinutes()));
+				}
+				txt = CFI.T('每天 %s 轮，约 %s MB/天 · 未来 5 次：%s')
+					.format(secs.length, secs.length * 105, list.join(' / '));
+			}
+			out.textContent = txt;
+		};
+		if (input && input.addEventListener) {
+			input.addEventListener('input', update);
+			input.addEventListener('change', update);
+		}
+		update();
+	}
+
 var GROUPS = [
-	{ id: 'basic',  title: '基本设置',   hint: '开关、周期与探测目标' },
+	{ id: 'basic',  title: '基本设置',   hint: '开关、周期/时刻与探测目标' },
 	{ id: 'sources', title: '源清单',    hint: '每行填一个网址，内容是一份 IP 地址清单；改完点「保存并应用」' },
 	{ id: 'probe',  title: '测速与判定', hint: '什么算可用、留几条、按哪个时间看' },
 	{ id: 'probeAdv', title: '高级设置', hint: '一般不用改；默认值适配绝大多数线路' },
@@ -165,7 +265,7 @@ var GROUPS = [
 ];
 
 var GROUP_OPTIONS = {
-	basic: [ 'enabled', 'interval_hours', 'probe_domains' ],
+	basic: [ 'enabled', 'interval_hours', 'daily_times', 'probe_domains' ],
 	sources: [ 'community_sources' ],
 	probe: [ 'ttfb_limit', 'total_limit', 'keep_count', 'probe_metric',
 	         'dc_pick', 'speed_gate', 'speed_abs_min',
@@ -199,14 +299,36 @@ var GROUP_OPTIONS = {
 
 o = field(s, 'basic', form.Flag, 'enabled',
 	_('启用定时实测'), _('关掉后不再自动测。'),
-	_('关闭后不再自动开始新一轮，也不会产生测速流量。打开后按上面的周期循环，从上一轮开始的时刻算起，不是从它结束算起 —— 所以刚打开时若距上一轮还不满一个周期，不会立刻重跑；想马上测就点「立即测速」。改完保存即生效，不用重启服务。'));
+	_('关闭后不再自动开始新一轮，也不会产生测速流量。打开后按「定时周期」或「每天测速时刻」自动跑（填了时刻就按时刻，留空才按周期）；按周期时从上一轮开始的时刻算起，不是从它结束算起 —— 所以刚打开时若距上一轮还不满一个周期，不会立刻重跑；想马上测就点「立即测速」。改完保存即生效，不用重启服务。'));
 		o.rmempty = false;
 
 o = field(s, 'basic', form.Value, 'interval_hours',
 	_('定时周期（小时）'), _('两轮之间的间隔，单位小时。'),
-	_('可填 1~168 小时，从上一轮开始的时刻算，一轮跑多久都不会把下一轮越推越远。周期越短结果越新，但每轮都要重新下载地址清单并逐个测试，流量和 CPU 占用都会上升；软路由上 6 小时是个折中。手动点「立即测速」也会把下一轮顺延一个周期。'));
+	_('仅当下面「每天测速时刻」留空时生效。可填 1~168 小时，从上一轮开始的时刻算，一轮跑多久都不会把下一轮越推越远。周期越短结果越新，但每轮都要重新下载地址清单并逐个测试，流量和 CPU 占用都会上升；软路由上 6 小时是个折中。手动点「立即测速」也会把下一轮顺延一个周期；按每天时刻跑时这一项不参与。'));
 		o.datatype = 'and(uinteger,min(1),max(168))';
 		o.default = '6';
+
+o = field(s, 'basic', form.Value, 'daily_times',
+	_('每天测速时刻'), _('留空则按上面的周期跑。'),
+	_('填你希望每天自动测速的时刻，逗号分隔的 24 小时制 HH:MM，例如 02:00,08:00,14:00,20:00；最多 12 个，可以填非整点（如 07:35）。留空时行为与旧版完全一致，只按上面的周期循环；一旦填了，就完全按这些时刻跑，周期不再参与。改完点「保存并应用」一分钟内生效，不用重启服务。设备关机或重启错过了某个时刻不补跑，直接等下一个；手动点「立即测速」也不会改变这些时刻。每轮要重新下载地址清单并逐个测试，约 105MB，填得越密流量和 CPU 占用越高。'));
+		o.default = '';
+		o.validate = function (section_id, value) {
+			var v = String(value || '');
+			if (!v.replace(/[,;\s]+/g, ''))
+				return true;
+			var secs = parseDailyTimes(v);
+			return secs ? true
+				: _('请填 24 小时制的 HH:MM，逗号分隔，最多 12 个（如 02:00,08:00,14:00,20:00）');
+		};
+		/* 存进 UCI 前先规范化（补零、去重、排序）：diag 与页面上看到的
+		 * 就是引擎实际在用的那份值，不会「看着填了 2:00、实际读 02:00」。 */
+		o.write = function (section_id, value) {
+			var secs = parseDailyTimes(String(value || ''));
+			var norm = secs && secs.length ? dailyNorm(secs) : '';
+			if (this.super)
+				return this.super('write', [ section_id, norm ]);
+			return norm;
+		};
 
 o = field(s, 'basic', form.Value, 'probe_domains',
 	_('探测域名'), _('填你实际要用的域名，且必须已接入 Cloudflare；多个用英文逗号隔开。'),
@@ -484,6 +606,10 @@ o = field(adv, 'probeAdv', form.Value, 'dns_token_file',
 		help: help,
 		field: field,
 		applyHelp: applyHelp,
+		parseDailyTimes: parseDailyTimes,
+		dailyNorm: dailyNorm,
+		nextFive: nextFive,
+		applyDailyPreview: applyDailyPreview,
 		GROUPS: GROUPS,
 		OPTIONS: GROUP_OPTIONS,
 		create: create

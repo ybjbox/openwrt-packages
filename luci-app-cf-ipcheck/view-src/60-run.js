@@ -35,10 +35,15 @@
 			return '';
 		if (Number(st.enabled) === 0)
 			return CFI.T('定时实测：关闭');
-		var s = CFI.T('定时实测：每 %s 小时').format(st.interval != null ? st.interval : '?');
+		var s;
+		if (st.daily_times)
+			s = CFI.T('定时实测：每天 %s').format(String(st.daily_times).replace(/,/g, ' / '));
+		else
+			s = CFI.T('定时实测：每 %s 小时').format(st.interval != null ? st.interval : '?');
 		if (st.next_run != null && isFinite(Number(st.next_run))) {
 			var d = new Date(Number(st.next_run) * 1000);
-			s += CFI.T('，下一轮约 %s').format(F.pad2(d.getHours()) + ':' + F.pad2(d.getMinutes()));
+			s += CFI.T('，下一轮约 %s').format(F.pad2(d.getMonth() + 1) + '-' + F.pad2(d.getDate())
+				+ ' ' + F.pad2(d.getHours()) + ':' + F.pad2(d.getMinutes()));
 		}
 		return s;
 	}

@@ -243,7 +243,7 @@ if [ -f "$ENGINE" ] && [ -f "$VIEW" ]; then
     # 目的是让「引擎写了但页面没读」「页面读了但引擎没写」两种单边改动都变红。
     # 为什么不直接正则扫引擎全文：Gist 载荷、Cloudflare /ips 的响应、自检里的
     # 样例 JSON 也都是 "key": 形状，扫全文会把它们误当契约（files/content/result）。
-    STATUS_KEYS="state started finished pool qualified usable intercepted counts domains items reason port enabled interval stage stage_done stage_total upload dc_show"
+    STATUS_KEYS="state started finished pool qualified usable intercepted counts domains items reason port enabled interval daily_times stage stage_done stage_total upload dc_show"
     ITEM_KEYS="ip code connect_ms tls_ms ttfb_ms total_ms colo speed_mbytes speed_mib domain loss jitter_ms net_ttfb_ms ray_ok"
     SOURCE_KEYS="url http rc ips cf_in"
 
@@ -341,8 +341,8 @@ if [ -f "$VIEW" ] && [ -f "$ENGINE" ]; then
     if [ "$nopts" -eq 0 ]; then
         echo "[FAIL] help-7: 从视图里一个字段都没提取到（field(...) 的形状变了？）"
         rl7=1
-    elif [ "$nopts" -lt 33 ]; then
-        echo "[FAIL] help-7: 只提取到 $nopts 个字段，P1+P2 后应为 33 个（少了的字段没被本检查覆盖）"
+    elif [ "$nopts" -lt 34 ]; then
+        echo "[FAIL] help-7: 只提取到 $nopts 个字段，r196 起应为 34 个（少了的字段没被本检查覆盖）"
         rl7=1
     fi
     if [ ! -s "$TMP_PAIRS" ]; then
