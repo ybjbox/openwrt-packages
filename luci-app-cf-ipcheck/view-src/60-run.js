@@ -55,7 +55,7 @@
 			q: '',
 			sel: null
 		};
-		var last = { round: '', stage: '', board: '', dc: '', foot: '' };
+		var last = { round: '', stage: '', board: '', dc: '', foot: '', recent: '' };
 		var lastItems = [];
 		var lastSt = {};
 		var snap = null;
@@ -86,6 +86,26 @@
 		var bannerHost = el('div', { class: 'run-banner' });
 		var progressHost = el('div', { class: 'run-progress', hidden: true });
 		var progress = null;
+		/* r198：进度条下面的实时流水。数据来自 status.recent（引擎并进来的
+		 * 日志尾部 8 行），不新增 RPC、不额外轮询，跟着 3 秒一次的 status 走。 */
+		var recentElapsed = el('span', { class: 'n', text: '' });
+		var recentList = el('div', { class: 'run-recent-list' });
+		var recentHost = el('div', { class: 'run-recent', hidden: true }, [
+			el('div', { class: 'run-recent-h' }, [
+				el('span', { text: CFI.T('测速过程 · 最近 8 条') }), recentElapsed
+			]),
+			recentList
+		]);
+
+		function elapsedText(started) {
+			if (!started) return '';
+			var t = Date.parse(started);
+			if (!isFinite(t)) return '';
+			var s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+			var mm = Math.floor(s / 60), ss = s % 60;
+			return CFI.T('已运行 %s:%s').format(
+				(mm < 10 ? '0' : '') + mm, (ss < 10 ? '0' : '') + ss);
+		}
 
 		function statNode(label, warn) {
 			var v = el('b', { class: 'n', text: F.DASH });
@@ -190,6 +210,7 @@
 				el('div', { class: 'right board-tools' }, [ sortSel, filterSel, search, colMenu ])
 			]),
 			progressHost,
+			recentHost,
 			boardWrap
 		]);
 
@@ -590,6 +611,23 @@
 						progress.update(st);
 					}
 				}
+			}
+			/* r198：只在 running 时显示流水；内容没变就不重绘，避免每 3 秒
+			 * 把整个列表换掉（滚动位置/选中态都会丢）。耗时文本单独更新。 */
+			recentHost.hidden = st.state !== 'running';
+			if (st.state === 'running') {
+				var arr = st.recent || [];
+				var rk = arr.join('|');
+				if (rk !== last.recent) {
+					last.recent = rk;
+					CFI.dom.clear(recentList);
+					for (var ri = 0; ri < arr.length; ri++)
+						recentList.appendChild(el('div',
+							{ class: 'run-recent-line', text: String(arr[ri]) }));
+				}
+				recentElapsed.textContent = elapsedText(st.started);
+			} else {
+				last.recent = '';
 			}
 			var kb = CFI.store.boardKey(st);
 			if (kb !== last.board) {

@@ -3376,6 +3376,27 @@ merge_progress() {
 		{ print }'
 }
 
+# r198：把日志尾部 8 行并进 running 状态，页面就能在进度条下面直接看到
+# 「现在跑到哪一步、刚才发了什么」，不用切到日志页、也不用新增 RPC。
+# 为什么只取 8 行：status 每 3 秒被拉一次，日志全文会顶穿 rpcd 的响应体；
+# 而一轮真正需要的过程信息（社区源、候选池、门槛、粗筛/精测、达标统计）
+# 本来就是逐行写进日志的。日志里带 JSON 片段（分类 {"none":...}），
+# 双引号和反斜杠必须转义，否则整份 status 会 parse_error。
+merge_recent() {
+	# 用 sed 做 JSON 转义：BusyBox awk 的 gsub 替换串、以及逐字符比较双引号
+	# 在真机上都会把 " 原样漏出（实测整份 status 直接 parse_error）。
+	# sed 的这两条替换在 GNU/BusyBox 上语义一致，已在真机逐行验过。
+	# awk 只负责把转义后的行包成数组，printf 用 %s 不会再解释一次反斜杠。
+	rj=$(tail -n 8 "$LOG" 2>/dev/null | sed 's/\\/\\\\/g; s/"/\\"/g' | awk '
+		{ if (n++) printf ","; printf "\"%s\"", $0 }')
+	# 必须走环境变量而不是 awk -v：-v 赋值会解释反斜杠序列，把刚转义好的
+	# \" 又吃回成 "，整份 status 照样 parse_error（真机第二次踩到）。
+	RECENT_JSON=$rj awk '
+		{ if ((i = match($0, /\}[ \t]*$/)) > 0)
+			$0 = substr($0, 1, i - 1) ",\"recent\":[" ENVIRON["RECENT_JSON"] "]" "}" }
+		{ print }'
+}
+
 show_status() {
 	load_config
 	if [ ! -s "$STATUS" ]; then
@@ -3393,7 +3414,7 @@ show_status() {
 	if grep -q '"state":"running"' "$STATUS" 2>/dev/null; then
 		# 正在跑的这一轮才有进度可给；done/error 状态不带这几个键，
 		# 免得页面把「上一轮的进度残影」当成这一轮的
-		merge_progress <"$STATUS" | merge_cfg
+		merge_progress <"$STATUS" | merge_recent | merge_cfg
 		return 0
 	fi
 	merge_cfg <"$STATUS"
