@@ -2730,14 +2730,57 @@ daily_next_epoch() {
 		}'
 }
 
+# 时刻表模式下「本轮要等的那个触发点」。r197 修 P1：必须记住它。
+# 为什么：daemon 每片睡 min(60,left)，最后一觉几乎必然落在触发点的整秒上；
+# 若每片都重新算「严格晚于此刻的最早触发点」，那一刻 cand == now 就不再满足
+# > now，会直接跳到下一个点、left 变成几小时 —— r196 真机上 02:00 的自动轮
+# 就是这样被跳过的（lastrun 停在 00:37，日志 01:00–02:59 全空）。
+# 记住 due 之后判据变成 now >= DUE_EPOCH，跨过整秒也不会丢。
+# 只存在 daemon 这个常驻进程的内存里、不落盘：开机本来就该重新算下一个未来
+# 时刻（错过不补跑），落盘反而要处理过期值。
+DUE_EPOCH=0
+DUE_RULES=''
+SCHED_LEFT=0
+
+schedule_disarm() {
+	DUE_EPOCH=0
+	DUE_RULES=''
+}
+
 # daemon 的守门入口：留空时刻表就完全走旧的 due_gap。
+# 结果写进全局 SCHED_LEFT 而不是 printf：调用方若用 $(schedule_due) 命令替换，
+# 函数会在子 shell 里跑，DUE_EPOCH / DUE_RULES 的赋值全部丢失，「记住待触发点」
+# 就成了空话（r197 第一次实现就是这么错的，真机探针当场复现跳点）。
+# CFIP_NOW / CFIP_DAY0 只给离线自检注入模拟时钟，生产环境不设。
 schedule_due() {
-	[ -n "${C_DAILY:-}" ] || { due_gap; return 0; }
-	n=$(daily_next_epoch)
-	now=$(date +%s)
-	left=$((n - now))
+	if [ -z "${C_DAILY:-}" ]; then
+		SCHED_LEFT=$(due_gap)
+		return 0
+	fi
+	now=${CFIP_NOW:-$(date +%s)}
+	rules=$C_DAILY
+	if [ "$DUE_EPOCH" -le 0 ] 2>/dev/null || [ "$rules" != "$DUE_RULES" ]; then
+		if [ -n "${CFIP_NOW:-}" ]; then
+			DUE_EPOCH=$(daily_next_epoch "$now")
+		else
+			DUE_EPOCH=$(daily_next_epoch)
+		fi
+		DUE_RULES=$rules
+	fi
+	left=$((DUE_EPOCH - now))
+	# 时钟回跳（开机后 NTP 校正）会把 left 撑成好几天；正常最多等 24 小时，
+	# 超了就重算一次，别死等。
+	if [ "$left" -gt 90000 ] 2>/dev/null; then
+		if [ -n "${CFIP_NOW:-}" ]; then
+			DUE_EPOCH=$(daily_next_epoch "$now")
+		else
+			DUE_EPOCH=$(daily_next_epoch)
+		fi
+		DUE_RULES=$rules
+		left=$((DUE_EPOCH - now))
+	fi
 	[ "$left" -gt 0 ] 2>/dev/null || left=0
-	printf '%s\n' "$left"
+	SCHED_LEFT=$left
 }
 
 # ---------------- DNS 同步（可选，默认关）---------------------------------
@@ -4267,12 +4310,33 @@ selftest() {
 	check '状态：时刻表模式下仍给页面 next_run' \
 		"$(next_run_epoch | grep -c ',"next_run":[0-9]')" '1'
 	printf '%s\n' "$(date +%s)" >"$LAST_RUN"
+	schedule_due
 	check '守门：刚手动跑过也不影响时刻表' \
-		"$([ "$(schedule_due)" -gt 0 ] && echo ok || echo ng)" 'ok'
+		"$([ "$SCHED_LEFT" -gt 0 ] && echo ok || echo ng)" 'ok'
 	C_DAILY=''
-	sd=$(schedule_due); dg=$(due_gap)
+	schedule_due; sd=$SCHED_LEFT; dg=$(due_gap)
 	check '守门：时刻表留空时与旧周期完全一致（差 ≤1 秒）' \
 		"$([ $((sd - dg)) -le 1 ] && [ $((dg - sd)) -le 1 ] && echo ok || echo ng)" 'ok'
+	# ---- r197 整点边界（P1）：睡到触发点整秒时不许跳点 ----
+	CFIP_DAY0=1000000000
+	C_DAILY='02:00,08:00,14:00,20:00'
+	CFIP_NOW=$((CFIP_DAY0 + 2 * 3600 - 1))
+	schedule_disarm
+	schedule_due
+	check 'r197 整点前 1 秒：还剩 1 秒' "$SCHED_LEFT" '1'
+	CFIP_NOW=$((CFIP_DAY0 + 2 * 3600))
+	schedule_due
+	check 'r197 睡到 02:00:00 整点：仍判到点（r196 在这里跳到 08:00）' "$SCHED_LEFT" '0'
+	CFIP_NOW=$((CFIP_DAY0 + 2 * 3600 + 1))
+	schedule_due
+	check 'r197 整点后 1 秒：仍是到点（不会倒回去重算）' "$SCHED_LEFT" '0'
+	schedule_disarm
+	schedule_due
+	check 'r197 跑完 disarm 后重新 arm 到 08:00' "$SCHED_LEFT" "$((6 * 3600 - 1))"
+	C_DAILY='02:00,03:00,08:00'
+	schedule_due
+	check 'r197 改了时刻表：立刻按新规则重算到 03:00' "$SCHED_LEFT" "$((3600 - 1))"
+	unset CFIP_NOW
 	unset CFIP_DAY0
 	rm -f "$LAST_RUN"
 
@@ -4675,25 +4739,29 @@ case "${1:-}" in
 				 load_config
 				 if [ "$(cfg enabled 0)" != 1 ]; then
 					 # 关掉时空转短睡，LuCI 里打开开关一分钟内就开始测，
-					 # 不需要重启服务。
+					 # 不需要重启服务。顺手清掉待触发点：下次打开时重新算
+					 # 「下一个未来时刻」，不能拿关掉前那个已过期的点。
 					 sleep 60
+					 schedule_disarm
 					 continue
 				 fi
 				 # 守门：留空 daily_times 时按 interval_hours，填了就按每天固定时刻。
 				 # 没有这道门的话，procd 的 reload 触发（改完 UCI 点「保存并应用」
 				 # → init.d 的 reload_service = stop+start）会让每次改配置都白烧一轮
 				 # ——真机一轮约 104.86MB，而他改的往往只是一条源地址。
-				 # 每片最多睡 60 秒，且睡到 min(60,left)：时刻表是绝对时刻，睡过头
-				 # 会直接跳过那个点（旧 due_gap 相对 lastrun，睡过头仍得到 0）。
+				 # 每片最多睡 60 秒，且睡到 min(60,left)。schedule_due() 会记住
+				 # 本轮待触发的绝对时刻，睡到整秒也不会把它算丢（r197）。
 				 # 每片重读配置：关总开关、改周期、改时刻表都能在一分钟内反映。
-				 left=$(schedule_due)
+				 schedule_due; left=$SCHED_LEFT
 				 while [ "$left" -gt 0 ]; do
 					 if [ "$left" -lt 60 ]; then sleep "$left"; else sleep 60; fi
 					 load_config
 					 [ "$(cfg enabled 0)" = 1 ] || break
-					 left=$(schedule_due)
+					 schedule_due; left=$SCHED_LEFT
 				 done
 				 [ "$(cfg enabled 0)" = 1 ] || continue
+				 # 到点了：先清掉本次触发点，跑完外层循环会重新 arm 到下一个点。
+				 schedule_disarm
 				 do_run || log '本轮异常结束'
 			 done ;;
 	diag)    do_diag ;;

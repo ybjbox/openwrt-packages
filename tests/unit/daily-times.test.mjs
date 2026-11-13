@@ -76,9 +76,16 @@ test('r196 静态契约：字段、预览挂载、状态文案、引擎守门都
 		assert.ok(src.includes(needle), '视图缺少 ' + needle);
 	for (const needle of [
 		'daily_times_norm()', 'daily_next_epoch()', 'schedule_due()',
-		'left=$(schedule_due)', '"daily_times":"', 'daily_times 格式不合法'
+		'schedule_due; left=$SCHED_LEFT', '"daily_times":"', 'daily_times 格式不合法'
 	])
 		assert.ok(engine.includes(needle), '引擎缺少 ' + needle);
 	/* 不能退化成「永远不测」：非法时刻必须整条回退旧周期 */
 	assert.ok(/C_DAILY=''/.test(engine), '非法时刻要清空 C_DAILY 回退 due_gap');
+	/* r197 P1：daemon 睡到触发点整秒后，不能重算把该点跳过去 */
+	for (const needle of ['DUE_EPOCH=0', 'schedule_disarm()', 'DUE_RULES', 'SCHED_LEFT=0'])
+		assert.ok(engine.includes(needle), 'r197 缺少记住待触发点的 ' + needle);
+	assert.ok(!/left=\$\(schedule_due\)/.test(engine),
+		'schedule_due 不许用命令替换调用：子 shell 会丢掉 DUE_EPOCH');
+	assert.ok(/sleep 60\s*\n\s*schedule_disarm/.test(engine),
+		'关总开关时要 disarm，重新打开才不会拿过期触发点立刻起轮');
 });
