@@ -425,13 +425,20 @@
 				[ CFI.T('抖动'), F.ms(it.jitter_ms) + ' ms' ],
 				[ 'CF-RAY', it.ray_ok == null ? F.DASH : (Number(it.ray_ok) ? CFI.T('已验到') : CFI.T('未验到')) ]
 			];
-			var list = el('dl', { class: 'kv' });
-			rows.forEach(function (r) {
-				list.appendChild(el('dt', { text: r[0] }));
-				var dd = el('dd', { class: 'n' }, [ el('span', { text: r[1] }), r[2] ? el('span', { class: 'colo-name', text: r[2] }) : null ]);
-				list.appendChild(dd);
+			/* r201：拆成左右两栏（各占一半）。12 项单列时弹窗右侧整片空着，
+			   拆开按原顺序前后切，窄屏 CSS 退回单列仍是原顺序，不会错位。 */
+			var kv2 = el('div', { class: 'kv2' });
+			var half = Math.ceil(rows.length / 2);
+			[0, half].forEach(function (from) {
+				var list = el('dl', { class: 'kv' });
+				rows.slice(from, from + half).forEach(function (r) {
+					list.appendChild(el('dt', { text: r[0] }));
+					var dd = el('dd', { class: 'n' }, [ el('span', { text: r[1] }), r[2] ? el('span', { class: 'colo-name', text: r[2] }) : null ]);
+					list.appendChild(dd);
+				});
+				kv2.appendChild(list);
 			});
-			var kids = [ list ];
+			var kids = [ kv2 ];
 			var tb = timingBlock(it);
 			if (tb)
 				kids.push(tb);
