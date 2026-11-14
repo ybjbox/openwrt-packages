@@ -230,3 +230,23 @@ test('CSS：显示密码按钮有键盘焦点环，且不波及其它按钮（�
 	assert.ok(!/\.cfp button:focus-visible/.test(css),
 		'作用域不许放宽到 .cfp 下所有按钮');
 });
+
+test('CSS：头部状态胶囊与按钮同高（r200）', () => {
+	/* 真机量到：胶囊 24px、旁边按钮 40px，间距都是 8px、中心也对齐 ——
+	 * 别扭全来自体型差一整号。修法是让高度跟着行高走（align-self: stretch），
+	 * 移动端按钮 44px 时它自动跟到 44px，不写死数值；形状仍保持胶囊，
+	 * 圆角改成和按钮一样的 8px 会被当成第三个按钮（已做过对比图）。 */
+	const css = read();
+	const start = css.indexOf('.cfp-chip {');
+	assert.ok(start >= 0, '没有找到 .cfp-chip 规则');
+	const body = css.slice(css.indexOf('{', start) + 1, css.indexOf('}', start));
+	assert.match(body, /align-self:\s*stretch/, '胶囊要跟着行高走');
+	assert.ok(!/padding:\s*3px 10px/.test(body), '别再用 3px 上下内边距把它压回 24px');
+	assert.match(body, /font-size:\s*13px/, '字号跟按钮看齐');
+	assert.match(body, /border-radius:\s*999px/, '保留胶囊形');
+
+	const dotAt = css.indexOf('.cfp-chip .dot {');
+	assert.ok(dotAt >= 0, '没有找到圆点规则');
+	const dot = css.slice(css.indexOf('{', dotAt) + 1, css.indexOf('}', dotAt));
+	assert.match(dot, /width:\s*7px/, '圆点跟着字号放大到 7px');
+});

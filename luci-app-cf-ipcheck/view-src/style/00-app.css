@@ -584,12 +584,18 @@
 .cfp-sub { margin: 4px 0 0; color: var(--cfi-muted); font-size: 13px; line-height: 1.55; }
 .cfp-head-acts { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .cfp-chip {
-	display: inline-flex; align-items: center; gap: 6px;
-	border-radius: 999px; padding: 3px 10px; font-size: 12px;
+	display: inline-flex; align-items: center; gap: 7px;
+	/* r200：跟旁边两个按钮同高。胶囊只有 24px 高、按钮 40px 时，它夹在左端会
+	 * 小一整号（真机量到 24 vs 40），看着像没对齐；间距其实都是 8px、中心也对齐，
+	 * 别扭全来自体型差。align-self: stretch 让高度跟着行高走（移动端按钮 44px 时
+	 * 它自动 44px），不写死数值。形状仍保持胶囊 —— 圆角跟按钮一致时（8px）
+	 * 会被当成第三个按钮。 */
+	align-self: stretch;
+	border-radius: 999px; padding: 0 13px; font-size: 13px;
 	border: 1px solid var(--cfi-line-strong); color: var(--cfi-muted);
 	background: var(--cfi-card);
 }
-.cfp-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.cfp-chip .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .cfp-chip.t-ok { color: var(--cfi-ok); border-color: color-mix(in srgb, var(--cfi-ok) 28%, var(--cfi-line)); background: color-mix(in srgb, var(--cfi-ok) 8%, var(--cfi-card)); }
 .cfp .cfp-chip.t-run { color: inherit; border-color: color-mix(in srgb, var(--cfi-primary) 28%, var(--cfi-line)); background: color-mix(in srgb, var(--cfi-primary) 8%, var(--cfi-card)); }
 .cfp-chip.t-run .dot { animation: cfi-pulse 1.4s ease-in-out infinite; }
