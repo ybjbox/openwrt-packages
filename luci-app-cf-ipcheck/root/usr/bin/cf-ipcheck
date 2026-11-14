@@ -91,6 +91,13 @@ LOGWRITES=0
 LOG_TAIL_BYTES=61440
 LOCK=$RUN_DIR/lock
 STOP=$RUN_DIR/STOP
+# r199：起轮标记。页面那个「最近 8 条」窗口按 tail 取文件末尾，刚起轮时本轮还没写
+# 几行，露出来的前几行其实是上一轮的收尾（真机实测：起轮后 3 秒内小窗第一行还是
+# 上一轮的「完成 08:57」）。所以每轮第一件事写一行固定标记，取流水时从**最后一条**
+# 标记切起 —— 本轮不足 8 行就只给这几行，不掺上一轮的。
+# 为什么用行号定位而不是记字节偏移：trim_log 会在轮次中间把日志截半，字节偏移当场
+# 失效、整轮都取不到流水；行号被截掉只是退回「整段尾巴」，退化是软的。
+ROUND_MARK='===== 新一轮开始 ====='
 # 锁的最长寿命：进程被 OOM 杀掉后 pid 可能被复用，超过这个时间就当作陈旧锁回收。
 LOCK_MAX=21600
 # 基础件（find_bin / valid_ip4 / now_iso）与 apply-dns.sh 共用一份，见 lib.sh。
@@ -2830,6 +2837,9 @@ do_run() {
 		log '已有实例在运行，跳过本轮'
 		return 0
 	fi
+	# r199：起轮标记必须在锁之后写 —— 抢不到锁的那一轮根本没开始，写了标记反倒会把
+	# 「跳过本轮」伪装成新一轮的起点。也要早于 cfg_warn_flush：配置告警属于这一轮。
+	log "$ROUND_MARK"
 	# 配置告警统一在这里落地（r89）：load_config 读到的脏值/超范围/被整理过的域名
 	# 先攒在 CFG_WARN 里，只读子命令一个字都不写日志。放在锁之后、真正开跑之前，
 	# 这样既不会因为「已有实例在跑，跳过本轮」白写一次，也不会散落在轮次中间。
@@ -3376,6 +3386,24 @@ merge_progress() {
 		{ print }'
 }
 
+# r199：只吐「本轮」的最近 8 行（含起轮标记本身）。单独拆出来是为了能在真机上
+# 直接验：`CFIP_RUN_DIR=... cf-ipcheck _recent`，不用真跑一轮。
+recent_tail() {
+	# 起轮标记的行号，一趟 awk 数出来：status 每 3 秒被拉一次，grep -n | tail | cut
+	# 是三个进程，没必要。参数仍走 ENVIRON 而不是 awk -v —— -v 会解释一层反斜杠，
+	# 同一份文件里已经栽过一次（RECENT_JSON）；标记本身没有反斜杠也不该留这个口子。
+	# 日志里没有标记（升级前写的老日志、或整段被 trim 掉）时 NR 从未赋值，打印 0。
+	mark=$(MARK="$ROUND_MARK" awk '
+		index($0, ENVIRON["MARK"]) { n = NR }
+		END { print n + 0 }' "$LOG" 2>/dev/null)
+	case "${mark:-}" in ''|*[!0-9]*) mark=0 ;; esac
+	if [ "$mark" -gt 0 ]; then
+		tail -n +"$mark" "$LOG" 2>/dev/null | tail -n 8
+	else
+		tail -n 8 "$LOG" 2>/dev/null
+	fi
+}
+
 # r198：把日志尾部 8 行并进 running 状态，页面就能在进度条下面直接看到
 # 「现在跑到哪一步、刚才发了什么」，不用切到日志页、也不用新增 RPC。
 # 为什么只取 8 行：status 每 3 秒被拉一次，日志全文会顶穿 rpcd 的响应体；
@@ -3387,7 +3415,7 @@ merge_recent() {
 	# 在真机上都会把 " 原样漏出（实测整份 status 直接 parse_error）。
 	# sed 的这两条替换在 GNU/BusyBox 上语义一致，已在真机逐行验过。
 	# awk 只负责把转义后的行包成数组，printf 用 %s 不会再解释一次反斜杠。
-	rj=$(tail -n 8 "$LOG" 2>/dev/null | sed 's/\\/\\\\/g; s/"/\\"/g' | awk '
+	rj=$(recent_tail | sed 's/\\/\\\\/g; s/"/\\"/g' | awk '
 		{ if (n++) printf ","; printf "\"%s\"", $0 }')
 	# 必须走环境变量而不是 awk -v：-v 赋值会解释反斜杠序列，把刚转义好的
 	# \" 又吃回成 "，整份 status 照样 parse_error（真机第二次踩到）。
@@ -4832,5 +4860,8 @@ case "${1:-}" in
 		# $2 = vfields.tsv 路径，stdin = colored.tsv
 		csv_rows "${2:-/dev/null}" ;;
 	_locklive) lock_live && echo alive || echo dead ;;
+	# r199：本次运行的流水切片（只给本轮的行）。离线可跑，真机上用
+	# CFIP_RUN_DIR 指一份造好的日志就能验「起轮前不掺上一轮」。
+	_recent) recent_tail ;;
 	*)       usage; exit 2 ;;
 esac

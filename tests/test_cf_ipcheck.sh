@@ -244,6 +244,59 @@ case "$got" in
 esac
 rm -f "$RUN/lock"
 
+# r199：运行流水只给「本轮」。构造一份「上一轮尾巴 + 起轮标记 + 本轮开头」，_recent
+# 必须从最后一条标记切起。这条只在 BusyBox 里才有意义 —— 它钉的是 grep -nF 的
+# 「行号:内容」、cut -d: -f1 的取字段，以及 tail -n +N 的起始行语义。
+mark='===== 新一轮开始 ====='
+{
+	printf '%s\n' '2026-11-14T08:57:06+0800 上一轮收尾 A'
+	printf '%s\n' '2026-11-14T08:57:07+0800 上一轮收尾 B'
+	printf '%s\n' "2026-11-14T08:57:07+0800 $mark"
+	printf '%s\n' '2026-11-14T09:20:01+0800 本轮第一行'
+	printf '%s\n' '2026-11-14T09:20:02+0800 本轮第二行'
+} >"$RUN/cf-ipcheck.log"
+got=$(sh "$BIN" _recent 2>/dev/null)
+want=$(printf '%s\n' "2026-11-14T08:57:07+0800 $mark" \
+	'2026-11-14T09:20:01+0800 本轮第一行' '2026-11-14T09:20:02+0800 本轮第二行')
+if [ "$got" = "$want" ]; then
+	echo '[PASS] _recent 从起轮标记切起，本轮才 2 行也不掺上一轮'
+else
+	echo "::error::_recent 切片不对，实际=<$(printf '%s' "$got" | tr '\n' '|')>"
+	rc=1
+fi
+
+# 本轮写到 12 行时仍只给末 8 行，且第一行不越回上一轮
+{
+	printf '%s\n' '2026-11-14T08:57:07+0800 上一轮收尾'
+	printf '%s\n' "2026-11-14T09:20:00+0800 $mark"
+	i=1
+	while [ "$i" -le 12 ]; do
+		printf '2026-11-14T10:%02d:00+0800 本轮第 %s 行\n' "$i" "$i"
+		i=$((i + 1))
+	done
+} >"$RUN/cf-ipcheck.log"
+got=$(sh "$BIN" _recent 2>/dev/null)
+cnt=$(printf '%s\n' "$got" | grep -c . || true)
+first=$(printf '%s\n' "$got" | sed -n '1p')
+last=$(printf '%s\n' "$got" | sed -n '8p')
+if [ "$cnt" = 8 ] && [ "$first" = '2026-11-14T10:05:00+0800 本轮第 5 行' ] \
+	&& [ "$last" = '2026-11-14T10:12:00+0800 本轮第 12 行' ]; then
+	echo '[PASS] _recent 本轮超长时只留末 8 行，不越回上一轮'
+else
+	echo "::error::_recent 长轮切片不对 cnt=$cnt first=<$first> last=<$last>"
+	rc=1
+fi
+
+# 老日志里没有标记线（升级前写的）：退回整段尾巴，不能给空
+printf 'a1\na2\na3\n' >"$RUN/cf-ipcheck.log"
+got=$(sh "$BIN" _recent 2>/dev/null | tr '\n' ' ')
+if [ "$got" = 'a1 a2 a3 ' ]; then
+	echo '[PASS] _recent 没有起轮标记时退回整段尾巴'
+else
+	echo "::error::_recent 找不到标记时的退化不对，实际=<$got>"
+	rc=1
+fi
+
 rm -rf "$RUN" "$ETC" 2>/dev/null || true
 
 if [ "$rc" = 0 ]; then
