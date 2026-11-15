@@ -128,6 +128,7 @@ const documentStub = {
 	addEventListener() {},
 	removeEventListener() {}
 };
+const listenerLog = [];
 const windowStub = {
 	localStorage: {
 		getItem: (k) => (mem.has(k) ? mem.get(k) : null),
@@ -136,8 +137,8 @@ const windowStub = {
 	},
 	location: { hash: '' },
 	history: { replaceState: (a, b, h) => { windowStub.location.hash = h; } },
-	addEventListener() {},
-	removeEventListener() {}
+	addEventListener(type, fn, opt) { listenerLog.push({ on: 1, type, fn, capture: !!opt }); },
+	removeEventListener(type, fn, opt) { listenerLog.push({ on: 0, type, fn, capture: !!opt }); }
 };
 const formStub = {
 	Map: function () {
@@ -164,6 +165,30 @@ function tableParts(table) {
 }
 
 /* ---- 1. 表格 keyed reconcile ------------------------------------------ */
+/* r209：Table 原来往 window 挂两个匿名闭包且从不摘；进出页面、重建表格都会累积。
+ * 这里真跑一遍 add/remove 的记录，要求成对、同引用、destroy 幂等。 */
+test('表格：window 监听器由 destroy 成对摘掉', () => {
+	const mark = listenerLog.length;
+	const t = CFI.ui.Table({
+		cols: [ { key: 'ip', h: 'IP' } ],
+		keyOf: (r) => r.ip,
+		rowSig: (r) => r.ip,
+		cell: (r) => CFI.dom.el('span', { text: r.ip })
+	});
+	const isPtr = (e) => e.type === 'mouseup' || e.type === 'touchend';
+	const added = listenerLog.slice(mark).filter((e) => e.on && isPtr(e));
+	assert.equal(added.length, 2, 'mouseup / touchend 各一个');
+	assert.equal(added[0].fn, added[1].fn, '共用一个具名函数，remover 才摘得掉');
+	assert.equal(typeof t.destroy, 'function', 'Table 必须暴露 destroy');
+	t.destroy();
+	const removed = listenerLog.slice(mark).filter((e) => !e.on && isPtr(e));
+	assert.equal(removed.length, 2, 'destroy 必须摘掉两条');
+	assert.equal(removed[0].fn, added[0].fn, '摘的必须是自己挂的那个引用');
+	t.destroy();
+	assert.equal(listenerLog.slice(mark).filter((e) => !e.on && isPtr(e)).length, 2,
+		'destroy 幂等，重复调不会多记');
+});
+
 test('表格：同 key 同内容不换行节点，只重建真正变化的那一行', () => {
 	const rows = [ { ip: '1.1.1.1', ms: 10 }, { ip: '2.2.2.2', ms: 20 } ];
 	const t = CFI.ui.Table({
@@ -942,4 +967,27 @@ test('版面节奏：栅格间距与卡片内距走同一对令牌', () => {
 	assert.match(css, /\.cfp \.card \{[^}]*padding:\s*var\(--cfi-pad\)/);
 	assert.match(css, /--cfi-gap:\s*18px;/, '间距档 18px');
 	assert.match(css, /--cfi-pad:\s*20px;/, '内距档 20px');
+});
+
+/* r209：#15 的收尾。删之前先把注释去掉 —— 说明「为什么删」的注释里自然会
+ * 出现这些类名，连注释一起判会假红。另外钉住列菜单三项各自有 hide- 规则：
+ * 审查时发现「吞吐」写了 hide-spd 却根本没有规则，那个复选框一直是摆设。 */
+test('死 CSS：旧头部类名不复活；列显隐每项都有规则', () => {
+	const cssPath = path.join(root, 'luci-app-cf-ipcheck', 'view-src', 'style', '00-app.css');
+	const css = fs.readFileSync(cssPath, 'utf8').replace(/\/\*[\s\S]*?\*\//g, ' ');
+	const runSrc = fs.readFileSync(path.join(root, 'luci-app-cf-ipcheck', 'view-src', '60-run.js'), 'utf8');
+	const at = runSrc.indexOf('var OPT_COLS = [');
+	assert.ok(at >= 0, '找不到列显隐菜单定义');
+	const keys = [...runSrc.slice(at, runSrc.indexOf('];', at)).matchAll(/key:\s*'([^']+)'/g)]
+		.map((m) => m[1]);
+	assert.ok(keys.length >= 3, '列菜单至少三项');
+	keys.forEach((k) => assert.match(css, new RegExp('\\.hide-' + k + '\\b'),
+		'列 ' + k + ' 被写进 hiddenCols 却没有隐藏规则'));
+	['tcp', 'tls', 'total', 'domain'].forEach((k) => assert.ok(
+		!new RegExp('\\.hide-' + k + '\\b').test(css), '旧列 ' + k + ' 的规则已无人触发'));
+	['cfp-status-line', 'cfp-lamp', 'cfp-pick', 'cfp-sched', 'cfp-status-acts',
+		'cfp-readouts', 'cfp-k', 'cfp-build'].forEach((c) => assert.ok(
+		!css.includes(c), '旧头部类名 ' + c + ' 没人构造，不许复活'));
+	assert.match(css, /@keyframes cfi-pulse/, '脉冲动画仍被状态胶囊使用');
+	assert.match(css, /\.logbox\.f-warn/, '日志过滤的 f-* 是动态拼的，不是死 CSS');
 });

@@ -134,25 +134,12 @@
    属于 r137 老样式，已删；改尺寸请改那一条。 */
 .cfp .ctl:focus-visible { outline: 2px solid var(--cfi-primary); outline-offset: 1px; }
 
-/* ---- 状态与读数 ------------------------------------------------------ */
-.cfp-status-line { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.cfp-lamp { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
-.cfp-lamp .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--cfi-ok); }
-.cfp-lamp.t-run .dot { background: var(--cfi-primary); animation: cfi-pulse 1.4s ease-in-out infinite; }
-.cfp-lamp.t-warn .dot { background: var(--cfi-warn); }
-.cfp-lamp.t-bad .dot { background: var(--cfi-bad); }
-.cfp-lamp.t-idle .dot { background: var(--cfi-muted); }
+/* ---- 读数组件 -------------------------------------------------------- */
+/* r209：旧「状态与读数」头部（cfp-status-line / cfp-lamp / cfp-pick /
+ * cfp-sched / cfp-status-acts / cfp-readouts / cfp-k / cfp-build）早就换成
+ * .cfp-head + .cfp-chip，包里再没有任何地方构造这些类名，整组删掉。
+ * @keyframes cfi-pulse 仍被 .cfp-chip.t-run .dot 用着，别顺手删。 */
 @keyframes cfi-pulse { 50% { opacity: .35; } }
-.cfp-pick-wrap { display: inline-flex; align-items: baseline; gap: 8px; min-width: 0; }
-.cfp-k { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--cfi-muted); }
-.cfp-pick { font-size: 18px; font-weight: 600; }
-.cfp-sched { font-size: 12px; }
-.cfp-status-acts { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-.cfp-build { font-size: 11px; }
-.cfp-readouts {
-	display: flex; flex-wrap: wrap; margin-top: 12px;
-	border-top: 1px solid var(--cfi-line);
-}
 .cfp .ro { flex: 1 1 8em; min-width: 0; padding: 8px 12px; border-left: 1px solid var(--cfi-line); }
 .cfp .ro:first-child { border-left: 0; padding-left: 0; }
 .cfp .ro-k { font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: var(--cfi-muted); white-space: nowrap; }
@@ -233,9 +220,11 @@
 .cfp th.sortable:focus-visible { outline: 2px solid var(--cfi-primary); outline-offset: -2px; }
 .cfp th.sortable[aria-sort="ascending"]::after { content: ' ↑'; color: var(--cfi-primary); }
 .cfp th.sortable[aria-sort="descending"]::after { content: ' ↓'; color: var(--cfi-primary); }
-.cfp .tbl-scroll.hide-tcp .c-tcp, .cfp .tbl-scroll.hide-tls .c-tls,
-.cfp .tbl-scroll.hide-total .c-total, .cfp .tbl-scroll.hide-colo .c-colo,
-.cfp .tbl-scroll.hide-q .c-q, .cfp .tbl-scroll.hide-domain .c-domain { display: none; }
+/* r209：列菜单现在只有 colo / spd / q 三项，旧四列（tcp/tls/total/domain）
+ * 早从 colsOf() 里消失；hide-tcp 等规则没人会触发。顺手补上一直缺的
+ * hide-spd —— 「吞吐」复选框写了类名却从来没被藏起来。 */
+.cfp .tbl-scroll.hide-colo .c-colo, .cfp .tbl-scroll.hide-q .c-q,
+.cfp .tbl-scroll.hide-spd .c-spd { display: none; }
 
 /* ---- 列显隐菜单 ------------------------------------------------------ */
 .cfp .cols { position: relative; }
@@ -502,12 +491,8 @@
 	   是死声明删掉，真机 390px 下 Tab 从 44px 掉回 39px、机房首列从 max-content
 	   变刚性 77px，已撤回。 */
 	.cfp-tabs .cbi-tab > a { padding: 8px 12px; min-height: 44px; }
-	.cfp-status-line { gap: 8px; }
-	.cfp-status-acts { width: 100%; margin-left: 0; }
-	.cfp-status-acts .btn { flex: 1 1 auto; justify-content: center; min-height: 44px; }
 	.cfp .ro { flex-basis: 45%; }
 	.cfp .ro:nth-child(odd) { border-left: 0; padding-left: 0; }
-	.cfp .tbl .c-tcp, .cfp .tbl .c-tls, .cfp .tbl .c-total, .cfp .tbl .c-domain { display: none; }
 	.cfp .dc > summary { grid-template-columns: minmax(5.5em, max-content) 4em 6em minmax(0, 1fr); }
 	.cfp .dnsrow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 	.cfp .dnsrow-h { display: none; }
@@ -1088,6 +1073,9 @@
 /* 420：吞吐标签、条形、数值保持一行，不再拆成两行 */
 @media (max-width: 767px) {
 	#view .cfp[class] .tbl td.c-spd { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+	/* r209：这条 display:flex 会压过顶层的 .hide-spd .c-spd{display:none}，
+	 * 窄屏要再压一次。特异性比上一行高（多两个类），与媒体块被挪到哪无关。 */
+	#view .cfp[class] .tbl-scroll.hide-spd td.c-spd { display: none; }
 	#view .cfp[class] .tbl td.c-spd::before { flex: 0 0 auto; }
 	#view .cfp[class] .tbl td.c-spd .spd { width: auto; flex: 0 0 auto; justify-content: flex-end; }
 	#view .cfp[class] .log-bar { gap: 8px; }

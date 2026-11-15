@@ -224,6 +224,10 @@
 		function makeTable() {
 			var st = lastSt;
 			var cols = colsOf(st);
+			/* r209：colsSig 变化（指标 / 单位 / 多域名）会整表重建，旧表那两个
+			 * window 监听器必须先摘掉再换，否则每次换口径都多留一对闭包。 */
+			if (table && table.destroy)
+				table.destroy();
 			table = CFI.ui.Table({
 				cols: cols,
 				/* 原来是「按首字节排序的可用 IP」，但用户能切成按速度 / 按机房，
@@ -302,15 +306,29 @@
 		}
 		var maxSpeed = 0;
 
-		function cellOf(it, i, c, st) {
-			if (c.key === 'rk')
-				return el('span', { class: 'rk n', text: String(i + 1) });
-			if (c.key === 'ip') {
-				var ipKids = [ el('span', { text: it.ip || '?' }) ];
-				if (i === 0)
-					ipKids.push(el('span', { class: 'lead', text: CFI.T('首选') }));
-				return el('span', { class: 'ip mono' }, ipKids);
-			}
+	/* r209：榜单能按速度/机房排序、也能只看某机房，但「首选」是引擎给出的
+	 * 本轮第一名，不该跟着用户的排序跑到任意一行去。表格的 # 列是当前视图
+	 * 行号；抽屉里的「引擎名次」是另一个口径，两者标签必须说清楚。 */
+	function leadIp(st) {
+		var items = st && st.items ? st.items : [];
+		return items.length ? String(items[0].ip || '') : '';
+	}
+	function engineRank(items, ip) {
+		for (var i = 0; i < items.length; i++)
+			if (String(items[i].ip) === String(ip))
+				return i + 1;
+		return null;
+	}
+
+	function cellOf(it, i, c, st) {
+		if (c.key === 'rk')
+			return el('span', { class: 'rk n', text: String(i + 1) });
+		if (c.key === 'ip') {
+			var ipKids = [ el('span', { text: it.ip || '?' }) ];
+			if (it.ip && String(it.ip) === leadIp(st))
+				ipKids.push(el('span', { class: 'lead', text: CFI.T('首选') }));
+			return el('span', { class: 'ip mono' }, ipKids);
+		}
 			if (c.key === 'code') {
 				var ok = it.code != null && it.code >= 200 && it.code < 300;
 				return el('span', { class: (ok ? 'ok' : 'warn') + ' n', text: it.code != null ? String(it.code) : F.DASH });
@@ -426,10 +444,7 @@
 
 		/* ---- 抽屉 ---------------------------------------------------- */
 		function rankOf(ip) {
-			for (var i = 0; i < lastItems.length; i++)
-				if (String(lastItems[i].ip) === String(ip))
-					return i + 1;
-			return null;
+			return engineRank(lastItems, ip);
 		}
 
 		/* 时序刻度：建连 / TLS / 等待首字节 / 传输，按总耗时占比 */
@@ -472,7 +487,7 @@
 				return el('p', { class: 'dim', text: CFI.T('这条 IP 已不在本轮榜单。') });
 			var unit = st.speed_unit === 'mib' ? ' MiB/s' : ' MB/s';
 			var rows = [
-				[ CFI.T('名次'), rankOf(it.ip) ? String(rankOf(it.ip)) : F.DASH ],
+				[ CFI.T('引擎名次'), rankOf(it.ip) ? String(rankOf(it.ip)) : F.DASH ],
 				[ CFI.T('HTTP'), it.code != null ? String(it.code) : F.DASH ],
 				[ CFI.T('TCP 建连'), F.ms(it.connect_ms) + ' ms' ],
 				[ CFI.T('TLS'), F.ms(it.tls_ms) + ' ms' ],
@@ -729,6 +744,8 @@
 				else
 					closeDrawer();
 			},
+			/* r209：外壳 teardown 时把表格的 window 监听器摘掉 */
+			destroy: function () { if (table && table.destroy) table.destroy(); },
 			onDrawerClosed: onDrawerClosed
 		};
 	}

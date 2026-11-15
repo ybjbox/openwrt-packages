@@ -246,7 +246,13 @@ parse_targets() {
 		[ -n "$_l" ] || continue
 
 		# shellcheck disable=SC2086
+		# r209：记录名允许 *（Cloudflare 通配记录，设置页的校验也放行），
+		# 不做 glob 保护的话，当前目录只要有个 cf.example.com，用户写的
+		# *.example.com 就会被悄悄换掉。这段 while 在管道的子 shell 里，
+		# set -f 只影响这一行拆分，出不了这个子 shell。
+		set -f
 		set -- $_l
+		set +f
 		_f=${1:-}
 		_c=${2:-1}
 		# 第 3 个 token 起：可能是 zone，也可能是 @机房码（两者顺序随意，@ 开头的一定是机房）
@@ -268,8 +274,13 @@ parse_targets() {
 			esac
 		done
 
+		# r209：跟设置页同一套字符集（55-form-schema.js 的 dns_targets.validate）
+		# 对齐：字母数字 . * _ -，必须含点；另外拒绝以点/连字符开头、连续点、
+		# 结尾是点。只要求「含一个点」时，; & / 这些会一路带到 API 查询串和
+		# JSON 里，既不合法也说不清错在哪。
 		case "$_f" in
 			'') printf '解析失败：缺记录名\n' >&2; continue ;;
+			*[!A-Za-z0-9.*_-]*|.*|-*|*..*|*.) printf '解析失败：%s 不是合法记录名（只允许字母、数字、点、连字符、下划线与通配 *）\n' "$_f" >&2; continue ;;
 			*.*) : ;;
 			*) printf '解析失败：%s 不像完整记录名（要写 cf.example.com 这种）\n' "$_f" >&2; continue ;;
 		esac
@@ -286,6 +297,10 @@ parse_targets() {
 			printf '解析失败：%s 推不出 zone，请在行尾写上 zone\n' "$_f" >&2
 			continue
 		fi
+		# zone 会拼进 /zones?name=...，字符集比记录名更窄（域名或 32 位 hex ID）
+		case "$_z" in
+			*[!A-Za-z0-9.-]*) printf '解析失败：%s 的 zone「%s」含非法字符\n' "$_f" "$_z" >&2; continue ;;
+		esac
 
 		printf '%s|%s|%s|%s\n' "$_f" "$_c" "$_z" "$_colo"
 	done | awk -F'|' '
@@ -480,6 +495,24 @@ cf.example.com 2
 	chk '记录名不像 FQDN → 丢弃' \
 		"$(parse_targets 'nohost 2' 'example.com' 2>/dev/null)" ''
 	chk '全空输入 → 空输出' "$(parse_targets '' 'example.com' 2>/dev/null)" ''
+
+	# ---- r209：glob 保护 + 记录名/zone 字符集（与设置页同一套口径）----
+	_globdir="${TMPDIR:-/tmp}/cfip-glob.$$"
+	mkdir -p "$_globdir" 2>/dev/null
+	: > "$_globdir/cf.example.com" 2>/dev/null
+	chk '通配记录名不被当前目录的文件名替换' \
+		"$(cd "$_globdir" && parse_targets '*.example.com' 'example.com' 2>/dev/null)" \
+		'*.example.com|1|example.com|'
+	rm -f "$_globdir/cf.example.com" 2>/dev/null
+	rmdir "$_globdir" 2>/dev/null
+	chk '下划线记录名照常放行' \
+		"$(parse_targets '_acme.example.com 1' 'example.com' 2>/dev/null)" '_acme.example.com|1|example.com|'
+	chk '记录名含分号 → 丢弃' \
+		"$(parse_targets 'cf.example.com;id 1' 'example.com' 2>/dev/null)" ''
+	chk '记录名含连续点 → 丢弃' \
+		"$(parse_targets 'cf..example.com 1' 'example.com' 2>/dev/null)" ''
+	chk 'zone 含 & 会被拼进查询串 → 丢弃' \
+		"$(parse_targets 'cf.example.com 1 example.com&x=1' '' 2>/dev/null)" ''
 
 	# ---- r110：记录名自动编号 ----
 	chk '自动编号：在第一段后插序号' "$(auto_name test.bjstudio.eu.org 2)" 'test2.bjstudio.eu.org'

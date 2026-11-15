@@ -126,3 +126,19 @@ test('r205 排序：probe_metric=tcp 时按 connect_ms 排，和列里显示的�
 	assert.deepEqual(sorter({ key: 'ttfb', dir: 'asc' }, ONE, 'mb', { probe_metric: 'tcp' }),
 		['y', 'x']);
 });
+
+test('r209 首选/名次：钉在引擎第一名，不跟当前排序跑', () => {
+	const fns = new Function(grab(run, 'function leadIp') + '\n'
+		+ grab(run, 'function engineRank')
+		+ ';return { leadIp: leadIp, engineRank: engineRank };')();
+	const view = sorter({ key: 'spd', dir: 'desc' }, BOARD);
+	assert.notEqual(view[0], BOARD[0].ip, '按速度排时第一行不是引擎第一名');
+	assert.equal(fns.leadIp({ items: BOARD }), BOARD[0].ip, '首选取 items[0]');
+	assert.equal(fns.leadIp({ items: [] }), '', '空榜单不产生首选');
+	assert.equal(fns.engineRank(BOARD, BOARD[0].ip), 1);
+	assert.equal(fns.engineRank(BOARD, view[0]), 4, '视图第 1 行的引擎名次是 4');
+	assert.equal(fns.engineRank(BOARD, '198.51.100.1'), null, '不在本轮榜单里');
+	assert.match(run, /String\(it\.ip\) === leadIp\(st\)/, '渲染必须用 leadIp 而不是视图下标');
+	assert.match(run, /CFI\.T\('引擎名次'\)/, '抽屉名次标签要写明口径');
+	assert.ok(!/if \(i === 0\)/.test(run), '不许再用 i===0 打首选');
+});

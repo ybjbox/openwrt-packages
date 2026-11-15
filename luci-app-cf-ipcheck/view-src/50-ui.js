@@ -191,29 +191,23 @@
 			}
 		}
 
+		/* r209：两个事件共用一个具名函数，才好在 destroy() 里按同一个引用摘掉。
+		 * 原来挂的是两个匿名闭包，每次进出页面 / 每次重建表格都会留 2 个。 */
+		function onPointerRelease() {
+			if (!pointerDown)
+				return;
+			pointerDown = 0;
+			if (pending) {
+				var q = pending;
+				pending = null;
+				apply(q);
+			}
+		}
 		tbody.addEventListener('mousedown', function () { pointerDown = 1; });
 		tbody.addEventListener('touchstart', function () { pointerDown = 1; });
 		try {
-			window.addEventListener('mouseup', function () {
-				if (!pointerDown)
-					return;
-				pointerDown = 0;
-				if (pending) {
-					var q = pending;
-					pending = null;
-					apply(q);
-				}
-			});
-			window.addEventListener('touchend', function () {
-				if (!pointerDown)
-					return;
-				pointerDown = 0;
-				if (pending) {
-					var q = pending;
-					pending = null;
-					apply(q);
-				}
-			});
+			window.addEventListener('mouseup', onPointerRelease);
+			window.addEventListener('touchend', onPointerRelease);
 		} catch (e) {}
 
 		if (p.onActivate) {
@@ -342,10 +336,25 @@
 
 		buildHead();
 		apply({ rows: p.rows || [], sort: p.sort, selected: p.selected });
+		var dead = 0;
 		return {
 			node: scroll,
 			update: update,
 			paintHead: paintHead,
+			/* r209：重建表格前与页面 teardown 时都要调；幂等，重复调不会误摘
+			 * 别人的监听器（同一个函数引用，removeEventListener 只摘自己那条）。 */
+			destroy: function () {
+				if (dead)
+					return;
+				dead = 1;
+				try {
+					window.removeEventListener('mouseup', onPointerRelease);
+					window.removeEventListener('touchend', onPointerRelease);
+				} catch (e) {}
+				pointerDown = 0;
+				pending = null;
+				hideTip();
+			},
 			focusKey: function (key) {
 				var tr = map[String(key)];
 				if (tr && tr.focus)

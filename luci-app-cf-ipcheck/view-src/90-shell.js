@@ -733,8 +733,17 @@
 				busyTick = false;
 				poll.remove(busyPulse);
 			}
-			if (shell && shell.drawer)
-				shell.drawer.destroy();
+			/* r209：每个面板可能挂过 window/document 上的东西，逐个给 destroy 机会；
+			 * 目前只有运行页的 Table，但以后加了别的不必再改这里。
+			 * 注意 panes 那层是 <section> 节点，面板对象在 runPane 等几个字段上。 */
+			if (shell) {
+				var panes = [ shell.runPane, shell.diagPane, shell.logsPane, shell.setPane ];
+				for (var pi = 0; pi < panes.length; pi++)
+					if (panes[pi] && panes[pi].destroy)
+						panes[pi].destroy();
+				if (shell.drawer)
+					shell.drawer.destroy();
+			}
 			store.destroy();
 			inflight = null;
 			shell = null;
