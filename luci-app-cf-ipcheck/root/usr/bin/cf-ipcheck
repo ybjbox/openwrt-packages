@@ -917,33 +917,210 @@ pool_official() {
 	fi
 	printf '%s\n' "$nets" | tr ' ' '\n' | grep . | expand_prefixes
 }
+# ---------------- 源健康账本（r206）-----------------------------------------
+# 为什么要有这本账：13 条社区源里两条 404，以前日志只留一句「社区源无结果」，
+# 而那句会被本轮后面几十行挤掉（页面「最近 8 条」只显示末尾），于是「有源死了
+# 两个月没人知道」。现在按 URL 记连续失败与下次重试时刻，status 里带出去给页面。
+#
+# 键用 URL 不用序号：用户删一行、插一行，序号整体挪位，账就记到别人头上。
+# 落在 $RUN_DIR（tmpfs）：重启丢账的代价只是每条源多试一次（404 约 0.1 秒），
+# 换来的是不写闪存 —— 这份数据每轮都在变，放 /etc 等于天天擦同一块。
+#
+# 文件格式（TSV）：<state> <fails> <last_ok> <next_try> <url>
+#   ok   = 本轮取到了 IP（失败数清零）
+#   gone = HTTP 404/410：地址没了，一天试一次（多半是仓库改名，等人改配置）
+#   fail = 超时 / 5xx / 200 但解析不出 IP：连 3 轮才开始退避（1h→2h→6h 封顶）
+# 三条路径都靠 URL 认，配置里改了地址就等于换了个新键，旧账自动作废 ——
+# 所以不需要「重置健康记录」这种按钮。
+
+# 源 URL -> 一句短名：GitHub 取 user/repo，其余取主机名。日志和页面共用。
+src_label() {
+	printf '%s\n' "${1:-}" | awk -F/ '
+	{
+		h = $3
+		if (h == "raw.githubusercontent.com" || h == "github.com" || h == "gist.githubusercontent.com")
+			print $4 "/" $5
+		else
+			print h
+	}'
+}
+
+# --max-filesize 挡的是「源突然吐出半个 GB」这种事故（落在 tmpfs 上等于直接 OOM）。
+# 老一些的 curl 不认这个参数，所以探一次再用：探不到就退回 grep 前那道 head -c。
+# 不能因为参数不认识就让 13 条源全判失败 —— 那会连锁到退避，把候选池饿死。
+src_maxfs() {
+	if "${CURL_BIN:-curl}" -sS --max-filesize 1048576 file:///dev/null -o "$NULL_DEV" >/dev/null 2>&1; then
+		printf -- '--max-filesize %s' "$CF_SRC_MAXBYTES"
+	fi
+	return 0
+}
+
+# 把配置里的源清单落到 src.list：awk 读多个文件要用真文件，BusyBox awk 对
+# 「"-" 当 stdin」的兼容性不值得赌。顺手把本轮结果文件清空。
+src_health_begin() {
+	printf '%s\n' $SOURCES >"$RUN_DIR/src.list" 2>/dev/null || :
+	: >"$RUN_DIR/src.res" 2>/dev/null || :
+	[ -f "$RUN_DIR/srchealth" ] || : >"$RUN_DIR/srchealth" 2>/dev/null || :
+}
+
+# 依据账本把源分成「本轮要试」与「跳过」两份。
+src_health_plan() {
+	: >"$RUN_DIR/src.try" 2>/dev/null || :
+	: >"$RUN_DIR/src.skip" 2>/dev/null || :
+	awk -F'\t' -v now="$(date +%s)" -v hf="$RUN_DIR/srchealth" -v tf="$RUN_DIR/src.try" -v sf="$RUN_DIR/src.skip" '
+		FILENAME == hf {
+			if (NF >= 5) { st[$5] = $1; nx[$5] = $4 + 0 }
+			next
+		}
+		{
+			if ($0 == "") next
+			if (($0 in nx) && nx[$0] > now) { print st[$0] "\t" nx[$0] "\t" $0 >> sf; next }
+			print $0 >> tf
+		}' "$RUN_DIR/srchealth" "$RUN_DIR/src.list"
+}
+
+# 记一条本轮结局：$1=ok|gone|fail，$2=url
+src_health_note() {
+	printf '%s\t%s\n' "$1" "$2" >>"$RUN_DIR/src.res" 2>/dev/null || :
+}
+
+# 把本轮结局并进账本。三条规则：
+#   1) 本轮跳过没测的源原样保留 —— 别因为"这次没测"把退避时间重置掉；
+#   2) ok 立刻清零；gone 排到 24 小时后；fail 连 3 轮后 1h/2h/6h；
+#   3) 本轮**一条都没成功** ⇒ 不记账。断网时 13 条会一起进黑名单，而下一轮
+#      候选池只剩官方网段（默认还是关的），等于自己把自己饿死。
+src_health_commit() {
+	_now=$(date +%s)
+	_n=$(awk 'END{print NR+0}' "$RUN_DIR/src.res" 2>/dev/null); _n=${_n:-0}
+	_ok=$(awk -F'\t' '$1 == "ok" {n++} END{print n+0}' "$RUN_DIR/src.res" 2>/dev/null); _ok=${_ok:-0}
+	if [ "${_n:-0}" -gt 0 ] && [ "${_ok:-0}" = 0 ]; then
+		log '本轮没有任何社区源有结果：按网络问题处理，不记入源健康账'
+		return 0
+	fi
+	# 写临时文件再 mv：绝不能直接往账本上覆盖写 —— awk 中途失败会留下半份账，
+	# 下一轮又按半份账算失败次数，越滚越歪。
+	awk -F'\t' -v now="$_now" -v hf="$RUN_DIR/srchealth" -v rf="$RUN_DIR/src.res" '
+		FILENAME == hf { if (NF >= 5) { st[$5] = $1; fl[$5] = $2 + 0; lo[$5] = $3 + 0; nx[$5] = $4 + 0 }; next }
+		FILENAME == rf { if (NF >= 2) res[$2] = $1; next }
+		{
+			u = $0
+			if (u == "") next
+			if (!(u in res)) {
+				if (u in st) print st[u] "\t" fl[u] "\t" lo[u] "\t" nx[u] "\t" u
+				next
+			}
+			s = res[u]
+			if (s == "ok") { print "ok\t0\t" now "\t0\t" u; next }
+			f = ((u in fl) ? fl[u] : 0) + 1
+			lok = ((u in lo) ? lo[u] : 0)
+			if (s == "gone") { print "gone\t" f "\t" lok "\t" now + 86400 "\t" u; next }
+			d = 0
+			if (f >= 3) { d = 3600; k = f - 3; while (k-- > 0) d *= 2; if (d > 21600) d = 21600 }
+			print "fail\t" f "\t" lok "\t" (d ? now + d : 0) "\t" u
+		}' "$RUN_DIR/srchealth" "$RUN_DIR/src.res" "$RUN_DIR/src.list" >"$RUN_DIR/srchealth.new" 2>/dev/null
+	if [ "$?" = 0 ]; then
+		mv -f "$RUN_DIR/srchealth.new" "$RUN_DIR/srchealth" 2>/dev/null || :
+	else
+		rm -f "$RUN_DIR/srchealth.new" 2>/dev/null
+		log '源健康账写入失败：本轮结果作废（下一轮重新累计）'
+	fi
+}
+
+# 给 status 用：异常条数、其中「地址已不存在」的条数、最多三条短名。
+# 一次 awk 算完：这是 3 秒一拍的路径，别在这里再拆三个进程。
+src_health_fields() {
+	# 从没跑过一轮时账本还不存在：照样给出 0，页面不用为「字段缺失」多写一条分支
+	if [ ! -f "$RUN_DIR/srchealth" ]; then
+		printf ',"src_bad":0,"src_gone":0,"src_bad_names":""'
+		return 0
+	fi
+	awk -F'\t' -v MAXN=3 '
+		function lbl(u,  a, h) {
+			gsub(/["\\]/, "", u)
+			sub(/^https?:\/\//, "", u)
+			split(u, a, "/")
+			h = a[1]
+			if (h == "raw.githubusercontent.com" || h == "github.com" || h == "gist.githubusercontent.com")
+				return a[2] "/" a[3]
+			return h
+		}
+		function nm(s) {
+			if (++c <= MAXN) names = (names == "" ? s : names "、" s)
+			else more = 1
+		}
+		NF >= 5 {
+			if ($1 == "gone") { n++; g++; nm(lbl($5)); next }
+			if ($1 == "fail" && $2 + 0 >= 3) { n++; nm(lbl($5)) }
+		}
+		END {
+			if (more) names = names "…"
+			printf ",\"src_bad\":%d,\"src_gone\":%d,\"src_bad_names\":\"%s\"", n + 0, g + 0, names
+		}' "$RUN_DIR/srchealth" 2>/dev/null
+}
+
 # $1 = 每个源最多贡献多少个候选（缺省不限量）。
 # 逐源定额而不是合并后再抽稀：一份 6000 条的前缀清单不该把一份 10 条的
 # 实测精选榜单淹掉 —— 源的价值不跟条数成正比。
 pool_community() {
 	per=${1:-0}
-	ptotal=0
-	for s in $SOURCES; do ptotal=$((ptotal + 1)); done
+	FSARG=$(src_maxfs)
+	src_health_begin
+	src_health_plan
+	ptotal=$(awk 'END{print NR+0}' "$RUN_DIR/src.try" 2>/dev/null); ptotal=${ptotal:-0}
 	pdone=0
-	for s in $SOURCES; do
-		out=$(curl -4 -fsSL --max-time 12 -A 'cf-ipcheck/1.0' "$s" 2>/dev/null | \
-			head -c "$CF_SRC_MAXBYTES" | \
-			grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?' | \
-			head -n "$CF_SRC_MAXPREFIX" | expand_prefixes | head -n "$CF_SRC_MAXLINES")
+	# 跳过的源只报一次总数（本轮开头一行），不再逐条刷日志 —— 那正是要消灭的噪音
+	skipn=$(awk 'END{print NR+0}' "$RUN_DIR/src.skip" 2>/dev/null); skipn=${skipn:-0}
+	if [ "${skipn:-0}" -gt 0 ]; then
+		sk=''
+		nsk=0
+		while IFS= read -r _ln; do
+			[ -n "$_ln" ] || continue
+			nsk=$((nsk + 1))
+			[ "$nsk" -le 3 ] && sk="$sk、$(src_label "$(printf '%s' "$_ln" | cut -f3)")(下次 $(date -d "@$(printf '%s' "$_ln" | cut -f2)" '+%m-%d %H:%M' 2>/dev/null || echo 稍后))"
+		done <"$RUN_DIR/src.skip"
+		log "跳过 $skipn 条故障源（未到重试时间）：${sk#、}"
+	fi
+	badn=0
+	bad=''
+	while IFS= read -r s; do
+		[ -n "$s" ] || continue
+		body=$RUN_DIR/src.body.$$
+		code=$("${CURL_BIN:-curl}" -4 -fsSL --max-time 12 -A 'cf-ipcheck/1.0' $FSARG -o "$body" -w '%{http_code}' "$s" 2>/dev/null)
+		rc=$?
+		out=''
+		if [ "$rc" = 0 ]; then
+			out=$(head -c "$CF_SRC_MAXBYTES" "$body" 2>/dev/null | \
+				grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?' | \
+				head -n "$CF_SRC_MAXPREFIX" | expand_prefixes | head -n "$CF_SRC_MAXLINES")
+		fi
+		rm -f "$body" 2>/dev/null
 		pdone=$((pdone + 1))
 		progress_set fetch $pdone $ptotal
-		if [ -z "$out" ]; then
-			# 记日志而不是静默：社区源改路径/换分支是很常见的事
-			log "社区源无结果: $s"
-		else
+		case "${code:-}" in ''|*[!0-9]*) code=000 ;; esac
+		if [ "$rc" = 0 ] && [ -n "$out" ]; then
+			src_health_note ok "$s"
 			nraw=$(printf '%s\n' "$out" | grep -c .)
 			if [ "$per" -gt 0 ] 2>/dev/null && [ "$nraw" -gt "$per" ]; then
 				out=$(printf '%s\n' "$out" | sort -u | sample_lines "$per")
 			fi
 			log "社区源 $nraw 个候选(取用 $(printf '%s\n' "$out" | grep -c .)): $s"
 			printf '%s\n' "$out"
+		else
+			badn=$((badn + 1))
+			[ "$badn" -le 4 ] && bad="$bad、$(src_label "$s")($code)"
+			if [ "$code" = 404 ] || [ "$code" = 410 ]; then
+				src_health_note gone "$s"
+			else
+				src_health_note fail "$s"
+			fi
 		fi
-	done
+	done <"$RUN_DIR/src.try"
+	# 一行汇总取代原先每条一行「社区源无结果」：13 条源里坏两条，以前是两行噪音，
+	# 而且都排在本轮末尾之外（页面小窗只看最后 8 行）。
+	if [ "${badn:-0}" -gt 0 ]; then
+		log "源体检：试了 $ptotal 条，$((ptotal - badn)) 条有结果，$badn 条异常：${bad#、}"
+	fi
+	src_health_commit
 }
 
 pool_reuse() {
@@ -3473,7 +3650,9 @@ do_run() {
 merge_cfg() {
 	# upload 也带上：页面的「上传 Gist」那一环节只有开了才会走，
 	# 不给这个信息就只能让那条一直挂着「待做」骗人。
-	awk -v e="\"enabled\":$(cfg_num enabled 0),\"interval\":$C_INTERVAL,\"daily_times\":\"$(json_str "$C_DAILY")\",\"upload\":$(cfg_num upload_gist 0)$(next_run_epoch)" '
+	# src_* 三个字段（r206）：异常源条数与短名，页面据此在诊断页顶部提示
+	# 「哪条源已经死了」—— 以前只有日志里一句「社区源无结果」。
+	awk -v e="\"enabled\":$(cfg_num enabled 0),\"interval\":$C_INTERVAL,\"daily_times\":\"$(json_str "$C_DAILY")\",\"upload\":$(cfg_num upload_gist 0)$(next_run_epoch)$(src_health_fields)" '
 		{ if ((i = match($0, /\}[ \t]*$/)) > 0) $0 = substr($0, 1, i - 1) "," e "}" }
 		{ print }'
 }
@@ -4910,6 +5089,71 @@ FUICI
 	check 'CFG_SEEN=0 退回逐条 uci get（假 uci 的 get 返回失败 ⇒ 走默认）' "$(cfg enabled 'DEF')" 'DEF'
 	UCI_BIN=$_uci_save; HAS_UCI=$_has_save; CFG_SEEN=$_cfgseen_save
 	rm -f "$RUN_DIR/fake-uci"
+	# ---- 源健康账本（r206）----
+	# 这段单独换一个 RUN_DIR：账本是「每轮会被改写」的状态文件，混在别的用例
+	# 目录里容易被前面的 rm 清掉，也容易把它写脏到别的断言里。
+	_rd_save=$RUN_DIR
+	RUN_DIR=$_rd_save/src-h
+	mkdir -p "$RUN_DIR" 2>/dev/null || :
+	_now=$(date +%s)
+	_sa='https://raw.githubusercontent.com/dead/repo/list.txt'
+	_sb='https://raw.githubusercontent.com/live/repo/list.txt'
+	_sc='https://raw.githubusercontent.com/flaky/repo/list.txt'
+	SOURCES="$_sa $_sb"
+	src_health_begin
+	check '账本：源清单落盘（一行一条）' "$(awk 'END{print NR+0}' "$RUN_DIR/src.list")" '2'
+	src_health_note fail "$_sa"
+	src_health_note fail "$_sb"
+	src_health_commit
+	check '账本：一条都没成功就不记账（断网别把源全冻住）' "$(awk 'END{print NR+0}' "$RUN_DIR/srchealth")" '0'
+	src_health_begin
+	src_health_note gone "$_sa"
+	src_health_note ok "$_sb"
+	src_health_commit
+	check '账本：404 记 gone 且排到 24 小时后' \
+		"$(awk -F'\t' -v u="$_sa" -v n="$_now" '$5==u && $1=="gone" && $2==1 && $4>=n+86300 && $4<=n+86500 {print "ok"}' "$RUN_DIR/srchealth")" 'ok'
+	check '账本：成功的源失败数清零、且不设重试时间' \
+		"$(awk -F'\t' -v u="$_sb" '$5==u {print $1"|"$2"|"$4}' "$RUN_DIR/srchealth")" 'ok|0|0'
+	src_health_plan
+	check '计划：gone 的源本轮跳过' "$(awk 'END{print NR+0}' "$RUN_DIR/src.skip")" '1'
+	check '计划：健康的源照常进待试清单' \
+		"$(awk -F'\t' -v u="$_sb" '$3==u {n++} END{print n+0}' "$RUN_DIR/src.skip")" '0'
+	check '计划：待试清单里正是健康那条' "$(awk 'END{print NR+0}' "$RUN_DIR/src.try")" '1'
+	# 连续失败：第 3 轮起 1 小时，之后翻倍，6 小时封顶。
+	# 每轮都捎一条 ok —— 否则会撞上「全失败不记账」那道护栏，测不到递增。
+	SOURCES="$_sa $_sb $_sc"
+	i=1
+	while [ "$i" -le 3 ]; do
+		src_health_begin
+		src_health_note fail "$_sc"
+		src_health_note ok "$_sb"
+		src_health_commit
+		i=$((i + 1))
+	done
+	check '账本：连续 3 轮失败后进入 1 小时退避' \
+		"$(awk -F'\t' -v u="$_sc" -v n="$_now" '$5==u && $1=="fail" && $2==3 && $4>=n+3400 && $4<=n+3700 {print "ok"}' "$RUN_DIR/srchealth")" 'ok'
+	i=1
+	while [ "$i" -le 4 ]; do
+		src_health_begin
+		src_health_note fail "$_sc"
+		src_health_note ok "$_sb"
+		src_health_commit
+		i=$((i + 1))
+	done
+	check '账本：退避 6 小时封顶（第 7 轮仍失败也不再加倍）' \
+		"$(awk -F'\t' -v u="$_sc" -v n="$_now" '$5==u && $2==7 && $4>=n+21500 && $4<=n+21700 {print "ok"}' "$RUN_DIR/srchealth")" 'ok'
+	check '账本：跳过的源不会被"这次没测"清掉' \
+		"$(awk -F'\t' -v u="$_sa" '$5==u {print $1}' "$RUN_DIR/srchealth")" 'gone'
+	check '状态字段：异常条数 / 404 条数 / 短名（GitHub 取 user/repo）' \
+		"$(src_health_fields)" ',"src_bad":2,"src_gone":1,"src_bad_names":"dead/repo、flaky/repo"'
+	SOURCES="$_sb"
+	src_health_begin
+	src_health_note ok "$_sb"
+	src_health_commit
+	check '账本：从配置里删掉的源，账也跟着消失（不会越攒越多）' \
+		"$(awk 'END{print NR+0}' "$RUN_DIR/srchealth")" '1'
+	RUN_DIR=$_rd_save
+	rm -rf "$_rd_save/src-h"
 	rm -f "$dcs" "$dct" "$dqu" "$RUN_DIR/dc.summary"
 	rm -rf "$T"
 	if [ -n "$ST_SCRATCH" ]; then

@@ -94,3 +94,36 @@ test('r205 保存配置不再重启服务', () => {
 	assert.match(reload, /^\s*start\s*$/m, '兜底分支里没有 start');
 });
 
+/* r206：源健康账本。行为断言在引擎自检里（要真 shell），这里钉四件"删了就不响"的事：
+ *   1. 一条都没成功时不记账 —— 断网会把 13 条源一起冻住，下一轮候选池直接空；
+ *   2. 404/410 判 gone 且排到 24 小时后，其它失败才走递增退避；
+ *   3. 退避 6 小时封顶，别让它翻倍翻到一个月后；
+ *   4. 账本落在 RUN_DIR（tmpfs），不是 /etc —— 每轮都写的文件不该天天擦闪存。 */
+test('r206 源健康账本：护栏与退避', () => {
+	const commit = engine.slice(engine.indexOf('src_health_commit() {'), engine.indexOf('\n}\n', engine.indexOf('src_health_commit() {')));
+	assert.match(commit, /_ok.*= 0.*\n.*不记入源健康账/s, '全失败不记账的护栏没了（断网会冻住所有源）');
+	assert.match(commit, /if \(s == "gone"\) \{ print "gone\\t" f "\\t" lok "\\t" now \+ 86400/, 'gone 没有排到 24 小时后');
+	assert.match(commit, /if \(d > 21600\) d = 21600/, '退避没有 6 小时封顶');
+	/* 账本路径必须跟着 RUN_DIR 走：写死 /etc 会每轮擦一次闪存，也逃过 selftest 的临时区 */
+	assert.match(engine, /"\$RUN_DIR\/srchealth"/, '账本没落在 RUN_DIR');
+	assert.ok(!/\/etc\/cf-ipcheck\/srchealth/.test(engine), '账本被写到 /etc 去了');
+	/* 404/410 与「超时/5xx/0 IP」要分开判，否则一个改名的仓库会被当成临时抖动一直重试 */
+	assert.match(engine, /\[ "\$code" = 404 \] \|\| \[ "\$code" = 410 \]/, '404/410 没有单独判成 gone');
+});
+
+test('r206 源健康账本：接进候选池与状态输出', () => {
+	const pool = engine.slice(engine.indexOf('pool_community() {'), engine.indexOf('\n}\n', engine.indexOf('pool_community() {')));
+	assert.match(pool, /src_health_begin/, 'pool_community 没有初始化账本（账本永远是空的）');
+	assert.match(pool, /src_health_plan/, 'pool_community 没有按账本分流（退避不生效）');
+	assert.match(pool, /src_health_note ok/, '成功的源没记账（失败数永远清不掉）');
+	assert.match(pool, /src_health_commit/, '本轮结果没有并进账本');
+	/* 每源一行「社区源无结果」正是要消灭的噪音：13 条源坏两条就是每轮两行 */
+	assert.ok(!/log "社区源无结果/.test(engine), '还在逐条打印「社区源无结果」');
+	assert.match(pool, /源体检：试了/, '没有一行汇总');
+	/* status 带出去给页面：3 秒一拍，只许一次 awk */
+	assert.match(engine, /src_health_fields\)"/, 'merge_cfg 没带 src_* 字段');
+	const f = engine.slice(engine.indexOf('src_health_fields() {'), engine.indexOf('\n}\n', engine.indexOf('src_health_fields() {')));
+	assert.match(f, /"src_bad":/, 'src_health_fields 没输出 src_bad');
+	assert.match(f, /"src_bad_names":/, 'src_health_fields 没输出短名');
+});
+

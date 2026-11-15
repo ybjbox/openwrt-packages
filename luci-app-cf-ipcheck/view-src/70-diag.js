@@ -42,7 +42,7 @@
 	}
 
 	function mount(actions) {
-		var last = { trace: '', src: '', pool: '', busy: '' };
+		var last = { trace: '', src: '', pool: '', busy: '', warn: '' };
 		var uiBusy = {};
 		var src = {
 			sec: null, dyn: null, rows: [], saved: [], synced: '',
@@ -51,6 +51,10 @@
 		};
 
 		var traceHost = el('div', { class: 'trace' });
+		/* r206：源健康提示。以前「哪条源死了」只在日志里留一句，会被本轮后续几十行
+		   挤掉（小窗只显示最后 8 行），于是能悄无声息烂上两个月。这里把 status 里
+		   带出来的条数摊在诊断页顶部 —— 打开页面就知道，不用先点「检测全部源」。 */
+		var srcWarn = el('div', { class: 'src-warn', hidden: true });
 		var btnCheck = CFI.ui.Button({ kind: 'primary', icon: 'probe', label: CFI.T('检测全部源'), onClick: actions.check });
 		var btnPool = CFI.ui.Button({ kind: 'quiet', label: CFI.T('预览候选池'), onClick: actions.pool });
 		var btnAdd = CFI.ui.Button({ kind: 'link', label: CFI.T('+ 添加一行'), onClick: function () { addRow('', true); } });
@@ -70,7 +74,7 @@
 			srcNote,
 			poolHost
 		]);
-		var body = el('div', { class: 'diag-body' }, [ traceHost, srcCard ]);
+		var body = el('div', { class: 'diag-body' }, [ srcWarn, traceHost, srcCard ]);
 
 		function currentUrls() {
 			var out = [];
@@ -125,6 +129,26 @@
 					' · ' + F.num(ips) + ' IP',
 				tone: (n >= 200 && n < 400) ? 'ok' : 'warn'
 			};
+		}
+
+		function paintWarn(st) {
+			CFI.dom.clear(srcWarn);
+			var n = Number(st.src_bad) || 0;
+			if (!n) {
+				srcWarn.hidden = true;
+				return;
+			}
+			srcWarn.hidden = false;
+			var names = st.src_bad_names ? String(st.src_bad_names) : '';
+			var gone = Number(st.src_gone) || 0;
+			var why = gone > 0
+				? CFI.T('其中 %s 条地址已不存在（HTTP 404），建议在源清单里更新或删掉。').format(String(gone))
+				: CFI.T('可能已更换路径，建议在源清单里更新或删掉。');
+			srcWarn.appendChild(CFI.ui.Msg({
+				tone: 'warn',
+				title: CFI.T('%s 条社区源没有结果').format(String(n)),
+				text: (names ? names + '。' : '') + why
+			}));
 		}
 
 		function paintNote() {
@@ -395,6 +419,8 @@
 			var k;
 			k = CFI.store.roundKey(st);
 			if (k !== last.trace) { last.trace = k; paintTrace(st); }
+			k = String(st.src_bad || 0) + '|' + String(st.src_gone || 0) + '|' + String(st.src_bad_names || '');
+			if (k !== last.warn) { last.warn = k; paintWarn(st); }
 			k = CFI.store.diagKey(state);
 			if (k !== last.src) { last.src = k; paintSources(state); }
 			k = JSON.stringify(state.pool || null);
