@@ -54,12 +54,17 @@ config global 'global'
 	list community_sources 'https://raw.githubusercontent.com/hubbylei/bestcf/main/bestcf.txt'
 	# gslege/CloudflareIP 多地区合并，100/100
 	list community_sources 'https://raw.githubusercontent.com/gslege/CloudflareIP/main/All.txt'
-	# LancelotRar/best-cf-ips（各家采集聚合），75/77
-	list community_sources 'https://raw.githubusercontent.com/LancelotRar/best-cf-ips/refs/heads/main/best-cf-ip-collected.txt'
+	# LancelotRar/best-cf-ips 扫描榜（2026-11-15 复量：200 个 IP 全在 CF 段）
+	# 作者把输出从 best-cf-ip-collected.txt 换成了 best-cf-ip-scanned-topN.txt 系列，
+	# 旧地址已 404；仓库本身还在且每天更新，别整条删掉。格式为 IP:443#机房，
+	# 引擎的 grep -oE 只取点分四段，端口与注释都会被丢掉。
+	list community_sources 'https://raw.githubusercontent.com/LancelotRar/best-cf-ips/main/best-cf-ip-scanned-top200.txt'
 	# joname1/BestCFip，90/91
 	list community_sources 'https://raw.githubusercontent.com/joname1/BestCFip/refs/heads/main/ipv4.txt'
-	# Senflare/Senflare-IP，27/27
-	list community_sources 'https://raw.githubusercontent.com/Senflare/Senflare-IP/refs/heads/main/IPlist-Pro.txt'
+	# Senflare/Senflare-IP 于 2026-11-15 移除：账号 github.com/Senflare 已 404，
+	# 仓库/raw/API 全 404，没有官方新地址；搜索引擎里的 166 commits / 56 stars 是缓存旧页。
+	# 不用 0~1 star 的第三方镜像顶替（数据陈旧、无许可证、来源不明）；换 URL 即换账本键，
+	# 旧的 gone 记录会在下一轮 src_health_commit 按当前清单自动淘汰。
 	# einsitang/my-fast-cf-ip，20/20
 	list community_sources 'https://raw.githubusercontent.com/einsitang/my-fast-cf-ip/refs/heads/master/fastips.txt'
 	# XIU2/CloudflareSpeedTest 官方段 CIDR 清单，25/25 段

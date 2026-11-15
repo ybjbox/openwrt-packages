@@ -100,9 +100,10 @@ curl -4 -o /dev/null -sS --connect-timeout 5 --max-time 8 \
 1. **Cloudflare 官方网段**：实时拉 `api.cloudflare.com/client/v4/ips`，把每个前缀
    按 **/24 粒度**展开取样（`/20` = 16 个候选）。现网 15 条 IPv4 前缀展开后是
    **5956 个**候选，远超预算。
-2. **社区优选源**（`community_sources`，默认十三条，2026-09-27 逐个核过）：
+2. **社区优选源**（`community_sources`，默认 **12 条**，2026-11-15 复量；原 13 条里
+   LancelotRar 换了输出文件、Senflare 账号消失，修法见本节末）：
 
-   「段内」列是拿 `api.cloudflare.com/client/v4/ips` 现算的（路由器上 13 条并发 4 秒跑完）。
+   「段内」列是拿 `api.cloudflare.com/client/v4/ips` 现算的（路由器上 12 条并发约 4 秒跑完）。
    `bestcf.pages.dev/*` 是别人的**聚合镜像**（缓存各家清单），右边写明了对应的**原始出处**；
    其余八条本身就是作者自己的 GitHub 仓库地址。
 
@@ -116,13 +117,12 @@ curl -4 -o /dev/null -sS --connect-timeout 5 --max-time 8 \
    | `raw.githubusercontent.com/ymyuuu/IPDB/main/BestCF/bestcfv4.txt` | 10 | 10 | 原始仓库 ymyuuu/IPDB |
    | `raw.githubusercontent.com/hubbylei/bestcf/main/bestcf.txt` | 10 | 10 | 原始仓库 hubbylei/bestcf |
    | `raw.githubusercontent.com/gslege/CloudflareIP/main/All.txt` | 100 | 100 | 原始仓库 gslege/CloudflareIP |
-   | `raw.githubusercontent.com/LancelotRar/best-cf-ips/refs/heads/main/best-cf-ip-collected.txt` | 77 | 75（97%） | 原始仓库（各家采集聚合） |
+   | `raw.githubusercontent.com/LancelotRar/best-cf-ips/main/best-cf-ip-scanned-top200.txt` | 200 | 200 | 原始仓库 LancelotRar/best-cf-ips；2026-11-15 作者把输出换成 scanned-topN 系列 |
    | `raw.githubusercontent.com/joname1/BestCFip/refs/heads/main/ipv4.txt` | 91 | 90（99%） | 原始仓库 joname1/BestCFip |
-   | `raw.githubusercontent.com/Senflare/Senflare-IP/refs/heads/main/IPlist-Pro.txt` | 27 | 27 | 原始仓库 Senflare/Senflare-IP |
    | `raw.githubusercontent.com/einsitang/my-fast-cf-ip/refs/heads/master/fastips.txt` | 20 | 20 | 原始仓库 einsitang/my-fast-cf-ip |
    | `raw.githubusercontent.com/XIU2/CloudflareSpeedTest/master/ip.txt` | 25 段 | 25 | 原始仓库 XIU2/CloudflareSpeedTest |
 
-   默认 13 条合并去重后池子约 114~190 个候选（`use_official_ranges=0` 时）。
+   默认 12 条合并去重后池子由 `candidate_budget=256` 封顶（`use_official_ranges=0` 时）。
    配置文件里每条 URL 上方都有一行注释写明它的段内占比与原始出处。
 
    **源可用性检测**：页面上「候选池来源」下方有「检测源可用性」按钮，点对了才跑
@@ -136,7 +136,7 @@ curl -4 -o /dev/null -sS --connect-timeout 5 --max-time 8 \
    # [{"url":"https://bestcf.pages.dev/entryip/50.txt","http":"200","rc":0,"ips":50,"cf_in":47}, …]
    ```
 
-   13 条源按 4 个一批并发，真机实测 4 秒跑完（串行要一分多钟，页面上会转圈到怀疑人生）。
+   12 条源按 4 个一批并发，真机实测 4 秒跑完（串行要一分多钟，页面上会转圈到怀疑人生）。
    某条源改路径或者开始吐非 CF 的中转 IP，这里第一时间看得出来。
 
    **别往这里加"现成的大份优选清单"**：`bestcf.pages.dev/random-region/mix.txt`（306 条）、
@@ -426,7 +426,7 @@ ssh -p 22845 root@op.403333.xyz 'apk add --allow-untrusted /tmp/luci-app-cf-ipch
 | `probe_port` | `443` | 探测端口；只影响本轮探测，**不会写进结果里的 IP:port** |
 | `use_official_ranges` | `0` | 是否把官方网段也铺进池子（默认关，避免近六千个 /24 采样挤掉社区优选） |
 | `reuse_last` | `1` | 是否回灌上一轮入围 IP |
-| `community_sources` | 十三条（见上） | 社区源 URL（list），逐个 HTTPS 抓取；池子一半名额按源均分。连续故障会记进运行目录的源健康账本并退避，见「源健康账本」 |
+| `community_sources` | 12 条（见上） | 社区源 URL（list），逐个 HTTPS 抓取；池子一半名额按源均分。连续故障会记进运行目录的源健康账本并退避，见「源健康账本」 |
 | `candidate_budget` | `256` | 单轮候选上限 |
 | `concurrency` | `8` | 并发探测数 |
 | `probe_timeout` | `5` | 单 IP 超时（同时作为连接与整请求超时） |
@@ -728,14 +728,17 @@ r199 起，每轮第一行日志固定是 `===== 新一轮开始 =====`，取流
 
 ## 源健康账本与头部警示（r206–r208）
 
-社区源会悄悄烂掉：两个仓库改名后一直返回 **HTTP 404**，`curl -f` 立刻退出（每轮约 2 秒，
+社区源会悄悄烂掉：两条一直返回 **HTTP 404**，`curl -f` 立刻退出（每轮约 2 秒，
 不是超时），旧版只在日志里留一句「社区源无结果」，而页面「最近 8 条」只看末尾，
-于是能无声无息坏两个半月。r206 起加了一本账：
+于是能无声无息坏两个半月。2026-11-15 逐个查清了根因（**不是「仓库改名」这么简单**）：
+LancelotRar 的仓库还在、每天更新，只是把输出文件从 `best-cf-ip-collected.txt`
+换成了 `best-cf-ip-scanned-topN.txt`；Senflare 则是整个 GitHub 账号/仓库消失，
+搜索引擎里 166 commits / 56 stars 是缓存旧页。r206 起加了一本账：
 
 - 文件 `$RUN_DIR/srchealth`（tmpfs，重启丢账只多试一次），TSV：`状态 / 连续失败 / 上次成功 / 下次重试 / URL`。
   **键是 URL 不是序号**——用户插删一行会把序号整体挪位；改地址等于换新键，旧账自动作废。
 - `ok` 清零；`gone`（404/410）24 小时试一次；`fail`（超时、5xx、200 但解析不出 IP）
-  连 3 轮后退避 1 h → 2 h → 6 h 封顶。**整轮全失败不记账**：那是断网，不是 13 条源一起坏了；
+  连 3 轮后退避 1 h → 2 h → 6 h 封顶。**整轮全失败不记账**：那是断网，不是所有社区源一起坏了；
   按黑名单记账会让下一轮候选池直接空掉。
 - 逐源抓取改成「先落文件拿 HTTP 码与 curl 退出码，再解析」，一条管道会把 curl 的 rc 吞成 grep 的，
   分不清 404 / 超时 / 200 无 IP。`status` 带 `src_bad` / `src_gone` / `src_bad_names`，
@@ -744,6 +747,14 @@ r199 起，每轮第一行日志固定是 `===== 新一轮开始 =====`，取流
 r207 把这份状态做成头部的一颗「N 条源异常」胶囊（真按钮，点击跳诊断，0 条时整只隐藏），
 四个区共用，不用先点进诊断页；r208 修了它与状态胶囊的字号差（14px vs 13px）。
 1024 / 767 是单行，≤479 时两颗胶囊独占一行、按钮组换行。
+
+**2026-11-15 修源**：LancelotRar 换成
+`.../LancelotRar/best-cf-ips/main/best-cf-ip-scanned-top200.txt`（200 个 IP 全在 CF 段，
+格式 `IP:443#机房` 与引擎提取规则兼容），Senflare 那行直接删除 —— 账号已 404，
+不用 0~1 star 的第三方镜像顶替（陈旧、无许可证、来源不明）。默认清单因此从 13 条变 12 条。
+账本以 URL 为键，所以新地址是一条新账、两条旧的 `gone` 记录在下一轮
+`src_health_commit` 里按当前清单自动淘汰，**不需要手动清账或加重置按钮**。
+配置文件里改完不用重启 daemon（每轮重读），浏览器也不用为这事刷新。
 
 ## DNS 自动解析的三条护栏（r204）
 
