@@ -5,6 +5,13 @@
 	var F = CFI.fmt;
 	var QUALITY_NOTE = CFI.T('质量只列异常：抖动 = 同一 IP 多次测得的首字节耗时最大差（ms，>100 才标）；丢包 = 没打通的样本占比；未验到 CF-RAY = 没拿到机房标记；— = 没发现异常。');
 
+	/* 每个可排序列「刚切进来」时朝哪个方向走。
+	 * 首字节、机房是越小 / 越靠前越好，走 asc；吞吐正相反 —— 越大越好，
+	 * 走 asc 会把最慢的顶到第一行（r201 那版就是这样，看着像榜单反了）。
+	 * 用户仍可在表头再点一下翻转，方向会连同键一起存进偏好。 */
+	var SORT_DEF = { ttfb: 'asc', spd: 'desc', colo: 'asc' };
+	function sortDefDir(key) { return SORT_DEF[key] || 'asc'; }
+
 	/* 运行区：卡片式读数 + 可排序/筛选的榜单 + 行详情抽屉 + 机房分布。
 	 * 所有交互宿主（工具栏、按钮、表格容器）只建一次，之后只做 update。 */
 	function colsOf(st) {
@@ -50,7 +57,10 @@
 
 	function mount(actions, drawer) {
 		var bui = {
-			sort: JSON.parse(CFI.prefs.get(CFI.prefs.NS + 'board.sort', '') || 'null') || { key: 'ttfb', dir: 'asc' },
+			/* 键名带 2：老版本把「按速度 + 升序」写进过 board.sort，直接读会继续
+			 * 端出最慢的排第一。换新键一次性作废那次错误默认，用户自己翻转过
+			 * 的方向重新选一次即可（这块上线才一天，代价可以忽略）。 */
+			sort: JSON.parse(CFI.prefs.get(CFI.prefs.NS + 'board.sort2', '') || 'null') || { key: 'ttfb', dir: 'asc' },
 			filter: CFI.prefs.get(CFI.prefs.NS + 'board.filter', 'all'),
 			q: '',
 			sel: null
@@ -137,8 +147,9 @@
 		]);
 		sortSel.value = bui.sort.key;
 		sortSel.addEventListener('change', function () {
-			bui.sort = { key: sortSel.value, dir: 'asc' };
-			CFI.prefs.set(CFI.prefs.NS + 'board.sort', JSON.stringify(bui.sort));
+			/* 下拉只给列名、不给方向，所以每次都回到该列的默认方向（速度=降序）。 */
+			bui.sort = { key: sortSel.value, dir: sortDefDir(sortSel.value) };
+			CFI.prefs.set(CFI.prefs.NS + 'board.sort2', JSON.stringify(bui.sort));
 			paintBoard(true);
 		});
 		var filterSel = el('select', { class: 'ctl', 'aria-label': CFI.T('筛选') }, [
@@ -181,7 +192,9 @@
 			var cols = colsOf(st);
 			table = CFI.ui.Table({
 				cols: cols,
-				caption: CFI.T('榜单：按首字节排序的可用 IP'),
+				/* 原来是「按首字节排序的可用 IP」，但用户能切成按速度 / 按机房，
+				 * caption 只在重建表时生成、不会跟着变，索性写中性表述。 */
+				caption: CFI.T('榜单：本轮达标的可用 IP 与实测读数'),
 				keyOf: function (it, i) { return it.ip || ('#' + i); },
 				rowSig: function (it) { return CFI.store.rowSig(it) + '|' + bui.sort.key + bui.sort.dir + bui.filter + bui.q; },
 				cell: function (it, i, c) { return cellOf(it, i, c, lastSt); },
@@ -190,9 +203,9 @@
 					if (bui.sort.key === k)
 						bui.sort.dir = bui.sort.dir === 'asc' ? 'desc' : 'asc';
 					else
-						bui.sort = { key: k, dir: 'asc' };
+						bui.sort = { key: k, dir: sortDefDir(k) };
 					sortSel.value = k;
-					CFI.prefs.set(CFI.prefs.NS + 'board.sort', JSON.stringify(bui.sort));
+					CFI.prefs.set(CFI.prefs.NS + 'board.sort2', JSON.stringify(bui.sort));
 					paintBoard(true);
 				},
 				onActivate: function (key) { openDrawer(key); },
