@@ -33,15 +33,17 @@ const DIR = grab(run, 'var SORT_DEF');
 const FN = grab(run, 'function sortedFiltered');
 
 /* 用 60-run.js 自己的比较器跑，不另写一份 —— 否则测的是测试、不是产物。 */
-function sorter(sort, items, unit) {
+function sorter(sort, items, unit, st) {
 	const body = [
 		DIR, ';',
 		grab(run, 'function sortDefDir'),
+		grab(run, 'function metricOf'),
+		grab(run, 'function metricMs'),
 		FN,
 		';return sortedFiltered;'
 	].join('\n');
 	const bui = { sort: sort, filter: 'all', q: '' };
-	const lastSt = { speed_unit: unit || 'mb' };
+	const lastSt = Object.assign({ speed_unit: unit || 'mb' }, st || {});
 	const F = { speedOf: (it, u) => (u === 'mib' ? it.speed_mib : it.speed_mbytes) };
 	const fn = new Function('bui', 'lastSt', 'F', 'quality', body);
 	return fn(bui, lastSt, F, () => '')(items).map((x) => x.ip);
@@ -101,4 +103,26 @@ test('r202 排序：偏好键换名，老版本存的错误方向不再生效', 
 	const writes = run.match(/CFI\.prefs\.set\(CFI\.prefs\.NS \+ 'board\.sort2'/g) || [];
 	assert.equal(writes.length, 2, '两条写入路径（下拉、表头）都要换新键');
 	assert.ok(!/NS \+ 'board\.sort'/.test(run), '不许再读写老键');
+});
+
+test('r205 排序：probe_metric=tcp 时按 connect_ms 排，和列里显示的一致', () => {
+	/* 这两组数刻意让两种口径排出相反的名次：ttfb 里 104.18.35.197 最快，
+	   TCP 里它却最慢。旧实现无论哪种指标都按 ttfb_ms 排，于是切到 TCP 后
+	   列里显示的是 connect_ms、顺序却按 ttfb —— 看着像排序坏了。 */
+	const MIX = [
+		{ ip: 'a', ttfb_ms: 200, connect_ms: 90 },
+		{ ip: 'b', ttfb_ms: 230, connect_ms: 40 },
+		{ ip: 'c', ttfb_ms: 210, connect_ms: 70 }
+	];
+	assert.deepEqual(sorter({ key: 'ttfb', dir: 'asc' }, MIX, 'mb', { probe_metric: 'http' }),
+		['a', 'c', 'b'], 'http 口径按 ttfb：200 < 210 < 230');
+	assert.deepEqual(sorter({ key: 'ttfb', dir: 'asc' }, MIX, 'mb', { probe_metric: 'tcp' }),
+		['b', 'c', 'a'], 'tcp 口径按 connect：40 < 70 < 90');
+	/* 缺 connect_ms 的行走 ttfb 兜底（与列里显示的降级一致），不许把它当成 0 顶到第一 */
+	const ONE = [
+		{ ip: 'x', ttfb_ms: 250 },
+		{ ip: 'y', ttfb_ms: 300, connect_ms: 60 }
+	];
+	assert.deepEqual(sorter({ key: 'ttfb', dir: 'asc' }, ONE, 'mb', { probe_metric: 'tcp' }),
+		['y', 'x']);
 });

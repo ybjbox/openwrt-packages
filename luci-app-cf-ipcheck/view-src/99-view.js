@@ -73,8 +73,9 @@ return view.extend({
 			};
 		} catch (e) {}
 
-		if (sh.store.get().status && sh.store.get().status.state === 'running')
-			sh.startPoll();
+		/* 无论跑没在跑都挂上轮询（r205）：间隔由状态决定（跑着 3 秒、空闲 30 秒）。
+		 * 以前只在 running 时挂，于是定时轮自己起来的时候页面完全看不见。 */
+		sh.startPoll();
 
 		try { window.__cfi__ = CFI; } catch (e2) {}
 		return root;

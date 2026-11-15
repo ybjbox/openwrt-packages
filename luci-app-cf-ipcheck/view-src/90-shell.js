@@ -8,6 +8,10 @@
 	 * 回调必须把 promise 交回去，否则重入守卫空转。 */
 	var POLL_SEC = 3;
 	var POLL_SLOW = 10;
+	/* 空闲心跳（r205）。以前空闲时干脆 stopPoll：定时轮是引擎自己起的，页面
+	 * 不轮询就完全看不见 —— 到点了还一直显示「已完成」，得手动刷新才知道。
+	 * status 现在只剩两个进程（uci + awk，几十毫秒），30 秒一次可以忽略。 */
+	var POLL_IDLE = 30;
 	var LOG_SEC = 4;
 	var FAIL_STALE = 2;
 	var FAIL_GIVEUP = 4;
@@ -36,6 +40,23 @@
 		var busyTick = false;
 		var shell = null;
 		var closed = false;
+
+		function pageHidden() {
+			try {
+				return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+			} catch (e) {
+				return false;
+			}
+		}
+
+		/* 切回前台立刻补一次，不等下一个心跳（空闲心跳 30 秒，等起来像卡住）。 */
+		function onVisible() {
+			if (closed || pageHidden())
+				return;
+			refresh();
+		}
+		if (typeof document !== 'undefined' && document.addEventListener)
+			document.addEventListener('visibilitychange', onVisible);
 
 		/* ---- 状态读取 -------------------------------------------------- */
 		function afterMiss(prev, hung, manual) {
@@ -88,10 +109,9 @@
 					store.patch({ status: st });
 					store.setBusy('refresh', false);
 				});
-				if (st.state === 'running')
-					startPoll();
-				else
-					stopPoll();
+				/* 不管跑没在跑都要挂上轮询：间隔由 gapSec 按状态决定
+				 * （跑着 3 秒、空闲 30 秒心跳），不再用「停表」表示空闲。 */
+				startPoll();
 				return st;
 			}, function () {
 				inflight = null;
@@ -103,6 +123,10 @@
 		}
 
 		function pollTick() {
+			/* 后台标签不发请求：3 秒一次的 status 在路由器上是真起进程，而没人
+			 * 看的页面只要保留最后一次读到的数就够了。切回前台由 onVisible 补一次。 */
+			if (pageHidden())
+				return Promise.resolve();
 			try {
 				if (shouldPollLogs())
 					logsRefresh();
@@ -113,7 +137,9 @@
 		}
 
 		function gapSec() {
-			return misses >= FAIL_STALE ? POLL_SLOW : POLL_SEC;
+			if (misses >= FAIL_STALE)
+				return POLL_SLOW;
+			return (store.get().status || {}).state === 'running' ? POLL_SEC : POLL_IDLE;
 		}
 
 		function startPoll() {
@@ -143,7 +169,7 @@
 		}
 
 		function logTick() {
-			if (closed || !shouldPollLogs())
+			if (closed || pageHidden() || !shouldPollLogs())
 				return Promise.resolve();
 			return logsRefresh();
 		}
@@ -677,6 +703,8 @@
 
 		function destroy() {
 			closed = true;
+			if (typeof document !== 'undefined' && document.removeEventListener)
+				document.removeEventListener('visibilitychange', onVisible);
 			stopPoll();
 			stopLogPoll();
 			if (busyTick) {
@@ -700,9 +728,9 @@
 			destroy: destroy,
 			build: build,
 			flash: flash,
-			consts: { POLL_SEC: POLL_SEC, POLL_SLOW: POLL_SLOW, LOG_SEC: LOG_SEC }
+			consts: { POLL_SEC: POLL_SEC, POLL_SLOW: POLL_SLOW, POLL_IDLE: POLL_IDLE, LOG_SEC: LOG_SEC }
 		};
 	}
 
-	CFI.shell = { create: create, consts: { POLL_SEC: POLL_SEC, POLL_SLOW: POLL_SLOW, LOG_SEC: LOG_SEC } };
+	CFI.shell = { create: create, consts: { POLL_SEC: POLL_SEC, POLL_SLOW: POLL_SLOW, POLL_IDLE: POLL_IDLE, LOG_SEC: LOG_SEC } };
 })(CFI);

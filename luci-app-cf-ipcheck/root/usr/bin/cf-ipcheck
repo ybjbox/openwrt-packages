@@ -47,9 +47,10 @@ CFNETS=$ETC_DIR/cf-nets.txt
 CFNETS_TTL=21600
 
 # 上一轮**起轮**的时刻（一行秒级 epoch）。daemon 用它判断"现在到点没有"。
-# 为什么存 /etc 而不是 /tmp：/tmp 重启就空，于是"设备重启 = 立刻跑一轮"；而 procd 的
-# reload 触发（改完 UCI 点保存并应用就会 stop+start）同理，改一次配置就白烧一轮
-# ——真机一轮要吃掉约 104.86MB。存在 /etc 后这两条都不会再莫名起轮，
+# 为什么存 /etc 而不是 /tmp：/tmp 重启就空，于是"设备重启 = 立刻跑一轮"；早年
+# procd 的 reload 触发（改完 UCI 就 stop+start）同理，改一次配置就白烧一轮
+# ——真机一轮要吃掉约 104.86MB。存在 /etc 后这两条都不会再莫名起轮（r205 把
+# reload 改成空操作，这道门只管设备重启与手动起轮），
 # 而这份写入和 result.json 同频（每轮一次），flash 磨损可以忽略。
 LAST_RUN=$ETC_DIR/lastrun
 
@@ -243,10 +244,88 @@ print_log() {
 	return 0
 }
 
+# ---------------- 配置快照（r205）--------------------------------------------
+# load_config 里 50 多处 `$(cfg …)`，每一处都是「fork 一个子壳、再 exec 一个 uci」。
+# 真机量到单次 uci 约 5.5 ms，于是 `cf-ipcheck status` 要 0.34 s（user 0.31）——
+# 页面开着时 3 秒一拍，等于常驻约 11% 的单核。
+# 现在改成：一次 `uci show` 把整份配置读进来，之后 cfg 只在 shell 内查表，零 fork。
+#
+# 快照由 cfg_refresh 重建，而 daemon 每片都会跑一次 load_config —— 改完配置最迟
+# 一个分片就按新值走，不需要重启服务（init.d 的 reload_service 因此改成空操作，
+# 以前那次 stop+start 会把跑了一半的一轮掐死，白烧三分钟和 100MB）。
+#
+# 为什么敢用 eval：变量名取自 uci 的 option 名，uci 规定它只能是 [A-Za-z0-9_]，
+# 这里再校验一遍；**值只以 `$_v` 的形式出现在赋值右边**，参数展开的结果不会被
+# 二次解析，所以值里的 $() 与反引号都只是字面量。绝不用 eval 拼「值」本身。
+#
+# CFG_SEEN=0 就是旧路径（逐条 uci get）。uci show 失败、或 uci 压根没有（CI、
+# 环境变量驱动）时都停在这里，行为与 r204 完全一致 —— 慢，但不会读出一堆默认值。
+CFG_SEEN=0
+# 上一份快照装过哪些键。重建前要按这份清单 unset —— daemon 是常驻进程，
+# 配置里删掉某一项之后，旧值不能继续在内存里生效到下次重启。
+CFG_KEYS=''
+
+# 把 `uci show` 的整份输出读进 CFG_OPT_<option>。只认 global 段：cfg 一直读的是
+# @global[0]，具名段与匿名段的两种打印形状（global / @global[0]）在这里都要认。
+cfg_refresh() {
+	CFG_SEEN=0
+	if [ -n "$CFG_KEYS" ]; then
+		for _cfgr_k in $CFG_KEYS; do
+			eval "unset CFG_OPT_$_cfgr_k"
+		done
+		CFG_KEYS=''
+	fi
+	[ "$HAS_UCI" = 1 ] || return 0
+	_cfgr_raw=$("$UCI_BIN" -q show "$CONF" 2>/dev/null) || return 0
+	[ -n "$_cfgr_raw" ] || return 0
+	# 一个 awk 同时做三件事：挑 global 段的行、按第一个 = 切键值、还原 uci 对
+	# 单引号的转义（uci show 把 it's 打成 'it'\''s'）。用 index/substr 而不是
+	# 正则替换，是因为 `'\''` 这串在 sed 里要写成四层转义，换 BusyBox 就未必对。
+	_cfgr_map=$(printf '%s\n' "$_cfgr_raw" | awk -v pkg="$CONF" -v q="'" '
+		{
+			i = index($0, "=")
+			if (i < 2) next
+			lhs = substr($0, 1, i - 1)
+			val = substr($0, i + 1)
+			p1 = pkg ".@global[0]."
+			p2 = pkg ".global."
+			if (substr(lhs, 1, length(p1)) == p1) key = substr(lhs, length(p1) + 1)
+			else if (substr(lhs, 1, length(p2)) == p2) key = substr(lhs, length(p2) + 1)
+			else next
+			if (key !~ /^[A-Za-z0-9_]+$/) next
+			if (length(val) < 2) next
+			if (substr(val, 1, 1) != q || substr(val, length(val), 1) != q) next
+			val = substr(val, 2, length(val) - 2)
+			esc = q "\\" q q
+			while ((j = index(val, esc)) > 0)
+				val = substr(val, 1, j - 1) q substr(val, j + length(esc))
+			print key "=" val
+		}')
+	[ -n "$_cfgr_map" ] || return 0
+	while IFS='=' read -r _cfgr_k _cfgr_v; do
+		case "$_cfgr_k" in
+			''|*[!A-Za-z0-9_]*) continue ;;
+		esac
+		eval "CFG_OPT_$_cfgr_k=\$_cfgr_v"
+		CFG_KEYS="$CFG_KEYS $_cfgr_k"
+	done <<EOF
+$_cfgr_map
+EOF
+	CFG_SEEN=1
+	return 0
+}
+
 # cfg <option> <default>
 cfg() {
 	v=''
-	if [ "$HAS_UCI" = 1 ]; then
+	if [ "$CFG_SEEN" = 1 ]; then
+		# 快照里没有这一项（或它是显式空值）就照旧往下走：环境变量、再默认值。
+		# 与 `uci -q get` 完全一致 —— 空值取回来也是空的，两种状态本来就同义。
+		case "$1" in
+			''|*[!A-Za-z0-9_]*) ;;
+			*) eval "v=\${CFG_OPT_$1:-}" ;;
+		esac
+	elif [ "$HAS_UCI" = 1 ]; then
 		v=$("$UCI_BIN" -q get "$CONF.@global[0].$1" 2>/dev/null || true)
 	fi
 	[ -n "$v" ] || eval "v=\${CFIP_$(printf '%s' "$1" | tr 'a-z' 'A-Z' | tr '.' '_'):-}"
@@ -371,6 +450,27 @@ uci_list_parse() {
 
 # cfg_list <option> -> 每行一个元素
 cfg_list() {
+	if [ "$CFG_SEEN" = 1 ]; then
+		case "$1" in
+			''|*[!A-Za-z0-9_]*) return 0 ;;
+		esac
+		eval "v=\${CFG_OPT_$1:-}"
+		# 一个 awk 拆完（原先走 uci_list_parse 的 sed|tr|tr|sed|grep 五个进程）：
+		# 去方括号/圆括号、引号与逗号空白一律当分隔符、空串丢掉。
+		# 前面补 `x=` 是为了兼容 uci show 的原始形状（那条路径会砍等号左边）；
+		# 快照里已经是纯值，补上也无害，两种形状共用同一条拆解规则。
+		[ -n "$v" ] && printf 'x=%s\n' "$v" | awk -v q="'" '{
+			s = $0
+			sub(/^[^=]*=/, "", s)
+			gsub("[][()]", "", s)
+			gsub(q, " ", s)
+			gsub(",", " ", s)
+			gsub(/\t/, " ", s)
+			n = split(s, a, " ")
+			for (i = 1; i <= n; i++) if (a[i] != "") print a[i]
+		}'
+		return 0
+	fi
 	if [ "$HAS_UCI" = 1 ]; then
 		"$UCI_BIN" -q show "$CONF.@global[0].$1" 2>/dev/null | uci_list_parse
 		return 0
@@ -409,6 +509,10 @@ screen_src() {
 }
 
 load_config() {
+	# 先把整份配置读成快照（r205）：下面 50 多处 cfg 因此不再各 fork 一个 uci。
+	# 必须在这里刷新而不是在进程启动时刷新一次 —— daemon 是常驻进程，改完配置
+	# 要在下一片生效。uci 不可用时它自己会退回逐条 get。
+	cfg_refresh
 	# 每次读配置都从空的告警缓冲开始：daemon 每片都会重读一次，不清就会把同一批
 	# 告警攒 N 份，一轮 flush 出 N 行同文。
 	CFG_WARN=''
@@ -591,8 +695,15 @@ load_config() {
 	# 按机房展示（r102）：只列配置的机房、每个展开显示配置的条数；空 = 沿用旧行为
 	# （列本轮全部机房、每块默认 12 条）。归一化在 dc_show_norm，告警在这个 shell 里记。
 	dcs_raw=$(cfg dc_show '')
-	_dcs_warn=$(dc_show_norm "$dcs_raw" 2>&1 >/dev/null)
-	C_DCSHOW=$(dc_show_norm "$dcs_raw" 2>/dev/null)
+	# 留空是默认情况，也是 99% 的调用：dc_show_norm 里是 tr + 循环 + awk（约 3 个
+	# 进程），这里还被调两遍（一次取值、一次收告警）—— 没配就不必付这份钱。
+	if [ -n "$dcs_raw" ]; then
+		_dcs_warn=$(dc_show_norm "$dcs_raw" 2>&1 >/dev/null)
+		C_DCSHOW=$(dc_show_norm "$dcs_raw" 2>/dev/null)
+	else
+		_dcs_warn=''
+		C_DCSHOW=''
+	fi
 	if [ -n "$_dcs_warn" ]; then
 		cfg_warn "dc_show 有配置问题：$(printf '%s' "$_dcs_warn" | tr '\n' '；')"
 	fi
@@ -4355,7 +4466,7 @@ selftest() {
 	unset CURL_BIN
 	C_GISTTOK=''
 
-	# ---- 周期守门（r41）：改完 UCI 点「保存并应用」会 stop+start daemon，
+	# ---- 周期守门（r41）：早年「保存并应用」会 stop+start daemon，重启同理，
 	# 没有这道门就是"改一条源、白烧一轮约 104.86MB"。
 	C_INTERVAL=6
 	rm -f "$LAST_RUN"
@@ -4755,6 +4866,50 @@ check 'speed_unit=mb：10485760 B/s ⇒ 10.49（十进制）' \
 			else if (c == "[") q++; else if (c == "]") r++ } }
 			END { print (o == e && q == r) ? "ok" : "bad" }' "$RESULT")" 'ok'
 	rm -f "$RUN_DIR/dc.tsv" "$RUN_DIR/qual.bps"
+
+	# ---- 配置快照（r205）--------------------------------------------------
+	# 一次 `uci show` 换掉 load_config 里 50 多次 `uci get`。这里用一份假 uci
+	# 驱动真函数，钉住五件事：普通值、带 = 的值、显式空值退回默认、uci show
+	# 对单引号的转义能还原、cfg_list 的多值拆分不会被 URL 里的 = 吃掉。
+	# 最后一条尤其要紧：snapshot 存的是纯值（没有 `opt=` 前缀），而原来的
+	# uci_list_parse 第一条 sed 就是砍等号左边 —— 少补一个 `x=` 就把 URL 砍残。
+	_cfgseen_save=$CFG_SEEN
+	_uci_save=${UCI_BIN:-}
+	_has_save=$HAS_UCI
+	cat >"$RUN_DIR/fake-uci" <<'FUICI'
+#!/bin/sh
+case "$*" in
+	*show*)
+		cat <<'FSHOW'
+cf_ipcheck.global=global
+cf_ipcheck.global.enabled='1'
+cf_ipcheck.global.annotate='a | {colo} | {total}ms'
+cf_ipcheck.global.speed_path='/__down?bytes={bytes}&x=1'
+cf_ipcheck.global.empty=''
+cf_ipcheck.global.quote='it'\''s'
+cf_ipcheck.global.community_sources='https://a/1.txt?x=1' 'https://b/2.txt'
+cf_ipcheck.main.enabled='0'
+FSHOW
+		;;
+	*) exit 1 ;;
+esac
+FUICI
+	chmod +x "$RUN_DIR/fake-uci" 2>/dev/null || true
+	UCI_BIN=$RUN_DIR/fake-uci; HAS_UCI=1
+	cfg_refresh
+	check 'cfg_refresh：uci show 成功时建起快照' "$CFG_SEEN" '1'
+	check 'cfg 从快照取值，且只认 global 段（同一份里 main.enabled=0 不许串进来）' "$(cfg enabled 0)" '1'
+	check 'cfg 的值保留空格与花括号' "$(cfg annotate '')" 'a | {colo} | {total}ms'
+	check 'cfg 的值不被 URL 里的 = 截断' "$(cfg speed_path '')" '/__down?bytes={bytes}&x=1'
+	check 'cfg 显式空值仍退回默认（与 uci get 同义）' "$(cfg empty 'DEF')" 'DEF'
+	check "cfg 还原 uci show 对单引号的转义" "$(cfg quote '')" "it's"
+	check 'cfg 快照里没有的项退回默认' "$(cfg enabled2 'DEF')" 'DEF'
+	check 'cfg_list 多值拆分（URL 带 ?x=1 也不被砍）' \
+		"$(cfg_list community_sources | tr '\n' ',')" 'https://a/1.txt?x=1,https://b/2.txt,'
+	CFG_SEEN=0
+	check 'CFG_SEEN=0 退回逐条 uci get（假 uci 的 get 返回失败 ⇒ 走默认）' "$(cfg enabled 'DEF')" 'DEF'
+	UCI_BIN=$_uci_save; HAS_UCI=$_has_save; CFG_SEEN=$_cfgseen_save
+	rm -f "$RUN_DIR/fake-uci"
 	rm -f "$dcs" "$dct" "$dqu" "$RUN_DIR/dc.summary"
 	rm -rf "$T"
 	if [ -n "$ST_SCRATCH" ]; then
@@ -4859,9 +5014,9 @@ case "${1:-}" in
 					 continue
 				 fi
 				 # 守门：留空 daily_times 时按 interval_hours，填了就按每天固定时刻。
-				 # 没有这道门的话，procd 的 reload 触发（改完 UCI 点「保存并应用」
-				 # → init.d 的 reload_service = stop+start）会让每次改配置都白烧一轮
-				 # ——真机一轮约 104.86MB，而他改的往往只是一条源地址。
+				 # 没有这道门的话，早年 procd 的 reload 触发（改完 UCI 点「保存并应用」
+				 # → reload_service = stop+start；r205 起改成空操作）与设备重启都会让
+				 # 每次改配置白烧一轮 ——真机一轮约 104.86MB，而他改的往往只是一条源地址。
 				 # 每片最多睡 60 秒，且睡到 min(60,left)。schedule_due() 会记住
 				 # 本轮待触发的绝对时刻，睡到整秒也不会把它算丢（r197）。
 				 # 每片重读配置：关总开关、改周期、改时刻表都能在一分钟内反映。

@@ -65,3 +65,32 @@ test('r204 diag 的 uci 输出要打码', () => {
 	assert.match(diag, /gist_token=.*\*\*\*/, 'gist_token 没打码');
 	assert.match(diag, /dns_token=.*\*\*\*/, 'dns_token 没打码');
 });
+
+/* r205：配置快照。真机量到 status 一次 0.34 s，其中 50 多次 `uci get` 各 fork
+ * 一次进程。现在 load_config 开头读一次全量，cfg 只在 shell 内查表。
+ * 行为断言在引擎自检里（要真 shell 才能跑），这里只钉住结构，防止有人把
+ * cfg_refresh 的调用挪走、或让 cfg 又退回逐条 get。 */
+test('r205 配置快照：load_config 先刷快照，cfg 走查表', () => {
+	assert.match(engine, /^cfg_refresh\(\) \{/m, '缺 cfg_refresh()');
+	const lc = engine.slice(engine.indexOf('load_config() {'), engine.indexOf('\n\tCFG_WARN=', engine.indexOf('load_config() {')));
+	assert.match(lc, /cfg_refresh/, 'load_config 第一件事必须是 cfg_refresh');
+	/* cfg：CFG_SEEN=1 时从 CFG_OPT_ 取，且取不到才退回 uci get */
+	const cfgFn = engine.slice(engine.indexOf('cfg() {'), engine.indexOf('\n}\n', engine.indexOf('cfg() {')));
+	assert.match(cfgFn, /if \[ "\$CFG_SEEN" = 1 \]; then/, 'cfg 里没有快照分支');
+	assert.match(cfgFn, /eval "v=\\\$\{CFG_OPT_\$1:-\}"/, 'cfg 没从 CFG_OPT_ 取值');
+	assert.match(cfgFn, /elif \[ "\$HAS_UCI" = 1 \]; then/, 'cfg 的逐条 get 兜底被删了（uci show 失败时全靠它）');
+	/* 重建前按 CFG_KEYS 清旧键：daemon 常驻，删掉的配置项不许在内存里继续生效 */
+	assert.match(engine, /unset CFG_OPT_\$_cfgr_k/, '重建快照前没有清旧键');
+	/* cfg_list 也要走快照，否则 community_sources 仍然每次 5 个进程 */
+	const cl = engine.slice(engine.indexOf('cfg_list() {'), engine.indexOf('\n}\n', engine.indexOf('cfg_list() {')));
+	assert.match(cl, /CFG_SEEN" = 1/, 'cfg_list 没走快照');
+	assert.match(cl, /sub\(\/\^\[\^=\]\*=\/, "", s\)/, 'cfg_list 的拆分没先砍掉前缀（URL 里的 = 会被吃掉）');
+});
+
+test('r205 保存配置不再重启服务', () => {
+	const reload = initd.slice(initd.indexOf('reload_service() {'), initd.indexOf('\n}\n', initd.indexOf('reload_service() {')));
+	assert.ok(!/^\s*stop\s*$/m.test(reload), 'reload 里还在 stop（会把跑了一半的一轮掐死）');
+	assert.match(reload, /ps w .*grep -q "\[c\]f-ipcheck daemon"/, '没有「服务没在跑就拉起来」的兜底');
+	assert.match(reload, /^\s*start\s*$/m, '兜底分支里没有 start');
+});
+

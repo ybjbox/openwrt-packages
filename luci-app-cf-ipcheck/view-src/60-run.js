@@ -328,7 +328,7 @@
 			}
 			if (c.key === 'domain') return el('span', { class: 'dim', text: it.domain || F.DASH });
 			if (c.key === 'ttfb') {
-				var v = st.probe_metric === 'tcp' && it.connect_ms != null ? it.connect_ms : it.ttfb_ms;
+				var v = metricOf(it, st);
 				var nv = Number(v);
 				/* 颜色是粗分档，不是准入门槛：HTTP 300/500ms，TCP 80/150ms。
 				 * 准入门槛仍由引擎的 ttfb_limit / total_limit 决定。 */
@@ -357,6 +357,22 @@
 			return el('span', { class: q ? 'q' : 'q none', text: q || F.DASH, title: QUALITY_NOTE });
 		}
 
+		/* 「首字节 / TCP」这一列到底看哪个数（r205）：probe_metric=tcp 时列里显示的
+		 * 是 connect_ms（表头也写着 TCP），可排序一直拿 ttfb_ms —— 切了指标之后，
+		 * 列里看着升序、实际按另一列排，名次和数字对不上。渲染与排序共用这一个
+		 * 函数，两边不可能再各说一套。 */
+		function metricOf(it, st) {
+			if (!it) return null;
+			if (st && st.probe_metric === 'tcp' && it.connect_ms != null) return it.connect_ms;
+			return it.ttfb_ms;
+		}
+		function metricMs(it, st) {
+			var v = metricOf(it, st);
+			if (v == null || v === '') return 1e9;
+			var n = Number(v);
+			return isFinite(n) ? n : 1e9;
+		}
+
 		function sortedFiltered(items) {
 			var out = (items || []).filter(function (it) {
 				if (bui.filter === 'speed') {
@@ -378,8 +394,8 @@
 					y = String(b.colo || '');
 					return x < y ? -dir : (x > y ? dir : 0);
 				} else {
-					x = Number(a.ttfb_ms != null ? a.ttfb_ms : 1e9);
-					y = Number(b.ttfb_ms != null ? b.ttfb_ms : 1e9);
+					x = metricMs(a, lastSt);
+					y = metricMs(b, lastSt);
 				}
 				return (x - y) * dir;
 			});
