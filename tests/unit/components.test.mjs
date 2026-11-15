@@ -983,6 +983,12 @@ test('死 CSS：旧头部类名不复活；列显隐每项都有规则', () => {
 	assert.ok(keys.length >= 3, '列菜单至少三项');
 	keys.forEach((k) => assert.match(css, new RegExp('\\.hide-' + k + '\\b'),
 		'列 ' + k + ' 被写进 hiddenCols 却没有隐藏规则'));
+	/* r210：光有顶层规则不够。768–1152 的 #view...th,td{display:table-cell} 和
+	 * ≤767 的 #view...td.c-spd{display:flex} 特异性更高，会把隐藏压回去。
+	 * 每个 key 都必须再有一条 #view 前缀的高特异性覆盖。 */
+	keys.forEach((k) => assert.match(css,
+		new RegExp('#view \\.cfp\\[class\\] \\.tbl-scroll\\.hide-' + k + ' \\.c-' + k),
+		'列 ' + k + ' 缺高特异性覆盖规则，1024 档会被主题压掉'));
 	['tcp', 'tls', 'total', 'domain'].forEach((k) => assert.ok(
 		!new RegExp('\\.hide-' + k + '\\b').test(css), '旧列 ' + k + ' 的规则已无人触发'));
 	['cfp-status-line', 'cfp-lamp', 'cfp-pick', 'cfp-sched', 'cfp-status-acts',
