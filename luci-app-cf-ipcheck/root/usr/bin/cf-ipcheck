@@ -992,8 +992,11 @@ src_health_note() {
 src_health_commit() {
 	_now=$(date +%s)
 	_n=$(awk 'END{print NR+0}' "$RUN_DIR/src.res" 2>/dev/null); _n=${_n:-0}
-	_ok=$(awk -F'\t' '$1 == "ok" {n++} END{print n+0}' "$RUN_DIR/src.res" 2>/dev/null); _ok=${_ok:-0}
-	if [ "${_n:-0}" -gt 0 ] && [ "${_ok:-0}" = 0 ]; then
+	# 只有「一条 ok 都没有、且一条 404 都没有」才算网络问题。404 是服务器给出的
+	# 确定回答，不属于抖动 —— 单源用户只有一条源时，把它一起挡掉就永远看不见提示了。
+	_og=$(awk -F'\t' '$1 == "ok" {o++} $1 == "gone" {g++} END{printf "%d %d", o + 0, g + 0}' "$RUN_DIR/src.res" 2>/dev/null)
+	_ok=${_og% *}; _gone=${_og#* }
+	if [ "${_n:-0}" -gt 0 ] && [ "${_ok:-0}" = 0 ] && [ "${_gone:-0}" = 0 ]; then
 		log '本轮没有任何社区源有结果：按网络问题处理，不记入源健康账'
 		return 0
 	fi
@@ -5152,6 +5155,15 @@ FUICI
 	src_health_commit
 	check '账本：从配置里删掉的源，账也跟着消失（不会越攒越多）' \
 		"$(awk 'END{print NR+0}' "$RUN_DIR/srchealth")" '1'
+	# 反过来的护栏：只有一条源、且它就 404 时，不能被「全失败不记账」挡掉，
+	# 否则单源用户永远看不到「这条地址没了」的提示。
+	rm -f "$RUN_DIR/srchealth"
+	SOURCES="$_sa"
+	src_health_begin
+	src_health_note gone "$_sa"
+	src_health_commit
+	check '账本：全是 404 时照样记账（404 是确定回答，不是网络抖动）' \
+		"$(awk -F'\t' -v u="$_sa" '$5==u {print $1}' "$RUN_DIR/srchealth")" 'gone'
 	RUN_DIR=$_rd_save
 	rm -rf "$_rd_save/src-h"
 	rm -f "$dcs" "$dct" "$dqu" "$RUN_DIR/dc.summary"
