@@ -62,9 +62,16 @@
 			 * 的方向重新选一次即可（这块上线才一天，代价可以忽略）。 */
 			sort: JSON.parse(CFI.prefs.get(CFI.prefs.NS + 'board.sort2', '') || 'null') || { key: 'ttfb', dir: 'asc' },
 			filter: CFI.prefs.get(CFI.prefs.NS + 'board.filter', 'all'),
-			q: '',
+			/* r203：原来这里还有个 q（搜 IP / 域名）。榜单只有十来行，搜索框既占地方
+			 * 又要额外维护一份过滤状态，用户明确说不用 —— 去掉。只留下「只看某机房」
+			 * 需要的 colo（配合筛选下拉里的动态项）。 */
+			colo: '',
 			sel: null
 		};
+		/* colo 不落盘（它是「只看某机房」的临时态），所以偏好里若存着 colo 就退回全部，
+		 * 否则刷新后会拿空 colo 去比对、一条都不剩。 */
+		if (bui.filter === 'colo')
+			bui.filter = 'all';
 		var last = { round: '', stage: '', board: '', dc: '', foot: '', recent: '' };
 		var lastItems = [];
 		var lastSt = {};
@@ -158,13 +165,40 @@
 			el('option', { value: 'issue', text: CFI.T('有质量问题') })
 		]);
 		filterSel.value = bui.filter;
+		/* 「只看此机房」用的动态项：选中时插一条 option，切走就收回，列表不会越用越长。
+		 * 原来这个过滤是靠搜索框承载的（把机房名塞进搜索值），搜索框去掉后改挂在这里，
+		 * 状态在筛选下拉里看得见，清掉就是选「全部」。 */
+		var coloOpt = null;
+		function setColoFilter(colo) {
+			colo = String(colo || '');
+			if (!colo) {
+				bui.colo = '';
+				if (coloOpt) {
+					filterSel.removeChild(coloOpt);
+					coloOpt = null;
+				}
+				if (bui.filter === 'colo') {
+					bui.filter = 'all';
+					filterSel.value = 'all';
+				}
+				return;
+			}
+			if (!coloOpt) {
+				coloOpt = el('option', { value: 'colo' });
+				filterSel.appendChild(coloOpt);
+			}
+			coloOpt.text = CFI.T('只看 %s').format(colo);
+			bui.colo = colo;
+			bui.filter = 'colo';
+			filterSel.value = 'colo';
+		}
 		filterSel.addEventListener('change', function () {
 			bui.filter = filterSel.value;
+			if (bui.filter !== 'colo')
+				setColoFilter('');
 			CFI.prefs.set(CFI.prefs.NS + 'board.filter', bui.filter);
 			paintBoard(true);
 		});
-		var search = el('input', { class: 'ctl', type: 'search', placeholder: CFI.T('搜 IP / 域名'), 'aria-label': CFI.T('搜 IP 或域名') });
-		search.addEventListener('input', function () { bui.q = String(search.value || '').trim(); paintBoard(true); });
 
 		/* 列显隐：只切换容器 class，不改表头/单元格结构 */
 		var colMenu = el('details', { class: 'cols' });
@@ -196,7 +230,7 @@
 				 * caption 只在重建表时生成、不会跟着变，索性写中性表述。 */
 				caption: CFI.T('榜单：本轮达标的可用 IP 与实测读数'),
 				keyOf: function (it, i) { return it.ip || ('#' + i); },
-				rowSig: function (it) { return CFI.store.rowSig(it) + '|' + bui.sort.key + bui.sort.dir + bui.filter + bui.q; },
+				rowSig: function (it) { return CFI.store.rowSig(it) + '|' + bui.sort.key + bui.sort.dir + bui.filter + bui.colo; },
 				cell: function (it, i, c) { return cellOf(it, i, c, lastSt); },
 				sort: bui.sort,
 				onSort: function (k) {
@@ -220,7 +254,7 @@
 		var boardSec = el('article', { class: 'card cfp-board', hidden: true }, [
 			el('div', { class: 'card-h' }, [
 				el('h2', { text: CFI.T('榜单') }), boardSub,
-				el('div', { class: 'right board-tools' }, [ sortSel, filterSel, search, colMenu ])
+				el('div', { class: 'right board-tools' }, [ sortSel, filterSel, colMenu ])
 			]),
 			progressHost,
 			recentHost,
@@ -330,10 +364,7 @@
 					if (!(s > 0)) return false;
 				}
 				if (bui.filter === 'issue' && !quality(it)) return false;
-				if (bui.q) {
-					var hay = String(it.ip || '') + ' ' + String(it.domain || '') + ' ' + String(it.colo || '');
-					if (hay.toLowerCase().indexOf(bui.q.toLowerCase()) < 0) return false;
-				}
+				if (bui.filter === 'colo' && String(it.colo || '') !== bui.colo) return false;
 				return true;
 			});
 			var key = bui.sort.key, dir = bui.sort.dir === 'desc' ? -1 : 1;
@@ -458,7 +489,7 @@
 			kids.push(el('div', { class: 'drawer-a' }, [
 				CFI.ui.Button({ kind: 'primary', label: CFI.T('复制此 IP'), onClick: function () { actions.copyText(String(it.ip || '')); } }).node,
 				CFI.ui.Button({ kind: 'quiet', label: CFI.T('复制为产物行'), onClick: function () { actions.copyText(CFI.T('%s# %s').format(String(it.ip || ''), String(it.colo || ''))); } }).node,
-				CFI.ui.Button({ kind: 'quiet', label: CFI.T('只看此机房'), onClick: function () { bui.filter = 'all'; filterSel.value = 'all'; bui.q = String(it.colo || ''); search.value = bui.q; paintBoard(true); } }).node
+				CFI.ui.Button({ kind: 'quiet', label: CFI.T('只看此机房'), onClick: function () { setColoFilter(String(it.colo || '')); paintBoard(true); } }).node
 			]));
 			return el('div', {}, kids);
 		}
