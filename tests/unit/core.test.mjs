@@ -223,6 +223,15 @@ test('store：header 指纹按 10 秒桶聚合滞留秒数，按钮不会每秒�
 	assert.notEqual(a, d, 'busy 位必须进指纹');
 });
 
+test('store：源异常数进 header 指纹（r207 头部胶囊随账本换牌）', () => {
+	const base = { state: 'done', items: [] };
+	const a = CFI.store.headerKey(base, {});
+	const b = CFI.store.headerKey(Object.assign({}, base, { src_bad: 2, src_gone: 2 }), {});
+	const c = CFI.store.headerKey(Object.assign({}, base, { src_bad: 2, src_gone: 1 }), {});
+	assert.notEqual(a, b, 'src_bad 从 0 变 2：胶囊出现/消失必须重画');
+	assert.notEqual(b, c, 'src_gone 变了：tooltip 文案要跟着换');
+});
+
 test('store：run 指纹覆盖进度与机房', () => {
 	const s = CFI.store.create({});
 	assert.equal(typeof s.get, 'function');

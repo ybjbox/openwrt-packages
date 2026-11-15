@@ -468,19 +468,32 @@
 			var btnStop = CFI.ui.Button({ kind: 'danger', icon: 'stop', label: CFI.T('停止'), hidden: true, onClick: actStop });
 			var btnRefresh = CFI.ui.Button({ kind: 'quiet', icon: 'refresh', label: CFI.T('刷新'), onClick: function () { refresh(true); } });
 
-			var headWord = el('span', { class: 'cfp-chip-t' });
-			var headChip = el('span', { class: 'cfp-chip' }, [ el('i', { class: 'dot', 'aria-hidden': 'true' }), headWord ]);
-			var headSub = el('p', { class: 'cfp-sub' });
-			var head = el('header', { class: 'cfp-head' }, [
-				el('div', { class: 'cfp-title' }, [
-					el('h1', { text: CFI.T('Cloudflare IP 优选') }),
-					headSub
-				]),
-				el('div', { class: 'cfp-head-acts' }, [
-					headChip,
-					btnRefresh.node, btnRun.node, btnStop.node
-				])
-			]);
+		var headWord = el('span', { class: 'cfp-chip-t' });
+		var headChip = el('span', { class: 'cfp-chip' }, [ el('i', { class: 'dot', 'aria-hidden': 'true' }), headWord ]);
+		var headSub = el('p', { class: 'cfp-sub' });
+		/* r207：社区源异常的第二个胶囊。数据来自 status.src_bad（r206 的源健康
+		 * 账本）——诊断页顶部有同样的提示，但用户不去就永远看不见，坏源能
+		 * 无声无息烂两个半月。0 条时整个藏掉；点了直接跳「诊断」。
+		 * 做成真按钮（span 没有键盘通道），可见文字即无障碍名。 */
+		var srcWord = el('span', { class: 'cfp-chip-t' });
+		var srcChip = el('button', {
+			type: 'button', class: 'cfp-chip cfp-chip-btn t-warn', hidden: true
+		}, [ el('i', { class: 'dot', 'aria-hidden': 'true' }), srcWord ]);
+		srcChip.addEventListener('click', function () { goto('diag'); });
+		/* 两个胶囊装进一组：窄屏（≤479）放不下「两胶囊+两按钮」时，让这一组
+		 * 独占一行、按钮组换行；不包一层的话自然换行会把「立即测速」单独
+		 * 甩到第二行最右，看着像掉出来的。 */
+		var headChips = el('div', { class: 'cfp-chips' }, [ headChip, srcChip ]);
+		var headActs = el('div', { class: 'cfp-head-acts' }, [
+			headChips, btnRefresh.node, btnRun.node, btnStop.node
+		]);
+		var head = el('header', { class: 'cfp-head' }, [
+			el('div', { class: 'cfp-title' }, [
+				el('h1', { text: CFI.T('Cloudflare IP 优选') }),
+				headSub
+			]),
+			headActs
+		]);
 			var flashHost = el('div', { class: 'flashes', role: 'status', 'aria-live': 'polite' });
 			var tabs = CFI.ui.Tabs([
 				{ id: 'run', label: CFI.T('运行') },
@@ -570,9 +583,18 @@
 			store.select(function (s) {
 				return CFI.store.headerKey((s.status || {}), s.busy || {});
 			}, function (s) {
-				var st = s.status || {}, busy = s.busy || {};
-				headWord.textContent = CFI.sem.stateWord(st);
-				headChip.className = 'cfp-chip t-' + CFI.sem.tone(st);
+			var st = s.status || {}, busy = s.busy || {};
+			headWord.textContent = CFI.sem.stateWord(st);
+			headChip.className = 'cfp-chip t-' + CFI.sem.tone(st);
+			var nb = Number(st.src_bad) || 0;
+			srcChip.hidden = !nb;
+			headActs.className = 'cfp-head-acts' + (nb ? ' has-src' : '');
+			if (nb) {
+				var ng = Number(st.src_gone) || 0;
+				srcWord.textContent = CFI.T('%s 条源异常').format(String(nb));
+				srcChip.title = CFI.T('%s 条社区源没有结果%s。点这里去诊断页查看。').format(
+					String(nb), ng > 0 ? CFI.T('，其中 %s 条已 404').format(String(ng)) : '');
+			}
 				var line = scheduleLine(st);
 				if (st.finished || st.started)
 					line += (line ? ' · ' : '') + CFI.T('上次 %s %s').format(F.ago(st.finished || st.started), F.clock(st.finished || st.started));

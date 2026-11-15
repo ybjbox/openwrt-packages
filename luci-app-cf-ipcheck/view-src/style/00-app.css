@@ -630,6 +630,17 @@
 .cfp-chip.t-warn { color: var(--cfi-warn); border-color: color-mix(in srgb, var(--cfi-warn) 30%, var(--cfi-line)); background: color-mix(in srgb, var(--cfi-warn) 8%, var(--cfi-card)); }
 .cfp-chip.t-bad { color: var(--cfi-bad); border-color: color-mix(in srgb, var(--cfi-bad) 30%, var(--cfi-line)); background: color-mix(in srgb, var(--cfi-bad) 8%, var(--cfi-card)); }
 .cfp-chip.t-idle { color: var(--cfi-muted); }
+/* r207：头部两个胶囊一组。align-items:stretch 让胶囊跟着组高走（组在动作行
+ * 里被 center 对齐，高度是内容高度）；窄屏时这组换行成独立行。 */
+.cfp .cfp-head-acts .cfp-chips { display: flex; align-items: stretch; gap: 8px; }
+/* 「N 条源异常」是可点的：做成按钮语义，但外形仍是胶囊不是 cbi-button。 */
+.cfp .cfp-chip-btn {
+	font-family: inherit; font-size: inherit; line-height: inherit;
+	text-align: left; cursor: pointer;
+	-webkit-appearance: none; appearance: none;
+}
+.cfp .cfp-chip-btn:hover { border-color: color-mix(in srgb, var(--cfi-warn) 55%, var(--cfi-line)); }
+.cfp .cfp-chip-btn:focus-visible { outline: 2px solid var(--cfi-primary); outline-offset: 2px; }
 
 .cfp-tabs { margin: 0 0 20px; padding: 0; background: none; border-radius: 0; }
 .cfp-tabs .cbi-tabmenu { border-bottom: 1px solid var(--cfi-line); }
@@ -989,6 +1000,9 @@
 	   390px 屏实测 186px 宽（是刷新按钮的 2.4 倍），四个字居中在长条里，
 	   看着像进度条而非按钮。改为自然宽度 + 右对齐，主次靠颜色区分。 */
 	.cfp-head-acts .btn.primary { flex: 0 0 auto; margin-left: auto; }
+	/* r207：胶囊组与按钮分不到同一行时（源异常 chip 出现后 390 档必然放不下），
+	   胶囊组先换行独占一行；组高对齐按钮的 44px。 */
+	.cfp .cfp-head-acts .cfp-chips { min-height: 44px; }
 	.cfp-main { grid-template-columns: minmax(0, 1fr); }
 	.cfp-side { grid-template-columns: 1fr; }
 	.cfp .card { padding: 14px; }
@@ -1024,6 +1038,12 @@
 	.cfp .tbl tr.top td:first-child { box-shadow: none; }
 	.cfp .tbl tr.top { box-shadow: inset 2px 0 0 var(--cfi-primary); }
 	.cfp .cbi-section { padding: 14px; }
+}
+/* r207：源异常 chip 出现时，两胶囊+两按钮一行要 ~400px；479 以下放不下，
+ * 让胶囊组独占一行（按钮组自然换到下一行，主按钮仍右对齐）。
+ * 只有 has-src 时才改结构，平时窄屏版面跟 r206 完全一样。 */
+@media (max-width: 479px) {
+	.cfp .cfp-head-acts.has-src .cfp-chips { flex: 1 1 100%; }
 }
 
 /* =====================================================================
