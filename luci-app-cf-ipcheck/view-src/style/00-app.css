@@ -635,7 +635,7 @@
 .cfp .cfp-head-acts .cfp-chips { display: flex; align-items: stretch; gap: 8px; }
 /* 「N 条源异常」是可点的：做成按钮语义，但外形仍是胶囊不是 cbi-button。 */
 .cfp .cfp-chip-btn {
-	font-family: inherit; font-size: inherit; line-height: inherit;
+	font-family: inherit; line-height: inherit;
 	text-align: left; cursor: pointer;
 	-webkit-appearance: none; appearance: none;
 }

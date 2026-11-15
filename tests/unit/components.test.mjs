@@ -919,6 +919,19 @@ test('字号：只用认定阶梯上的离散值', () => {
 		'字号越阶：' + LADDER.join('/') + ' 之外的刻度要先讨论再进');
 });
 
+/* r208：真机量到新胶囊 14px、状态胶囊 13px —— .cfp-chip-btn 里写
+ * font-size: inherit 会盖掉 .cfp-chip 的 13px，拿到动作行的 14px。
+ * 按钮只补 font-family/line-height，字号交给 .cfp-chip 一处定义。 */
+test('头部胶囊：可点的那颗不许自带 font-size', () => {
+	const css = fs.readFileSync(
+		path.join(root, 'luci-app-cf-ipcheck', 'view-src', 'style', '00-app.css'), 'utf8');
+	const at = css.indexOf('.cfp .cfp-chip-btn {');
+	assert.ok(at >= 0, '找不到 .cfp-chip-btn 规则');
+	const block = css.slice(at, css.indexOf('}', at));
+	assert.doesNotMatch(block, /font-size\s*:/,
+		'写了 inherit 就会拿到父级 14px，与状态胶囊的 13px 不齐');
+});
+
 /* 版面节奏只抽「栅格间距」与「卡片内距」两个旋钮；控件内部的小间距与控件高度
  * 绑定（按钮 36px 高配 6px 14px 内距），继续写字面量。 */
 test('版面节奏：栅格间距与卡片内距走同一对令牌', () => {
