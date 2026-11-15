@@ -182,6 +182,46 @@ chk '日志说明保留旧记录' "$(has_log '保留现有 DNS 记录')" yes
 chk '汇总说明保留旧记录' "$(has_log '保留旧记录')" yes
 
 reset
+echo "=== 4e. 没有 result.json（重启后 /tmp 是空的）→ 保留记录，不清空 ==="
+# r204：colo_ips 只读 /tmp/.../result.json，而 ranked_ips 有 best-ip.txt 兜底 ——
+# 于是「本轮没数据」会被当成「本机房没可用 IP」，按既定语义把 @机房目标的记录清空。
+# 真机上 5 个 @机房目标全部中招。判据必须是「本轮真的测到过这个机房」。
+seed cf.example.com old5 9.9.9.9 cf-ipcheck
+printf '8.8.4.4 # cf-ipcheck | NRT | 30ms\n' >"$S/etc/best-ip.txt"
+run_result >/dev/null 2>&1; rc=$?
+chk '退出码 0（跳过不是失败）' "$rc" 0
+chk '旧记录仍在' \
+	"$(awk -F'|' '$2=="cf.example.com" && $4=="9.9.9.9"' "$STORE" | wc -l)" 1
+chk '没有新增任何记录' "$(count_records cf.example.com)" 1
+chk '日志说明本轮没有该机房的数据' "$(has_log '没有 @NRT 的数据')" yes
+chk '日志不再出现「按配置清空」' "$(has_log '按配置清空')" no
+
+reset
+echo "=== 4f. result.json 里只有别的机房 → 同样保留，不清空 ==="
+seed cf.example.com old6 9.9.9.9 cf-ipcheck
+cat >"$S/run/result.json" <<'JSON'
+{"items":[{"ip":"5.5.5.5","code":200,"colo":"SIN"}],
+ "dc_summary":[{"dc":"SIN","items":[{"ip":"5.5.5.5","ttfb_ms":20,"code":200}]}]}
+JSON
+run_result >/dev/null 2>&1; rc=$?
+chk '退出码 0' "$rc" 0
+chk '旧记录仍在' \
+	"$(awk -F'|' '$2=="cf.example.com" && $4=="9.9.9.9"' "$STORE" | wc -l)" 1
+chk '日志说明没有该机房的数据' "$(has_log '没有 @NRT 的数据')" yes
+
+reset
+echo "=== 4g. 该机房本轮确实测过但一颗可用都没有 → 仍按配置清空 ==="
+# 反向断言：护栏不能把「真的没可用 IP」也一起挡掉，否则域名会一直指着旧 IP。
+seed cf.example.com old7 9.9.9.9 cf-ipcheck
+cat >"$S/run/result.json" <<'JSON'
+{"items":[{"ip":"4.4.4.4","code":403,"colo":"NRT"},{"ip":"5.5.5.5","code":200,"colo":"SIN"}],"dc_summary":[]}
+JSON
+run_result >/dev/null 2>&1; rc=$?
+chk '退出码 0' "$rc" 0
+chk '旧记录被清掉（确实没有可用 IP）' "$(count_records cf.example.com)" 0
+chk '日志明说按配置清空' "$(has_log '按配置清空')" yes
+
+reset
 echo "=== 5. DELETE 失败且记录仍在 → 部分完成（退出码 6） ==="
 seed cf.example.com old2 1.1.1.2 cf-ipcheck
 mk_write_curl

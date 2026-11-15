@@ -151,6 +151,14 @@ mkdir -p "$RUN_DIR" "$ETC_DIR" 2>/dev/null || true
 # 711 而不是 755：只放行按名字访问，不让别的用户列出目录里有什么。
 chmod 711 "$RUN_DIR" 2>/dev/null || true
 
+# 日志里会出现 Gist 稳定链接（拿到链接就能读那份榜单）与各目标记录名，而运行目录是
+# 711 —— 文件位就是唯一的屏障。procd 的 umask 是 0022（不是 077），`>>` 首次创建的
+# 文件就是 0644，真机上 `su nobody -c head` 直接读得到；trim_log 里那句 chmod 600
+# 只在重写日志时才执行，514 行的小日志永远等不到那次重写（r204）。
+# 这里先建一次并压成 600：之后所有追加都跟着这个 inode 的权限走。
+: >>"$LOG" 2>/dev/null || true
+chmod 600 "$LOG" 2>/dev/null || true
+
 # 丢弃响应体用的“黑洞”。不能硬写 /dev/null：真机遇到过 /dev/null 变成普通文件、
 # 且落在 512K 的 tmpfs 上 —— 大响应写不下就短写，curl 报 rc=23
 # “Failure writing output to destination”，表现是探测域名越大页越全挂。
@@ -1005,7 +1013,8 @@ counts_json() {
 trace_colo() { # $1=域名 $2=IP —— 取该 IP 的 colo= 字段
 	d=$1
 	[ -n "$d" ] || return 0
-	run_probe "${CURL_BIN:-curl} -4 -sS --connect-timeout $C_TIMEOUT --max-time $C_TIMEOUT --resolve $d:$C_PORT:$2 https://$d/cdn-cgi/trace" 2>/dev/null | \
+	# URL 同样要带非 443 端口，否则 --resolve 不命中、trace 打的是真实地址（r204）
+	run_probe "${CURL_BIN:-curl} -4 -sS --connect-timeout $C_TIMEOUT --max-time $C_TIMEOUT --resolve $d:$C_PORT:$2 https://$(hostport "$d" "$C_PORT")/cdn-cgi/trace" 2>/dev/null | \
 		sed -n 's/^colo=//p' | head -n 1 || true
 }
 
@@ -1543,8 +1552,11 @@ canary_check() {
 	[ "$C_CANARY" = 1 ] || return 0
 	dom=$(printf '%s' "$C_DOMAINS" | cut -d, -f1 | tr -d ' ')
 	[ -n "$dom" ] || return 0
+	# 同 probe_cmd：URL 里不带端口时 --resolve 不命中，canary 就会拿真实站点的状态码
+	# 判成「被接管」—— 那会让每轮都跳过测速/上传/DNS，且日志只说「出口被接管」（r204）
+	hp=$(hostport "$dom" "$C_PORT")
 	for ip in 203.0.113.77 198.51.100.77; do
-		code=$(run_probe "${CURL_BIN:-curl} -4 -o $NULL_DEV -sS --connect-timeout 3 --max-time 4 --resolve $dom:$C_PORT:$ip https://$dom/ -w '%{http_code}'" 2>/dev/null)
+		code=$(run_probe "${CURL_BIN:-curl} -4 -o $NULL_DEV -sS --connect-timeout 3 --max-time 4 --resolve $dom:$C_PORT:$ip https://$hp/ -w '%{http_code}'" 2>/dev/null)
 		if [ "$(canary_verdict "$code")" = intercepted ]; then
 			log "canary $ip 竟然返回 HTTP $code：本机 443 出口被透明代理接管，本轮逐 IP 结果不可信"
 			printf '1\n'
@@ -1627,16 +1639,30 @@ run_probe() { # $1 = 交给 shell 执行的命令串
 	fi
 }
 
+# URL 里的主机名部分：443 时保持原样（URL 里端口可省），否则补上 `:端口`。
+# 为什么必须补（r204）：curl 的 --resolve 是 `host:port` **精确匹配** —— URL 里不写
+# 端口，它就按 443 去查表；probe_port 配成 8443 时表里没有 443 的条目，于是这次请求
+# 退回系统 DNS，探测的是域名的真实地址而不是候选 IP。症状极隐蔽：整列数字都差不多、
+# 且与候选无关；canary 拿真实站点的状态码判定，每轮都报「出口被接管」并跳过测速/
+# 上传/DNS。真机对照（本机 curl）：URL 无端口 → Trying 真实地址；URL 带端口 → 命中。
+hostport() { # $1=host $2=port
+	case "${2:-443}" in
+		443) printf '%s' "$1" ;;
+		*)   printf '%s:%s' "$1" "$2" ;;
+	esac
+}
+
 probe_cmd() { # $1=IP $2=域名 $3=额外 path $4=响应头转储文件(可省) -> 拼出 curl 命令串
 	# 命令串里写绝对路径：它是整条交给 `su -c` 的，那条 shell 的 PATH 不一定有 /usr/bin。
 	# $4 给多样本验证用（r71）：同一个 curl 把响应头落一份盘，顺带验 CF-RAY 与
 	# server-timing，不多一次请求。注意 -D 与 -o 不冲突（头进文件、身体进 null）。
+	hp=$(hostport "$2" "$C_PORT")
 	if [ -n "${4:-}" ]; then
 		printf "%s -4 -o %s -sS --connect-timeout %s --max-time %s --resolve %s:%s:%s -D %s https://%s%s -w '%%{http_code},%%{time_connect},%%{time_appconnect},%%{time_starttransfer},%%{time_total}'" \
-			"${CURL_BIN:-curl}" "$NULL_DEV" "$C_TIMEOUT" "$C_TIMEOUT" "$2" "$C_PORT" "$1" "$4" "$2" "${3:-/}"
+			"${CURL_BIN:-curl}" "$NULL_DEV" "$C_TIMEOUT" "$C_TIMEOUT" "$2" "$C_PORT" "$1" "$4" "$hp" "${3:-/}"
 	else
 		printf "%s -4 -o %s -sS --connect-timeout %s --max-time %s --resolve %s:%s:%s https://%s%s -w '%%{http_code},%%{time_connect},%%{time_appconnect},%%{time_starttransfer},%%{time_total}'" \
-			"${CURL_BIN:-curl}" "$NULL_DEV" "$C_TIMEOUT" "$C_TIMEOUT" "$2" "$C_PORT" "$1" "$2" "${3:-/}"
+			"${CURL_BIN:-curl}" "$NULL_DEV" "$C_TIMEOUT" "$C_TIMEOUT" "$2" "$C_PORT" "$1" "$hp" "${3:-/}"
 	fi
 }
 
@@ -1830,6 +1856,15 @@ speed_valid() { # $1=请求字节数 -> 1（算真吞吐）/ 0（不算）
 	}'
 }
 
+# 把一段文本安全地嵌进那条交给 `su -c` 的命令串：单引号包裹，内部的 ' 用 '\'' 转义。
+# 为什么需要（r204）：speed_path 是用户可填的，模板拼出来的 URL 直接裸插进命令串 ——
+# 路径里带一个 `&` 就把命令截成两段（`sh -c "echo https://x/10m?a=1&b=2"` 只输出前半截），
+# 症状是吞吐整列「未测到」而日志里什么都没有。单引号内除了 ' 之外一切都不特殊，
+# 所以把 ' 转义掉就够了，不需要逐个字符白名单。
+shq() {
+	printf "'%s'" "$(printf '%s' "${1:-}" | sed "s/'/'\\\\''/g")"
+}
+
 # 吞吐请求 URL（r77）：把路径模板里的 {bytes}/{size} 换成实际值。
 # 模板里一个占位符都没有时，退回默认的 ?bytes=N 拼接 —— 免得"填了路径却没生效"
 # 这种静默失败（用户以为换了端点，实际还在打老路径）。
@@ -1953,7 +1988,7 @@ speed_of() {
 	fi
 	# 五个量：净速率靠 size/(total−ttfb) 算，末位状态码是判「回的是不是文件」的依据
 	# （只看 rc 会让十几 KB 的 403 挑战页混成真吞吐，r75 真机那整列 0.01MB/s 就是它）。
-	sp_out=$(run_probe "${CURL_BIN:-curl} -4 -o $NULL_DEV -sS --connect-timeout $C_TIMEOUT --max-time $sp_to --resolve $C_SPEEDDOM:$C_PORT:$sp_ip $(speed_url "$C_SPEEDPATH" "$C_SPEEDDOM" "$C_PORT" "$sp_want") -w '%{speed_download} %{size_download} %{time_total} %{time_starttransfer} %{http_code}'" 2>/dev/null)
+	sp_out=$(run_probe "${CURL_BIN:-curl} -4 -o $NULL_DEV -sS --connect-timeout $C_TIMEOUT --max-time $sp_to --resolve $C_SPEEDDOM:$C_PORT:$sp_ip $(shq "$(speed_url "$C_SPEEDPATH" "$C_SPEEDDOM" "$C_PORT" "$sp_want")") -w '%{speed_download} %{size_download} %{time_total} %{time_starttransfer} %{http_code}'" 2>/dev/null)
 	sp_rc=$?
 	# rc=28 是「--max-time 到了」：慢线路上这是**真测量**（已经下了几个 MB），
 	# 不能整条丢掉，但要标 truncated 让门槛放宽 20%。其余非零都是没量到东西。
@@ -3466,7 +3501,12 @@ do_diag() {
 	uci_get=''
 	uci_list=''
 	if [ "$HAS_UCI" = 1 ]; then
-		uci_show=$(printf '%s\n' "$( "$UCI_BIN" -q show "$CONF" 2>&1 | head -n 6 | tr '\n' '~' )" | cut -c1-300)
+		# 打码再截断：uci show 按配置里的 option 顺序输出，head -n 6 今天恰好没轮到
+		# gist_token / dns_token，但改一下选项顺序它们就会原样进页面和 rpcd 响应。
+		# 一个 sed 就能把这个"取决于顺序"的坑填掉（r204）。
+		uci_show=$( "$UCI_BIN" -q show "$CONF" 2>&1 \
+			| sed 's/\(gist_token=\).*/\1***/; s/\(dns_token=\).*/\1***/' \
+			| head -n 6 | tr '\n' '~' | cut -c1-300)
 		uci_get=$("$UCI_BIN" -q get "$CONF.@global[0].probe_port" 2>&1)
 		uci_rc=$?
 		# list 那一侧单独留一份原文：cfg_list 出问题时，光看条数猜不到 uci 到底
@@ -4485,6 +4525,29 @@ selftest() {
 	check 'probe_cmd 第 4 参：不破坏原有 --resolve 与 -o' "$got" '1'
 	got=$(sh "$0" _probecmd 1.2.3.4 example.com / | grep -c -- '-D ' || true)
 	check 'probe_cmd 不给第 4 参时完全没有 -D（旧形状不变）' "$got" '0'
+
+	# r204：probe_port ≠ 443 时 URL 必须带端口。
+	# curl 的 --resolve 按 host:port 精确匹配，URL 里不写端口就按 443 查表 ——
+	# 查不到就退回系统 DNS，探测的是域名的真实地址（数字全一样，看着还很"稳定"）。
+	# 这类失效在页面上完全看不出来，只能在这里钉死。
+	_cp_save=${C_PORT:-443}
+	C_PORT=8443
+	check 'hostport：443 保持原样' "$(hostport h.example.com 443)" 'h.example.com'
+	check 'hostport：8443 补端口' "$(hostport h.example.com 8443)" 'h.example.com:8443'
+	got=$(probe_cmd 1.2.3.4 example.com / | grep -c -- 'https://example.com:8443/' || true)
+	check 'probe_cmd：非 443 端口时 URL 带端口' "$got" '1'
+	got=$(probe_cmd 1.2.3.4 example.com / | grep -c -- '--resolve example.com:8443:1.2.3.4' || true)
+	check 'probe_cmd：--resolve 与 URL 的端口一致' "$got" '1'
+	C_PORT=443
+	got=$(probe_cmd 1.2.3.4 example.com / | grep -c -- 'https://example.com/' || true)
+	check 'probe_cmd：443 时 URL 不带端口（形状不变）' "$got" '1'
+	C_PORT=$_cp_save
+
+	# r204：交给 su -c 的命令串里，用户可控的测速 URL 必须被单引号包住。
+	# 不包的话模板里一个 & 就把命令截断，吞吐整列「未测到」且日志无话可说。
+	check 'shq：普通 URL 被单引号包住' "$(shq 'https://x/p')" "'https://x/p'"
+	check 'shq：带 & 的 URL 包住后原样可执行' "$(shq 'https://x/10m?a=1&b=2')" "'https://x/10m?a=1&b=2'"
+	check 'shq：内部单引号被转义' "$(shq "a'b")" "'a'\\''b'"
 
 	# ---- r90：CF-RAY 里的机房码 / DC 汇总 / 按 DC 过滤 / 判定指标 / 速度单位 ----
 	# ray_colo 只解析已落盘的响应头，不发请求 —— 这条路径的全部价值就在这。

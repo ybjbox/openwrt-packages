@@ -56,4 +56,10 @@ if [ -z "$_dns_tg" ] && [ -n "$_dns_rec" ]; then
 fi
 
 uci -q commit cf_ipcheck
+
+# 配置里有 gist_token / dns_token 明文，而 apk 解包出来的 conffile 是 0644 ——
+# 同机任何用户都读得到（真机 `su nobody -c head` 实测可读）。uci commit 保留权限位，
+# 所以在**每次** commit 之后补一次 chmod 就够；init.d 的 start_service 里还有一份，
+# 覆盖"升级完还没人保存过"和"开机"这两条路径。
+chmod 600 /etc/config/cf_ipcheck 2>/dev/null || true
 exit 0

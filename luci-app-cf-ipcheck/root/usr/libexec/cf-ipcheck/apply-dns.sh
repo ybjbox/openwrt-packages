@@ -75,6 +75,12 @@ REQ_TRIES=2                # GET 任意失败 / 写请求连接阶段失败时�
 RUN_DIR="${CFIP_RUN_DIR:-/tmp/cf-ipcheck}"
 ETC_DIR="${CFIP_ETC_DIR:-/etc/cf-ipcheck}"
 LOG="$RUN_DIR/cf-ipcheck.log"
+# 日志与引擎共用一份，里面会出现 Gist 稳定链接和各个记录名。真机上它是 0644
+# （apk/procd 的 umask 是 022），而运行目录 711 —— 文件位是唯一屏障。这里跟引擎
+# 一样先建一次并压 600：谁先跑都不会留下一个 644 的日志（r204）。
+mkdir -p "$RUN_DIR" 2>/dev/null || true
+: >>"$LOG" 2>/dev/null || true
+chmod 600 "$LOG" 2>/dev/null || true
 # 锁的状态变量要在最早处赋值：--selftest 会在读到锁那段代码之前就 exit，
 # 而自测里要拿它做 save/restore（踩过一次 unbound variable）。
 LOCKDIR="$RUN_DIR/dns-sync.lock"
@@ -89,6 +95,9 @@ SKIP_GATE=0
 BYPASS_CACHE=0
 SELFTEST=0
 IP_ARG=''
+# 本轮测过的机房码（逗号分隔，见 round_colos）。放在这里赋值是给 set -u 兜底：
+# --selftest 不跑主流程，但仍会直接驱动 handle_target 的判据函数。
+ROUND_COLOS=''
 
 usage() {
 	cat <<'U'
@@ -357,6 +366,16 @@ body_patch() {
 		'{content:$c,proxied:false,ttl:$t,comment:$m}'
 }
 
+# 令牌只走 stdin 上的 curl 配置（-K -），不进 argv。
+# 为什么：`-H "Authorization: Bearer xxx"` 是命令行参数，会原样出现在
+# /proc/<pid>/cmdline 里 —— 同机任何用户 `cat /proc/*/cmdline` 都能捞到（r204 补的；
+# 引擎的 upload_gist 早就是这个姿势，只有这里还留着 -H）。
+# curl 配置文件里 `header = "..."` 与 -H 完全等价，值里的 \ 和 " 要转义。
+auth_cfg() {
+	_t=$(printf '%s' "$TOKEN" | sed 's/\\/\\\\/g; s/"/\\"/g')
+	printf 'header = "Authorization: Bearer %s"\n' "$_t"
+}
+
 api() {
 	# $1 = GET|POST|PATCH|DELETE, $2 = 路径, $3 = body（GET/DELETE 时省略）
 	# 超时与预算：手动按钮受 rpcd 30 秒硬上限约束，自动收尾没有。单请求 6 秒
@@ -370,13 +389,11 @@ api() {
 	while :; do
 		_t0=$(date +%s)
 		if [ -n "$_body" ]; then
-			_out=$("$CURL" -sS --max-time "$REQ_TIMEOUT" -X "$_m" \
-				-H "Authorization: Bearer $TOKEN" \
+			_out=$(auth_cfg | "$CURL" -sS -K - --max-time "$REQ_TIMEOUT" -X "$_m" \
 				-H 'Content-Type: application/json' \
 				--data "$_body" "$API$_p" 2>"$_errf")
 		else
-			_out=$("$CURL" -sS --max-time "$REQ_TIMEOUT" -X "$_m" \
-				-H "Authorization: Bearer $TOKEN" "$API$_p" 2>"$_errf")
+			_out=$(auth_cfg | "$CURL" -sS -K - --max-time "$REQ_TIMEOUT" -X "$_m" "$API$_p" 2>"$_errf")
 		fi
 		_rc=$?
 		_secs=$(( $(date +%s) - _t0 ))
@@ -498,6 +515,30 @@ jp.example.com 1 @NRT' 'example.com' 2>/dev/null)" 'jp.example.com|2|example.com
 	chk '取前 N：前 2 个' "$(ranked_ips | head -n 2 | tr '\n' ',')" '9.9.9.9,8.8.8.8,'
 	RUN_DIR=$_save_run; ETC_DIR=$_save_etc; IP_ARG=$_save_ip
 	rm -rf "$_tmp" 2>/dev/null
+
+	# ---- r204：分清「本轮没数据」与「本机房没可用 IP」----
+	# 前者必须保留现有记录。混为一谈的后果是真机上 5 个 @机房目标全部被清空
+	# （重启后 /tmp 是空的，随手点一下「立即写一次」就够）。
+	if [ -n "$JQ" ]; then
+		_tmp4="${TMPDIR:-/tmp}/cfip-colo.$$"
+		mkdir -p "$_tmp4" 2>/dev/null
+		printf '{"items":[{"ip":"1.2.3.4","colo":"NRT"},{"ip":"5.6.7.8","colo":"SIN"},{"ip":"9.9.9.9","colo":""},{"ip":"8.8.8.8"}]}' >"$_tmp4/result.json"
+		chk 'round_colos：items 里的机房去重排序（空 colo 不算）' \
+			"$(round_colos "$_tmp4/result.json")" 'NRT,SIN'
+		chk 'round_colos：没有 result.json 时为空（=本轮没数据）' \
+			"$(round_colos "$_tmp4/nope.json")" ''
+		round_colo_has 'NRT,SIN' NRT; chk 'round_colo_has：命中' "$?" 0
+		round_colo_has 'NRT,SIN' AMS; chk 'round_colo_has：不命中' "$?" 1
+		round_colo_has '' NRT;        chk 'round_colo_has：空集合一律不命中（据此保留记录）' "$?" 1
+		round_colo_has 'SIN,NRT' SIN; chk 'round_colo_has：不受顺序影响' "$?" 0
+		chk '不清空的判据：机房不在本轮集合里 ⇒ 保留' \
+			"$(round_colo_has "$(round_colos "$_tmp4/result.json")" AMS; echo $?)" '1'
+		chk '清空的判据：机房确实本轮测过 ⇒ 允许按配置清空' \
+			"$(round_colo_has "$(round_colos "$_tmp4/result.json")" NRT; echo $?)" '0'
+		rm -rf "$_tmp4" 2>/dev/null
+	else
+		printf '[SKIP] 没有 jq：跳过 round_colos 相关断言\n'
+	fi
 
 	# ---- zone_id 缓存 ----
 	_tmp2="${TMPDIR:-/tmp}/cfip-zone.$$"
@@ -773,6 +814,24 @@ colo_ips() { # $1=逗号分隔的机房码 $2=ok（默认，只发 2xx/3xx）/ a
 		| sort_by(.t) | .[].ip' "$RUN_DIR/result.json" 2>/dev/null
 }
 
+# 本轮到底测过哪些机房：result.json 的 items 里每颗 IP 都带 colo（识别不出时空串）。
+# 用途只有一个 —— 分清「这个机房本轮根本没数据」和「测了、但一颗可用的都没有」。
+# 前者绝不能清空记录（重启后 /tmp 是空的、或某轮中途失败时就是这种状态），
+# 后者才按既定语义清空。混为一谈的后果是真机复现过的：5 个 @机房目标全部被清空。
+round_colos() { # $1=result.json -> stdout 逗号分隔的机房码（去重、排序）
+	[ -n "$JQ" ] || return 0
+	[ -f "${1:-}" ] || return 0
+	"$JQ" -r '[.items[]? | (.colo // "") | select(. != "")] | unique | join(",")' "$1" 2>/dev/null || true
+}
+
+# $1=逗号分隔的机房集合 $2=要查的机房码 -> 0 = 命中
+round_colo_has() {
+	case ",${1:-}," in
+		*",$2,"*) return 0 ;;
+	esac
+	return 1
+}
+
 # 某 IP 是否在换行分隔的列表里
 ip_in_list() {
 	case "
@@ -870,6 +929,14 @@ handle_target() {
 		return 0
 	fi
 	if [ "$_cleanup" = 0 ] && [ -n "$_colo" ] && [ "$_want_n" = 0 ]; then
+		if ! round_colo_has "$ROUND_COLOS" "$_colo"; then
+			# 「本轮没数据」不等于「本机房没可用 IP」。重启后 /tmp 是空的、或者某轮
+			# 中途失败只写了半份 result.json，都会落到这里 —— 此时按原语义清空就是
+			# 把线上解析打空（r203 真机复现：5 个 @机房目标全部「按配置清空」）。
+			log "$_tag：result.json 里没有 @$_colo 的数据（本轮没跑到这个机房），保留 $_f 的现有记录，不清空"
+			SKIPPED=1
+			return 0
+		fi
 		# 这是配置里最危险的一种状态：机房被墙/没测到，而这个域名只挂这个机房。
 		# 按既定语义清空它 —— 但必须说得让人一眼看见，别让人几天后才发现解析空了。
 		log "$_tag：@$_colo 本轮没有可用 IP —— 按配置清空 $_f 的记录（想避免就再挂一个不限机房的记录名做兜底）"
@@ -1073,6 +1140,9 @@ SUM_KEEP=0
 SUM_ADD=0
 SUM_DEL=0
 _seen=0
+# 「本轮测过哪些机房」在任何写入之前定格：handle_target 用它区分「本轮没数据」
+# （保留记录）与「测了但没可用 IP」（按配置清空）。一个 jq 解析一次，5 个目标共用。
+ROUND_COLOS=$(round_colos "$RUN_DIR/result.json")
 while IFS= read -r _spec; do
 	[ -n "$_spec" ] || continue
 	_seen=$((_seen + 1))

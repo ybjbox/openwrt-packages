@@ -16,6 +16,11 @@ STOP=10
 USE_PROCD=1
 
 start_service() {
+	# /etc/config/cf_ipcheck 里有 gist_token / dns_token 明文。apk 解包按 umask 022
+	# 出来就是 0644 —— 同机任何用户（包括插件自己的探测身份 nobody）都能读。
+	# uci commit 会保留原文件的权限位（真机验过 0644 → 0644），所以只要在这里压一次
+	# 就一直是 600，不用每次保存都管。uci-defaults 里另有一份，覆盖"装完还没重启服务"。
+	chmod 600 /etc/config/cf_ipcheck 2>/dev/null || true
 	procd_open_instance
 	procd_set_param command /usr/bin/cf-ipcheck daemon
 	procd_set_param respawn 3600 5 0
