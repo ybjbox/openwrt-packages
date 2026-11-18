@@ -1084,3 +1084,20 @@ test('r214：中位与最佳 IP 用竖线分组，窄屏不启用', () => {
 	assert.match(css, /\.dc > summary > span:nth-child\(4\) \{ padding-left: 0; box-shadow: none; \}/,
 		'窄屏必须撤掉竖线与内距，否则重新溢出');
 });
+
+/* r216：r200 给胶囊加的 align-self:stretch 只拉到了「胶囊组」的内容高（真机 20px），
+ * 旁边按钮 40px，胶囊看起来仍小一整号。组自己必须先撑满动作行。 */
+test('r216：状态胶囊与旁边按钮同高', () => {
+	const css = fs.readFileSync(path.join(root, 'luci-app-cf-ipcheck', 'view-src', 'style', '00-app.css'), 'utf8');
+	const m = css.match(/\.cfp \.cfp-head-acts \.cfp-chips \{([\s\S]*?)\}/);
+	assert.ok(m, '找不到胶囊组规则');
+	assert.match(m[1], /align-self:\s*stretch/, '胶囊组要跟着动作行撑满');
+	assert.match(m[1], /min-height:\s*40px/, '换行独占一行时要有 40px 下限');
+	assert.match(css, /\.cfp \.cfp-head-acts \.cfp-chips \{ min-height: 44px; \}/, '窄屏 44px 下限要保留');
+});
+
+test('r216：菜单显示名去掉「实测」', () => {
+	const j = JSON.parse(fs.readFileSync(path.join(root, 'luci-app-cf-ipcheck',
+		'root', 'usr', 'share', 'luci', 'menu.d', 'luci-app-cf-ipcheck.json'), 'utf8'));
+	assert.equal(j['admin/services/cf_ipcheck'].title, 'Cloudflare 优选 IP');
+});

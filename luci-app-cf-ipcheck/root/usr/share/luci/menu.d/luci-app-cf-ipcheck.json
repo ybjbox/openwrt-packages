@@ -1,6 +1,6 @@
 {
     "admin/services/cf_ipcheck": {
-        "title": "Cloudflare 优选 IP 实测",
+        "title": "Cloudflare 优选 IP",
         "action": {
             "type": "view",
             "path": "cf_ipcheck/settings"
