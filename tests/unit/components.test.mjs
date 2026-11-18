@@ -382,8 +382,8 @@ test('机房分布：中位分档上色、最佳 IP 退为次级', () => {
 	dc.update(rows, 1000000);
 	assert.match(medOf('NRT').className, /\bok\b/, '最快机房给绿');
 	assert.match(medOf('DEN').className, /\bok\b/, '1.6 倍以内算同档');
-	assert.match(medOf('SIN').className, /\bdim\b/, '3.5 倍以上只弱化');
-	assert.doesNotMatch(medOf('SIN').className, /\bbad\b/, '本轮可用的机房不该标红');
+	assert.doesNotMatch(medOf('SIN').className, /\bok\b|\bwarn\b|\bdim\b/,
+		'3.5 倍以上不加色：灰会读成失效、红会读成故障');
 	assert.match(bestOf('NRT').className, /\bdim\b/, '最佳 IP 是次级信息');
 
 	/* 基准变了但这一行数字没动：档位也必须跟着重算（NRT 300→200 后 DEN 480 = 2.4 倍） */
@@ -391,6 +391,14 @@ test('机房分布：中位分档上色、最佳 IP 退为次级', () => {
 	dc.update(rows, 1000000);
 	assert.match(medOf('DEN').className, /\bwarn\b/, '基准变化后要重新分档');
 	assert.match(medOf('NRT').className, /\bok\b/);
+
+	/* 全场都慢的一轮：相对最快也不等于快，不许夸成绿 */
+	dc.update([
+		{ dc: 'AAA', count: 1, ttfb_med: 1500, best_ip: '1.1.1.1', items: [], cap: 12 },
+		{ dc: 'BBB', count: 1, ttfb_med: 1600, best_ip: '2.2.2.2', items: [], cap: 12 }
+	], 1000000);
+	assert.doesNotMatch(medOf('AAA').className, /\bok\b/, '1500ms 再快也不该标绿');
+	assert.match(medOf('AAA').className, /\bwarn\b/, '但仍算同档偏慢');
 });
 
 /* ---- 7. 日志上限与跟随 ------------------------------------------------ */

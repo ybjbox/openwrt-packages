@@ -394,18 +394,19 @@
 			return unit === 1048576 ? ' MiB/s' : ' MB/s';
 		}
 
-		/* 分档只给绿/琥珀/灰三档，最慢一档刻意不用红色：这些机房本轮都可用，
-		   标红会被读成故障。1.6 / 3.5 倍是「同档 / 偏慢 / 明显慢」的经验切分。 */
+		/* 颜色只承担「快 / 偏慢」两档，最慢一档保持正文色 —— 灰色会把主指标读成
+		   「失效/无数据」，而红色会把这轮可用的机房读成故障。
+		   绿色再加一条绝对上限：全场都慢的一轮里，最快的那个也不该被夸成绿。 */
 		function medTier(v) {
 			var x = Number(v);
 			if (!(x > 0) || !(bestMed > 0))
 				return '';
 			var ratio = x / bestMed;
-			if (ratio <= 1.6)
+			if (ratio <= 1.6 && x <= 800)
 				return 'ok';
 			if (ratio <= 3.5)
 				return 'warn';
-			return 'dim';
+			return '';
 		}
 
 		function errText(d) {
