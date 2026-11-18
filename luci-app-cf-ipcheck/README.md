@@ -5,7 +5,7 @@
 与在 GitHub Actions 上跑测速的方案有本质区别：Actions 测的是数据中心的网络，
 不是你家宽带到 Cloudflare 的线路。优选 IP 只有在你自己的线路上测才有意义。
 
-> **当前版本 r211（2026-11-15）**：设备实测 `1.0.0-r211`，四个区（运行 / 诊断 / 日志 / 设置）、
+> **当前版本 r213（2026-11-18）**：设备实测 `1.0.0-r213`，四个区（运行 / 诊断 / 日志 / 设置）、
 > 34 个状态字段、56 个 UCI option。r184 那时的设置项精简、字段短说明 `?`、响应式与暗色
 > 适配都在，改动说明见下面各节的专题；下面「配置项」表是**完整 uci 面**，不是设置页当前可见项。
 >
@@ -23,6 +23,8 @@
 > | r209 | D 批：首选/名次口径、Table 监听器回收、死 CSS 清理、`parse_targets` 引号与白名单、文档同步 |
 > | r210 | 修 r209 遗漏的特异性覆盖：三个列显隐复选框在 768–1152 档被主题的 `display:table-cell` 压掉，一条高特异性规则统一修好 |
 > | r211 | 把两条 404 社区源的修复**打进包内默认配置**（LancelotRar 换 `scanned-top200`、删除已消失的 Senflare），新装机不再带坏源；视图代码未改，只随版本号重建 |
+> | r212 | FanchmWrt 主题适配三处：页头黑底/粘顶、390 机房明细横向溢出、1024 长字段被 `input{width:210px}` 压窄 |
+> | r213 | 暗色只跟随主题实际明暗：FanchmWrt 不响应 `prefers-color-scheme`，浅页面 + 系统暗色偏好不再把卡片变黑 |
 >
 > **硬边界**：插件只做 Cloudflare DNS 自动解析，不写任何本机配置文件；下发的令牌不进命令行参数。
 
@@ -240,7 +242,22 @@ ssh -p 22845 root@op.403333.xyz 'apk add --allow-untrusted /tmp/luci-app-cf-ipch
 
 ## 验证状态
 
-### 2026-11-16 · r211（当前）
+### 2026-11-18 · r213（当前）
+
+- CI：push `44228402578` + dispatch `44228421229` 全绿，SDK `aarch64_cortex-a53-25.12.2`
+  （Build 33 分钟，SDK 下载波动）；APK `luci-app-cf-ipcheck-1.0.0-r213.apk`
+  （204,342 B，sha256 `aabb0d86e2ce9c56390a7037040fc8472dbc80777c49036e31633a81456d0c71`）。
+- **主题适配（FanchmWrt）**：页头黑底/粘顶、390 机房明细溢出、1024 长字段三处已修；
+  暗色改为按页面实际亮度判断，浅色主题 + 系统暗色偏好时强制浅色（详见下一节）。
+- 真机：1440/1024/767/390 页头 `background:none`、`position:static`、`box-shadow:none`，
+  横向溢出全 0；390 机房明细 318/318；1024 长字段 506px、端口仍 210px；
+  暗色 context 下 `cfp-force-light` 生效、卡片白底深字；模拟深色 body 后类正确移除；
+  未捕获 JS 异常 0。
+- 守门：装机前后 config md5 `abd00d8f…` 一致，12 条源、6 条 targets、`daily_times`、
+  `lastrun`、权限 600 全不变。`.apk-new` 与临时包已清理。
+- 本地五件套：build --check / lint / **104 unit** / **147 contract** / smoke 全绿。
+
+### 2026-11-16 · r211（历史）
 
 - CI：push `43732216749` + dispatch `43732267714` 全绿，SDK `aarch64_cortex-a53-25.12.2`；
   APK `luci-app-cf-ipcheck-1.0.0-r211.apk`（203,823 B，
@@ -808,6 +825,27 @@ r207 把这份状态做成头部的一颗「N 条源异常」胶囊（真按钮�
 `f-warn` / `f-bad` 是日志过滤动态拼出来的**活**类名，不在清理之列。
 另外 Table 现在暴露 `destroy()`，重建表格与页面 teardown 都会摘掉它挂在 window 上的
 两个指针监听器，不再每次进出页面累积闭包。
+
+## FanchmWrt 主题适配（r212 / r213）
+
+新固件的 `fanchmwrt` 主题有两条全局规则会命中插件，旧 Argon 没有：
+
+1. **裸 `header` 规则**（`background:linear-gradient(#333,#222); position:sticky;
+   z-index:800; color:#BFBFBF; box-shadow:…`）命中 `<header class="cfp-head">`。
+   插件只写了 `color:inherit`，于是黑底 + 深灰字，滚动时还会粘顶。r212 显式重置
+   `background / box-shadow / position`，特异性 `(0,1,0)` 足够，不用强制优先。
+2. **裸 `input { width:210px }`**：1024 单列时长字段（域名/路径/ID）被压成 210px，
+   右侧大片空白。r212 在 768–1152 块按 `data-name` 只放长长字段；端口/条数等短字段不变。
+3. **390 机房明细溢出**：主题字体让 `.dc > summary` 首列变宽，IP 列只剩 51px，
+   整页横向溢出 41px。r212 收窄数值列并隐藏中文机房名（IP 列恢复到 119px）。
+
+暗色是另一类问题：FanchmWrt **完全不响应** `prefers-color-scheme`，但系统暗色偏好
+仍会让插件的暗色块生效，卡片变 `#2b2b2e`、文字仍是 `#333`。r213 加 `CFI.theme`：
+从 `body` 向上找第一个非透明背景算亮度，只有页面真的是深色才让暗色块生效；
+浅页面 + 暗色偏好时给 `html` 加 `cfp-force-light`，把暗色变量整体改回浅色。
+旧 Argon 暗色（body 深色）不加类，原暗色适配无回归。
+
+排查方法与完整证据见 `E:/cf_ipcheck/AUDIT-blackhead-fanchmwrt.md`。
 
 ## 定时为什么用常驻进程而不是 crontab
 
