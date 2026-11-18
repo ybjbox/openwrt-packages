@@ -1025,3 +1025,19 @@ test('r212：768–1152 长字段撑满可用宽度', () => {
 	for (const n of ['probe_domains', 'dns_zone', 'token_file', 'gist_id'])
 		assert.match(css, new RegExp('data-name="' + n + '"\\] input'), '长字段 ' + n + ' 缺宽度规则');
 });
+
+/* r213：FanchmWrt 不响应 prefers-color-scheme，系统暗色偏好会让插件暗色块生效，
+ * 但页面仍是浅色。CFI.theme 按页面实际背景亮度判断，浅色时加 cfp-force-light。 */
+test('r213：浅色主题下的暗色偏好不许把卡片变黑', () => {
+	const css = fs.readFileSync(path.join(root, 'luci-app-cf-ipcheck', 'view-src', 'style', '00-app.css'), 'utf8');
+	assert.match(css, /html\.cfp-force-light \.cfp\[class\]/, '缺 cfp-force-light 的 .cfp 覆盖');
+	assert.match(css, /html\.cfp-force-light \.cfp-modal\[class\]/, '弹窗也要覆盖');
+	assert.match(css, /--cfi-card: #ffffff/, '必须把卡片底色改回白色');
+	const pre = fs.readFileSync(path.join(root, 'luci-app-cf-ipcheck', 'view-src', '00-pre.js'), 'utf8');
+	assert.match(pre, /CFI\.theme = \(function/, '缺 CFI.theme');
+	assert.match(pre, /getComputedStyle\(el\)\.backgroundColor/, '必须读实际背景色');
+	assert.match(pre, /cfp-force-light/, '必须切换 cfp-force-light');
+	const view = fs.readFileSync(path.join(root, 'luci-app-cf-ipcheck', 'view-src', '99-view.js'), 'utf8');
+	assert.match(view, /CFI\.theme\.sync\(\)/, 'render 时必须同步一次');
+	assert.match(view, /prefers-color-scheme: dark/, '必须监听系统偏好变化');
+});

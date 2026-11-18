@@ -17,6 +17,7 @@ function linkStyle() {
 
 var CFI_SHELL = null;
 var CFI_ROUTE_SYNC = null;
+var CFI_THEME_BOUND = false;
 
 return view.extend({
 	load: function () {
@@ -26,6 +27,16 @@ return view.extend({
 
 	render: function (raw) {
 		linkStyle();
+		CFI.theme.sync();
+		if (!CFI_THEME_BOUND && window.matchMedia) {
+			CFI_THEME_BOUND = true;
+			var mq = window.matchMedia('(prefers-color-scheme: dark)');
+			var onTheme = function () { CFI.theme.sync(); };
+			if (mq.addEventListener)
+				mq.addEventListener('change', onTheme);
+			else if (mq.addListener)
+				mq.addListener(onTheme);
+		}
 		var sh = CFI.shell.create(raw);
 		CFI_SHELL = sh;
 		var root = sh.build().root;

@@ -587,6 +587,21 @@
 	.cfp *, .cfp *::before, .cfp *::after { transition: none; animation: none; }
 }
 
+/* r213：FanchmWrt 等主题不响应 prefers-color-scheme，但浏览器暗色偏好会让上面的
+   暗色块生效，页面却仍是浅色，形成"浅页面 + 黑卡片 + 深灰字"。CFI.theme 检测到
+   页面实际是浅色时给 html 加 cfp-force-light，把暗色块改过的变量整体改回浅色。
+   特异性 (0,2,1) 高于暗色块的 .cfp[class] (0,1,1)，与源顺序无关。 */
+html.cfp-force-light .cfp[class],
+html.cfp-force-light .cfp-modal[class] {
+	--background-color: #ffffff;
+	--cfi-card: #ffffff;
+	--cfi-lead: var(--cfi-primary-strong);
+	--cfi-ok: #1f7a45;
+	--cfi-warn: #9a5b00;
+	--cfi-bad: #b3261e;
+	color-scheme: light;
+}
+
 /* =====================================================================
  * r140 控制台版面：顶部标题 + 榜单大卡 + 右侧概况/机房/动作
  * ===================================================================== */
