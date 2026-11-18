@@ -489,7 +489,7 @@
 		]);
 		var head = el('header', { class: 'cfp-head' }, [
 			el('div', { class: 'cfp-title' }, [
-				el('h1', { text: CFI.T('Cloudflare IP 优选') }),
+				el('h1', { text: CFI.T('Cloudflare 优选 IP') }),
 				headSub
 			]),
 			headActs

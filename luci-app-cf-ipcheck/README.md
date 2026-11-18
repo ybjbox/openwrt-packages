@@ -221,7 +221,7 @@ git clone https://github.com/ybjbox/openwrt-packages.git package/openwrt-package
 make menuconfig   # LuCI -> Applications -> luci-app-cf-ipcheck
 ```
 
-刷机后在 **服务 → Cloudflare 优选 IP 实测** 打开页面。
+刷机后在 **服务 → Cloudflare 优选 IP** 打开页面。
 
 25.12 起官方包后端是 apk，没有 opkg，也不能手工搓 `.apk`（`ADBd` 归档 + 设备端
 apk 无 `mkpkg`）。不想重编固件的话：Actions → CI → Run workflow（`sdk_arch` 填本机

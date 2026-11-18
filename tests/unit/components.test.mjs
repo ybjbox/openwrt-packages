@@ -1101,3 +1101,13 @@ test('r216：菜单显示名去掉「实测」', () => {
 		'root', 'usr', 'share', 'luci', 'menu.d', 'luci-app-cf-ipcheck.json'), 'utf8'));
 	assert.equal(j['admin/services/cf_ipcheck'].title, 'Cloudflare 优选 IP');
 });
+
+/* r217：页面大标题与菜单名必须是同一个字符串，否则改一处漏一处。 */
+test('r217：页面大标题与菜单名一致', () => {
+	const shell = fs.readFileSync(path.join(root, 'luci-app-cf-ipcheck', 'view-src', '90-shell.js'), 'utf8');
+	const m = shell.match(/el\('h1', \{ text: CFI\.T\('([^']+)'\) \}\)/);
+	assert.ok(m, '找不到页头 h1');
+	const j = JSON.parse(fs.readFileSync(path.join(root, 'luci-app-cf-ipcheck',
+		'root', 'usr', 'share', 'luci', 'menu.d', 'luci-app-cf-ipcheck.json'), 'utf8'));
+	assert.equal(m[1], j['admin/services/cf_ipcheck'].title);
+});
