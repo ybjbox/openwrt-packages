@@ -699,7 +699,8 @@ test('设置说明：CSS 默认整行隐藏说明、展开态恢复、改动标�
 	   两段合计 26px。原来 26 + 16 = 42px，常态 ? 不可见时那段空白没人解释。 */
 	assert.match(css, /\.cbi-value\s*>\s*\.cbi-value-title\s*\{[^}]*padding-right:\s*18px/,
 		'标题右侧给 ? 留 18px 固定跑道（= ? 自身宽度）');
-	assert.match(css, /align-items:\s*flex-start;\s*gap:\s*8px;\s*padding:\s*12px 0/,
+	/* r218：两列从 flex 改成 grid（flex 会被 flex-wrap 挤行），列间距仍是 8px。 */
+	assert.match(css, /column-gap:\s*8px;\s*align-items:\s*start;\s*padding:\s*12px 0/,
 		'两列字段列间距 8px：跑道 18 + 间距 8 = 文字到控件 26px');
 	/* r187：贴底悬停时浮层必须翻到标题上方，否则整块画在折叠线以下，悬停等于没反应。 */
 	assert.match(css, /\.help-tip\[data-vflip="1"\]\s*\{[^}]*bottom:\s*100%/,
@@ -1110,4 +1111,18 @@ test('r217：页面大标题与菜单名一致', () => {
 	const j = JSON.parse(fs.readFileSync(path.join(root, 'luci-app-cf-ipcheck',
 		'root', 'usr', 'share', 'luci', 'menu.d', 'luci-app-cf-ipcheck.json'), 'utf8'));
 	assert.equal(m[1], j['admin/services/cf_ipcheck'].title);
+});
+
+/* r218：设置页 ≥1200 两列里，带说明的行会被 flex-wrap 挤成「标签一行、控件铺满下一行」。
+ * 真机量到 daily_times / probe_domains / total_limit / canary_check 四行控件宽 523（整行）。
+ * 改成 grid 后列宽固定，控件不可能换行。 */
+test('r218：设置页两列用 grid 固定标签列，控件不再换行', () => {
+	const css = fs.readFileSync(path.join(root, 'luci-app-cf-ipcheck', 'view-src', 'style', '00-app.css'), 'utf8');
+	assert.match(css, /display: grid; grid-template-columns: 180px minmax\(0, 1fr\);\s*\n\s*column-gap: 8px; align-items: start;/,
+		'两列的 .cbi-value 必须是 grid 且标签列固定 180px');
+	assert.match(css, /grid-column: 1; width: auto; float: none;/, '标签占第 1 列');
+	assert.match(css, /grid-column: 2; width: auto; max-width: none; min-width: 0; margin: 0;/, '控件占第 2 列');
+	assert.match(css, /padding-top: 6px; text-align: right; line-height: 1.45;/, '标签首行与 30px 控件垂直居中');
+	assert.doesNotMatch(css, /display: flex; align-items: flex-start; gap: 8px;\s*\n\s*padding: 12px 0/,
+		'不许退回 flex（会被 flex-wrap 挤行）');
 });

@@ -1169,7 +1169,12 @@ html.cfp-force-light .cfp-modal[class] {
 	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probe"]:not(.is-fold) .cbi-section-node > .cbi-value,
 	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probeAdv"]:not(.is-fold) .cbi-section-node > .cbi-value,
 	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="gist"]:not(.is-fold) .cbi-section-node > .cbi-value {
-		display: flex; align-items: flex-start; gap: 8px;
+		/* r218：这里原来是 flex + 主题给的 flex-wrap:wrap。说明文字在 .cbi-value-field
+		   里，max-content 很宽，整块被挤到下一行 —— 真机量到 daily_times / probe_domains /
+		   total_limit / canary_check 四行控件宽 523（整行）、标签单独留在上一行。
+		   grid 的列宽是固定的，不会再因为内容宽而换行。 */
+		display: grid; grid-template-columns: 180px minmax(0, 1fr);
+		column-gap: 8px; align-items: start;
 		padding: 12px 0; min-width: 0;
 		border-top: 1px solid var(--cfi-line);
 	}
@@ -1187,15 +1192,20 @@ html.cfp-force-light .cfp-modal[class] {
 	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probe"]:not(.is-fold) .cbi-value-title,
 	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probeAdv"]:not(.is-fold) .cbi-value-title,
 	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="gist"]:not(.is-fold) .cbi-value-title {
-		flex: 0 0 180px; width: auto; float: none;
-		margin: 0; padding-top: 9px; text-align: right; line-height: 1.45;
+		grid-column: 1; width: auto; float: none;
+		/* 控件高 30px，中心在 15；首行半行高 9.5 → 6px。原来 9px 让标签整体低 3.5px
+		   （r218 真机量的 dy=-3.5，30 个字段全一样）。 */
+		margin: 0; padding-top: 6px; text-align: right; line-height: 1.45;
 	}
 	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="basic"]:not(.is-fold) .cbi-value-field,
 	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probe"]:not(.is-fold) .cbi-value-field,
 	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probeAdv"]:not(.is-fold) .cbi-value-field,
 	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="gist"]:not(.is-fold) .cbi-value-field {
-		flex: 1 1 auto; width: auto; max-width: none; min-width: 0; margin: 0;
+		grid-column: 2; width: auto; max-width: none; min-width: 0; margin: 0;
 	}
+	/* 说明若是 .cbi-value 的直接子元素，也要落在控件列（本版 CBI 放在 field 里，
+	   这条是兜底；非 grid 容器上 grid-column 无效，dns 组不受影响）。 */
+	#view .cfp[class] #cfi-pane-set .cbi-value > .cbi-value-description { grid-column: 2; }
 	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="basic"]:not(.is-fold) .cbi-value-field > *,
 	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probe"]:not(.is-fold) .cbi-value-field > *,
 	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probeAdv"]:not(.is-fold) .cbi-value-field > *,
