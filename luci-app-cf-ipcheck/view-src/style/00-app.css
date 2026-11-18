@@ -502,7 +502,10 @@
 	.cfp-tabs .cbi-tab > a { padding: 8px 12px; min-height: 44px; }
 	.cfp .ro { flex-basis: 45%; }
 	.cfp .ro:nth-child(odd) { border-left: 0; padding-left: 0; }
-	.cfp .dc > summary { grid-template-columns: minmax(5.5em, max-content) 4em 6em minmax(0, 1fr); }
+	/* r212：fanchmwrt 的字体让"NRT 东京"首列更宽，390 档 IP 列只剩 51px、
+	   整页横向溢出 41px。窄屏只留机房码、收窄数值列，把宽度让给 IP。 */
+	.cfp .dc > summary { grid-template-columns: minmax(3.2em, max-content) 2.8em 4.4em minmax(0, 1fr); }
+	.cfp .dc > summary .colo-name { display: none; }
 	.cfp .dnsrow { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 	.cfp .dnsrow-h { display: none; }
 	/* r182：44px 是触控热区指标，不该让圆圈本身长成 44px —— 420 下标签左对齐、
@@ -601,7 +604,13 @@
 /* 圆角/层次/节奏令牌见文件头 :root —— 那里是唯一出处，暗色块不覆盖它们。 */
 /* Argon 给所有 header::after 画 32px 主色带；标题块不是页头，去掉 */
 .cfp-head::after { content: none; }
-.cfp-head { display: flex; color: inherit; align-items: flex-start; gap: 20px; flex-wrap: wrap; margin: 0 0 var(--cfi-gap); }
+.cfp-head {
+	display: flex; color: inherit; align-items: flex-start; gap: 20px; flex-wrap: wrap;
+	margin: 0 0 var(--cfi-gap);
+	/* r212：fanchmwrt 主题给裸 header 设了黑色渐变 + sticky + 阴影（Argon 没有），
+	   本页头是内容区标题栏、不是站点导航，必须显式还原；不要用强制优先声明。 */
+	background: none; box-shadow: none; position: static; overflow: visible;
+}
 .cfp-title h1 { margin: 0; color: inherit; font-size: 24px; line-height: 1.25; letter-spacing: -.01em; padding: 0; }
 .cfp-sub { margin: 4px 0 0; color: var(--cfi-muted); font-size: 13px; line-height: 1.55; }
 .cfp-head-acts { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -1097,6 +1106,19 @@
 	#view .cfp[class] .tbl thead tr.table-titles { display: table-row; }
 	#view .cfp[class] .tbl th,
 	#view .cfp[class] .tbl td { display: table-cell; }
+	/* r212：fanchmwrt 给裸 input 设了 width:210px，1024 单列时长字段（域名/路径/ID）
+	   被压成 210px、右侧大片空白（1200+ 两列块里有 width:100%，这里没有）。
+	   只放长长字段；端口/条数这类短数字字段保持原宽。 */
+	#view .cfp[class] #cfi-pane-set .cbi-value[data-name="probe_domains"] input,
+	#view .cfp[class] #cfi-pane-set .cbi-value[data-name="speed_domain"] input,
+	#view .cfp[class] #cfi-pane-set .cbi-value[data-name="dns_zone"] input,
+	#view .cfp[class] #cfi-pane-set .cbi-value[data-name="dns_comment"] input,
+	#view .cfp[class] #cfi-pane-set .cbi-value[data-name="dns_record"] input,
+	#view .cfp[class] #cfi-pane-set .cbi-value[data-name="token_file"] input,
+	#view .cfp[class] #cfi-pane-set .cbi-value[data-name="dns_token_file"] input,
+	#view .cfp[class] #cfi-pane-set .cbi-value[data-name="gist_id"] input {
+		width: 100%; max-width: 100%; box-sizing: border-box;
+	}
 }
 
 /* 1200px 以上：简单设置分组改两列字段，DNS 编辑器保持单列但整体加宽。

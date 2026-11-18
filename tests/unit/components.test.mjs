@@ -997,3 +997,31 @@ test('死 CSS：旧头部类名不复活；列显隐每项都有规则', () => {
 	assert.match(css, /@keyframes cfi-pulse/, '脉冲动画仍被状态胶囊使用');
 	assert.match(css, /\.logbox\.f-warn/, '日志过滤的 f-* 是动态拼的，不是死 CSS');
 });
+
+/* r212：fanchmwrt 主题给裸 header 设了黑色渐变 + sticky，插件页头是 <header>，
+ * 只写 color:inherit 不够，必须显式还原背景/定位/阴影。这三条是防回归硬约束。 */
+test('r212：页头不吃主题 header 的黑底与粘顶', () => {
+	const css = fs.readFileSync(path.join(root, 'luci-app-cf-ipcheck', 'view-src', 'style', '00-app.css'), 'utf8')
+		.replace(/\/\*[\s\S]*?\*\//g, ' ');
+	const m = css.match(/\.cfp-head\s*\{([\s\S]*?)\}/);
+	assert.ok(m, '找不到 .cfp-head 规则');
+	assert.match(m[1], /background:\s*none/, '必须清掉主题的黑色渐变');
+	assert.match(m[1], /position:\s*static/, '必须取消主题的 sticky');
+	assert.match(m[1], /box-shadow:\s*none/, '必须清掉主题阴影');
+	assert.ok(!/!important/.test(m[1]), '不许用 !important 覆盖主题');
+});
+
+/* r212：390 档 .dc > summary 的 IP 列被压到 51px，整页横向溢出 41px。 */
+test('r212：窄屏机房明细把宽度让给 IP', () => {
+	const css = fs.readFileSync(path.join(root, 'luci-app-cf-ipcheck', 'view-src', 'style', '00-app.css'), 'utf8');
+	assert.match(css, /\.dc > summary \{ grid-template-columns: minmax\(3\.2em, max-content\) 2\.8em 4\.4em/,
+		'窄屏列宽必须收窄');
+	assert.match(css, /\.dc > summary \.colo-name \{ display: none/, '窄屏隐藏中文机房名，给 IP 让位');
+});
+
+/* r212：1024 单列时长字段被主题的 input{width:210px} 压住。 */
+test('r212：768–1152 长字段撑满可用宽度', () => {
+	const css = fs.readFileSync(path.join(root, 'luci-app-cf-ipcheck', 'view-src', 'style', '00-app.css'), 'utf8');
+	for (const n of ['probe_domains', 'dns_zone', 'token_file', 'gist_id'])
+		assert.match(css, new RegExp('data-name="' + n + '"\\] input'), '长字段 ' + n + ' 缺宽度规则');
+});
