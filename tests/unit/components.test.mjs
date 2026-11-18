@@ -1123,6 +1123,7 @@ test('r218：设置页两列用 grid 固定标签列，控件不再换行', () =
 	assert.match(css, /grid-column: 1; width: auto; float: none;/, '标签占第 1 列');
 	assert.match(css, /grid-column: 2; width: auto; max-width: none; min-width: 0; margin: 0;/, '控件占第 2 列');
 	assert.match(css, /padding-top: 6px; text-align: right; line-height: 1.45;/, '标签首行与 30px 控件垂直居中');
+	assert.match(css, /\.cbi-value-title \.help-q \{ top: 7px; \}/, '标签上移后悬停问号也要跟着上移');
 	assert.doesNotMatch(css, /display: flex; align-items: flex-start; gap: 8px;\s*\n\s*padding: 12px 0/,
 		'不许退回 flex（会被 flex-wrap 挤行）');
 });

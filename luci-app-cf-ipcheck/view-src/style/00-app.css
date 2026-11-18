@@ -1197,6 +1197,9 @@ html.cfp-force-light .cfp-modal[class] {
 		   （r218 真机量的 dy=-3.5，30 个字段全一样）。 */
 		margin: 0; padding-top: 6px; text-align: right; line-height: 1.45;
 	}
+	/* 标签上移 3px 后，悬停问号的 top:10 也跟着低 3.5px（实测 378.7 vs 375.2）。
+	   dns 组不走 grid、标题仍是 9px，不在此列。 */
+	#view .cfp[class] #cfi-pane-set .cbi-section:not([data-group="dns"]) .cbi-value-title .help-q { top: 7px; }
 	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="basic"]:not(.is-fold) .cbi-value-field,
 	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probe"]:not(.is-fold) .cbi-value-field,
 	#view .cfp[class] #cfi-pane-set .cbi-section[data-group="probeAdv"]:not(.is-fold) .cbi-value-field,
