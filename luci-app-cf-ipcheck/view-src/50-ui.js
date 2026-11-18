@@ -371,6 +371,9 @@
 		var host = el('div', { class: 'dcs' });
 		var nodes = {};
 		var unit = 1000000;
+		/* r214：本轮最快机房的中位值。分档色只按相对比值走 —— 绝对阈值在换线路、
+		   换探测域名后就会整体误判，比值不会。 */
+		var bestMed = 0;
 		var onTest = p.onTest || null;
 		var tests = {};
 		var busy = null;
@@ -389,6 +392,20 @@
 
 		function speedUnit() {
 			return unit === 1048576 ? ' MiB/s' : ' MB/s';
+		}
+
+		/* 分档只给绿/琥珀/灰三档，最慢一档刻意不用红色：这些机房本轮都可用，
+		   标红会被读成故障。1.6 / 3.5 倍是「同档 / 偏慢 / 明显慢」的经验切分。 */
+		function medTier(v) {
+			var x = Number(v);
+			if (!(x > 0) || !(bestMed > 0))
+				return '';
+			var ratio = x / bestMed;
+			if (ratio <= 1.6)
+				return 'ok';
+			if (ratio <= 3.5)
+				return 'warn';
+			return 'dim';
 		}
 
 		function errText(d) {
@@ -471,6 +488,10 @@
 				n.code.appendChild(el('span', { class: 'tag', text: CFI.T('本轮无') }));
 			n.count.textContent = CFI.fmt.num(r.count);
 			n.med.textContent = CFI.fmt.ms(r.ttfb_med);
+			/* 中位带分档色（主指标），最佳 IP 固定次级灰 —— 两列同色同重时才分不开 */
+			var tier = r.empty ? '' : medTier(r.ttfb_med);
+			n.med.className = 'r mono' + (tier ? ' ' + tier : '');
+			n.best.className = 'mono dim';
 			n.best.textContent = r.best_ip ? String(r.best_ip) : CFI.fmt.DASH;
 			n.d.className = 'dc' + (r.empty ? ' dim' : '');
 		}
@@ -614,6 +635,21 @@
 					if (nodes[code2].d.parentNode)
 						nodes[code2].d.parentNode.removeChild(nodes[code2].d);
 					delete nodes[code2];
+				}
+			}
+			/* 分档色的基准变了，所有行的档位都可能变 —— 哪怕该行数字没动也要重绘，
+			   否则新一局的深色档会留在旧的绿行上。 */
+			var best = 0;
+			for (var b = 0; b < keys.length; b++) {
+				var bm = Number(map[keys[b]].ttfb_med);
+				if (bm > 0 && (!best || bm < best))
+					best = bm;
+			}
+			if (best !== bestMed) {
+				bestMed = best;
+				for (var bnode in nodes) {
+					if (Object.prototype.hasOwnProperty.call(nodes, bnode))
+						nodes[bnode].ss = '';
 				}
 			}
 			for (var k = 0; k < keys.length; k++) {

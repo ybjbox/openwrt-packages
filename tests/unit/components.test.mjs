@@ -368,6 +368,31 @@ test('机房分布：节点与展开状态跨拍保留，只更新读数', () =>
 	assert.equal(dc.node.childNodes.length, 0);
 });
 
+/* r214：中位与最佳 IP 只隔 10px 网格间隙、同色同重，读起来是一串数字。
+ * 中位按「本轮最慢/最快」的相对比值分档上色，最佳 IP 固定次级灰。 */
+test('机房分布：中位分档上色、最佳 IP 退为次级', () => {
+	const dc = CFI.ui.DcList();
+	const rows = [
+		{ dc: 'NRT', count: 8, ttfb_med: 300, best_ip: '1.1.1.1', items: [], cap: 12 },
+		{ dc: 'DEN', count: 2, ttfb_med: 480, best_ip: '2.2.2.2', items: [], cap: 12 },
+		{ dc: 'SIN', count: 1, ttfb_med: 1200, best_ip: '3.3.3.3', items: [], cap: 12 }
+	];
+	const medOf = (c) => dc.nodeFor(c).childNodes[0].childNodes[2];
+	const bestOf = (c) => dc.nodeFor(c).childNodes[0].childNodes[3];
+	dc.update(rows, 1000000);
+	assert.match(medOf('NRT').className, /\bok\b/, '最快机房给绿');
+	assert.match(medOf('DEN').className, /\bok\b/, '1.6 倍以内算同档');
+	assert.match(medOf('SIN').className, /\bdim\b/, '3.5 倍以上只弱化');
+	assert.doesNotMatch(medOf('SIN').className, /\bbad\b/, '本轮可用的机房不该标红');
+	assert.match(bestOf('NRT').className, /\bdim\b/, '最佳 IP 是次级信息');
+
+	/* 基准变了但这一行数字没动：档位也必须跟着重算（NRT 300→200 后 DEN 480 = 2.4 倍） */
+	rows[0].ttfb_med = 200;
+	dc.update(rows, 1000000);
+	assert.match(medOf('DEN').className, /\bwarn\b/, '基准变化后要重新分档');
+	assert.match(medOf('NRT').className, /\bok\b/);
+});
+
 /* ---- 7. 日志上限与跟随 ------------------------------------------------ */
 test('日志：850 行进 DOM 只保留 600 行，最早的行被摘掉', () => {
 	const lv = CFI.ui.LogView({ cap: 600 });
@@ -1040,4 +1065,14 @@ test('r213：浅色主题下的暗色偏好不许把卡片变黑', () => {
 	const view = fs.readFileSync(path.join(root, 'luci-app-cf-ipcheck', 'view-src', '99-view.js'), 'utf8');
 	assert.match(view, /CFI\.theme\.sync\(\)/, 'render 时必须同步一次');
 	assert.match(view, /prefers-color-scheme: dark/, '必须监听系统偏好变化');
+});
+
+/* r214：中位与最佳 IP 之间要有分组竖线，且窄屏必须关掉（r212 的 318/318 无余量）。 */
+test('r214：中位与最佳 IP 用竖线分组，窄屏不启用', () => {
+	const css = fs.readFileSync(path.join(root, 'luci-app-cf-ipcheck', 'view-src', 'style', '00-app.css'), 'utf8');
+	assert.match(css, /\.dc-head > span:nth-child\(4\),\s*\n\.cfp \.dc > summary > span:nth-child\(4\) \{\s*\n\s*padding-left: 16px;\s*\n\s*box-shadow: inset 1px 0 0 var\(--cfi-line\)/,
+		'表头与行都要有分组竖线');
+	assert.match(css, /\.dc > summary > span:nth-child\(3\) \{ font-weight: 600/, '中位要加粗成主指标');
+	assert.match(css, /\.dc > summary > span:nth-child\(4\) \{ padding-left: 0; box-shadow: none; \}/,
+		'窄屏必须撤掉竖线与内距，否则重新溢出');
 });

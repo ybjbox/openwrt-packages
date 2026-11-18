@@ -836,6 +836,18 @@ html.cfp-force-light .cfp-modal[class] {
 }
 .cfp .dc-head .r, .cfp .dc-head span:last-child { text-align: right; }
 .cfp .dc .r, .cfp .dcitem .r { text-align: right; }
+/* r214：中位与最佳 IP 是两组不同性质的数字，只靠 10px 网格间隙会被读成一串
+   （实测 562 / 572）。第 4 列前加一条竖线 + 内距做分组，表头与行共用同一套列宽，
+   所以竖线自然对齐。≤767 不适用：那里列宽由 r212 精调到 318/318 无余量。 */
+.cfp .dc-head > span:nth-child(4),
+.cfp .dc > summary > span:nth-child(4) {
+	padding-left: 16px;
+	box-shadow: inset 1px 0 0 var(--cfi-line);
+}
+/* 中位是这张表的主指标：加粗建立层级，分档色由 .ok / .warn / .dim 给 */
+.cfp .dc > summary > span:nth-child(3) { font-weight: 600; }
+/* 可用条数是次级信息，压成弱色，避免第三块深色和中位抢注意力 */
+.cfp .dc > summary > span:nth-child(2) { color: var(--cfi-muted); }
 .cfp .dcs { border-top: 1px solid var(--cfi-line); }
 .cfp .dc > summary {
 	grid-template-columns: var(--dc-cols);
@@ -879,6 +891,8 @@ html.cfp-force-light .cfp-modal[class] {
 	.cfp .dc > summary {
 		padding: 10px 8px 10px var(--dc-pad); gap: 8px;
 	}
+	/* 窄屏 IP 列本来就紧（r212 的 318/318 是零余量），分组竖线与内距会让它重新溢出 */
+	.cfp .dc > summary > span:nth-child(4) { padding-left: 0; box-shadow: none; }
 	.cfp .dc > summary::before { left: 2px; }
 	.cfp[class] .dc > summary::after { content: none; }
 	.cfp .dcitem {
