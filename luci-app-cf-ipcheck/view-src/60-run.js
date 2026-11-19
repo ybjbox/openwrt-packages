@@ -32,7 +32,7 @@
 			bits.push(CFI.T('丢包 %s%').format(String(Math.round(Number(it.loss) * 100))));
 		if (it.jitter_ms != null && isFinite(Number(it.jitter_ms)) && Number(it.jitter_ms) > 100)
 			bits.push(CFI.T('抖动 %s ms').format(F.ms(it.jitter_ms)));
-		/* r220：精测两遍的吞吐相对差。≤25% 不标（正常波动），超过才进「质量」列。 */
+		/* r221：精测两遍的吞吐相对差。≤25% 不标（正常波动），超过才进「质量」列。 */
 		if (it.speed_spread != null && isFinite(Number(it.speed_spread)) && Number(it.speed_spread) > 0.25)
 			bits.push(CFI.T('速度波动 %s%').format(String(Math.round(Number(it.speed_spread) * 100))));
 		if (it.ray_ok === 0)

@@ -2642,6 +2642,9 @@ write_outputs() {
 	: >"$colored"
 	spd_map=$RUN_DIR/speed.map
 	: >"$spd_map"
+	# 运行目录跨轮保留：spread.map 必须先清空。否则本轮没测速（出口被接管、
+	# 没有达标 IP、或关掉了测速）时，上一轮的离散度会被当成这一轮的。
+	: >"$RUN_DIR/spread.map"
 	if [ -s "$RUN_DIR/speed.tsv" ]; then
 		# 同一颗既有粗筛又有精测时以精测为准；精测两遍取**较差的一遍** ——
 		# 门槛、排序、页面三处必须是同一个数，所以统一走 speed_merge。
@@ -2823,7 +2826,7 @@ write_outputs() {
 			sp = ($8 == "" || $8 == "-") ? "null" : $8
 			bp = ($11 == "") ? "null" : $11
 			mi = ($11 == "") ? "null" : sprintf("%.2f", ($11 + 0) / 1048576)
-			# r220：精测跑两遍，spread 只在两遍都有效时才有值；samples 让人分清
+			# r221：精测跑两遍，spread 只在两遍都有效时才有值；samples 让人分清
 			# 「很稳」和「只测到一遍（稳定性未知）」——两者都是空 spread。
 			spp = ($12 == "" || $12 == "-") ? "null" : sprintf("%.3f", $12 + 0)
 			smp = ($11 == "") ? 0 : (($12 == "") ? 1 : 2)
@@ -4486,7 +4489,7 @@ selftest() {
 	got=$(sh "$0" _speedscore 1500 300000 3000 100 2>/dev/null)
 	check '加权分：weight=100 时 0.3MB/s 落在 0.30 档' "$got" '30'
 
-	# r220：精测跑两遍（正序 + 倒序），稳定性作为第三维：延迟与吞吐按 speed_weight
+	# r221：精测跑两遍（正序 + 倒序），稳定性作为第三维：延迟与吞吐按 speed_weight
 	# 分 85%，稳定固定 15%。不传第 6 参时保持旧口径，老调用点与老断言不受影响。
 	got=$(sh "$0" _speedscore 1500 5000000 3000 40 '' 1.0 2>/dev/null)
 	check '加权分：稳定满分 = 45×0.5 + 40×1 + 15×1 = 77' "$got" '77'
@@ -5439,7 +5442,7 @@ case "${1:-}" in
 	_speedref) speed_ref ;;
 	_speedgate) speed_gate "${2:-0}" "${3:-}" "${4:-0}" "${5:-0}" "${6:-0}" "${7:-0}" ;;
 	_speedscore) speed_score "${2:-0}" "${3:-}" "${4:-3000}" "${5:-0}" "${6:-}" "${7:-}" ;;
-	# r220：稳定性系数与精测归并（两遍取较差值 + 离散度），都离线可跑。
+	# r221：稳定性系数与精测归并（两遍取较差值 + 离散度），都离线可跑。
 	_stabof) stab_of "${2:-}" ;;
 	_speedmerge) speed_merge "${2:-/dev/null}" ;;
 	_latrank) lat_rank ;;
