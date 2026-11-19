@@ -811,6 +811,19 @@ lock_acquire() {
 	return 0
 }
 
+# 本进程是否仍在执行「已被替换掉」的旧 inode（r222）。
+# 背景：reload_service 自 r205 起「守护进程在跑就直接 return」，升级包后没人重启它，
+# 于是一个长驻 sh 会一直按旧文件里的代码跑下去。真机现象（2026-11-19）：同一台设备，
+# 页面「立即测速」是新进程走新代码（精测两遍），02:00/20:00 的定时轮走旧代码（单遍、
+# 无 spread、不写 speed.merged），而日志看起来一切正常 —— 只有把两轮的日志串并排
+# 才看得出「× 2 遍」这行压根没出现。包内文件 mtime 是构建时间，也帮不上忙。
+# 判据用 ls 而不是 readlink：BusyBox 的 ls -l 会把已 unlink 的目标标成 "(deleted)"，
+# 读不到 /proc（非 Linux）时函数恒返回 1，行为与改动前完全一致。
+stale_self() {
+	[ -f /usr/bin/cf-ipcheck ] || return 1
+	ls -l "/proc/$$/fd" 2>/dev/null | grep -q 'cf-ipcheck (deleted)'
+}
+
 # ------- 候选池：官方网段 + 社区源 + 上轮入围，三路合并（设计参考 cf-auto，非代码衍生）----
 # stdin: 每行 IPv4 或 CIDR（可带 :port） -> stdout: 可探测的单 IP
 # CIDR 按 /24 粒度展开（mask>=24 时按原样取 .102/.1），纯 IP 直接透传。
@@ -5405,6 +5418,15 @@ case "${1:-}" in
 				 # 每片重读配置：关总开关、改周期、改时刻表都能在一分钟内反映。
 				 schedule_due; left=$SCHED_LEFT
 				 while [ "$left" -gt 0 ]; do
+					 # r222：升级包后本进程可能还在跑已 unlink 的旧 inode（见 stale_self）。
+					 # 就地 exec 新文件而不是退出：保住 pid 与「正在等哪个触发点」的语义，
+					 # procd 也不用介入。只在这个分片里判 —— 此时 left > 0 还没到点，
+					 # 新进程重算出来的仍是同一个目标时刻，不会像「错过不补跑」那样丢轮；
+					 # 正在跑的一轮在 do_run 里，压根走不到这里，所以不会被打断。
+					 if stale_self; then
+						 log '检测到引擎已被升级（本进程仍指向旧 inode），就地重启守护进程以加载新代码'
+						 exec /usr/bin/cf-ipcheck daemon
+					 fi
 					 if [ "$left" -lt 60 ]; then sleep "$left"; else sleep 60; fi
 					 load_config
 					 [ "$(cfg enabled 0)" = 1 ] || break
