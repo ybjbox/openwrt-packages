@@ -2235,8 +2235,8 @@ speed_gate() {
 # 延迟项做线性归一并夹到 0..1；吞吐项分档（十进制 MB/s）。没测到吞吐时给 0.50
 # 的中性分：既不能因为「没测」把它顶上去，也不能因为「没测」把它踩下去 ——
 # 粗筛之外的那些 IP 正是这种状态。
-speed_score() { # $1=指标毫秒 $2=bps $3=绝对上限ms $4=权重 $5=(可选)预先算好的延迟归一 0..1
-	awk -v ttfb="${1:-0}" -v bps="${2:-}" -v lim="${3:-3000}" -v w="${4:-0}" -v lnp="${5:-}" '
+speed_score() { # $1=指标毫秒 $2=bps $3=绝对上限ms $4=权重 $5=(可选)延迟归一 0..1 $6=(可选)稳定性 0..1
+	awk -v ttfb="${1:-0}" -v bps="${2:-}" -v lim="${3:-3000}" -v w="${4:-0}" -v lnp="${5:-}" -v stab="${6:-}" '
 	BEGIN {
 		l = lim + 0; if (l <= 0) l = 3000
 		# 第 5 参给了就用它（r91：TCP 口径下按本批名次归一），否则仍按绝对毫秒
@@ -2257,7 +2257,14 @@ speed_score() { # $1=指标毫秒 $2=bps $3=绝对上限ms $4=权重 $5=(可选)
 		wt = w + 0
 		if (wt < 0) wt = 0
 		if (wt > 100) wt = 100
-		printf "%d", int((100 - wt) * ln + wt * sn)
+		# 稳定性只有 speed_resort 会传（精测两遍的离散度）；空 = 旧口径，纯延迟+吞吐。
+		if (stab == "") { printf "%d", int((100 - wt) * ln + wt * sn); exit }
+		st = stab + 0
+		if (st < 0) st = 0
+		if (st > 1) st = 1
+		# 延迟与吞吐按 speed_weight 分 85%，稳定固定 15%（w=40 时约 51/34/15）。
+		if (wt > 85) wt = 85
+		printf "%d", int((100 - wt - 15) * ln + wt * sn + 15 * st)
 	}'
 }
 
@@ -2397,6 +2404,60 @@ speed_measure() {
 		awk '{ printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", $1, $2, $3, $4, $5, $6, $7 }' >>"$1"
 }
 
+# 把 speed.tsv 归并成「一个 IP 一行」。精测现在跑两遍（正序 + 倒序），两遍都有效
+# 时取**较差的一遍**入榜 —— 宁可选保守值，也不要把一次侥幸的高峰当成常态。
+# 输出五列：ip  bps  truncated  spread  samples
+#   bps        入榜/门槛用的吞吐：两遍取小；只有一遍有效就用它；都无效为 0
+#   truncated  与 bps 同一遍的截断标记
+#   spread     |a-b| / max(a,b)，两遍都有效才有值（空 = 单样本，稳定性未知）
+#   samples    有效精测遍数 0/1/2
+speed_merge() { # $1=speed.tsv
+	awk -F'\t' '
+	$7 == "confirm" {
+		n[$1]++
+		if (n[$1] == 1) { a[$1] = $2 + 0; atr[$1] = $6 + 0 }
+		else if (n[$1] == 2) { b[$1] = $2 + 0; btr[$1] = $6 + 0 }
+		next
+	}
+	{ if (!($1 in sc)) { sc[$1] = $2 + 0; str[$1] = $6 + 0 } }
+	END {
+		for (ip in n) {
+			x = a[ip] + 0; y = b[ip] + 0
+			samples = 0
+			if (x > 0) samples++
+			if (y > 0) samples++
+			spread = ""
+			if (samples == 2) {
+				bps = (x < y) ? x : y
+				tr = (x < y) ? atr[ip] : btr[ip]
+				mx = (x > y) ? x : y
+				if (mx > 0) spread = sprintf("%.4f", (mx - bps) / mx)
+			} else if (samples == 1) {
+				bps = (x > 0) ? x : y
+				tr = (x > 0) ? atr[ip] : btr[ip]
+			} else {
+				bps = 0; tr = 0
+			}
+			printf "%s\t%d\t%d\t%s\t%d\n", ip, bps, tr, spread, samples
+		}
+		for (ip in sc)
+			if (!(ip in n))
+				printf "%s\t%d\t%d\t\t0\n", ip, sc[ip], str[ip]
+	}' "${1:-}"
+}
+
+# 两遍吞吐的相对差 → 稳定性系数 0..1。≤25% 满分、≥50% 归零，中间线性。
+# 空（只测到一遍）给 0.5 中性：没证据说它不稳，也不能白送满分。
+stab_of() { # $1=spread（0..1，可空）
+	awk -v s="${1:-}" 'BEGIN {
+		if (s == "") { print "0.500"; exit }
+		x = s + 0
+		if (x <= 0.25) { print "1.000"; exit }
+		if (x >= 0.50) { print "0.000"; exit }
+		printf "%.3f", (0.50 - x) / 0.25
+	}'
+}
+
 # 按加权分重排 qualified（就地覆盖）。
 # $1=qualified 文件 $2=speed.tsv $3=below_gate 名单
 # 分数先算成一列再交给 sort：busybox 的 sort 常常没有 -k，而 qualified 的 8 字段
@@ -2433,13 +2494,20 @@ lat_rank() {
 }
 
 speed_resort() {
-	awk -F'\t' -v st="$2" '
-	FILENAME == st {
-		if ($7 == "confirm") bps[$1] = $2
-		else if (!($1 in bps)) bps[$1] = $2
-		next
-	}
-	{ printf "%s\t%s\n", $0, (($1 in bps) ? bps[$1] : "") }' "$2" "$1" >"$RUN_DIR/qual.bps"
+	# 精测两遍的归并：bps 取较差的一遍（保守），spread 只在两遍都有效时才有值。
+	sr_merged=$RUN_DIR/speed.merged
+	speed_merge "$2" >"$sr_merged"
+	# 稳定性只算一遍：公式留在 stab_of 里，别在这里抄第二份。
+	sr_stmap=$RUN_DIR/stability.map
+	: >"$sr_stmap"
+	awk -F'\t' '$4 != "" { print $1 "\t" $4 }' "$sr_merged" >"$RUN_DIR/spread.map"
+	while IFS="$(printf '\t')" read -r sp_ip sp_sp; do
+		[ -n "$sp_ip" ] || continue
+		printf '%s\t%s\n' "$sp_ip" "$(stab_of "$sp_sp")" >>"$sr_stmap"
+	done <"$RUN_DIR/spread.map"
+	awk -F'\t' -v sm="$sr_merged" '
+	FILENAME == sm { bps[$1] = $2; next }
+	{ printf "%s\t%s\n", $0, (($1 in bps) ? bps[$1] : "") }' "$sr_merged" "$1" >"$RUN_DIR/qual.bps"
 	: >"$RUN_DIR/qual.sorted"
 	# r91：tcp 口径先算一份"本批名次归一"，HTTP 口径留空（沿用绝对毫秒）
 	sr_lnfile=$RUN_DIR/latnorm.tsv
@@ -2455,7 +2523,10 @@ speed_resort() {
 		if [ -s "$sr_lnfile" ]; then
 			sr_ln=$(awk -F'\t' -v ip="$sr_ip" '$1 == ip { print $2; exit }' "$sr_lnfile")
 		fi
-		sr_sc=$(speed_score "$sr_m" "${sr_bps:-}" "$C_TTFB" "$C_SPEED_W" "$sr_ln")
+		# 没测过速的 IP 在表里没有行：给中性 0.5，不能让它按旧口径拿满分。
+		sr_st=$(awk -F'\t' -v ip="$sr_ip" '$1 == ip { print $2; exit }' "$sr_stmap")
+		[ -n "$sr_st" ] || sr_st='0.500'
+		sr_sc=$(speed_score "$sr_m" "${sr_bps:-}" "$C_TTFB" "$C_SPEED_W" "$sr_ln" "$sr_st")
 		sr_bg=0
 		grep -qxF "$sr_ip" "$3" 2>/dev/null && sr_bg=1
 		# r94：4xx 排在 2xx/3xx 之后，且优先级高于加权分 —— 403 的错误页正文只有
@@ -2572,11 +2643,12 @@ write_outputs() {
 	spd_map=$RUN_DIR/speed.map
 	: >"$spd_map"
 	if [ -s "$RUN_DIR/speed.tsv" ]; then
-		# 同一个 IP 既有 screen 又有 confirm 时以 confirm 为准（大样本、截断更少）。
-		awk -F'\t' '
-		$7 == "confirm" { bps[$1] = $2; next }
-		!($1 in bps) { bps[$1] = $2 }
-		END { for (ip in bps) printf "%s\t%s\n", ip, bps[ip] }' "$RUN_DIR/speed.tsv" >"$spd_map"
+		# 同一颗既有粗筛又有精测时以精测为准；精测两遍取**较差的一遍** ——
+		# 门槛、排序、页面三处必须是同一个数，所以统一走 speed_merge。
+		speed_merge "$RUN_DIR/speed.tsv" >"$RUN_DIR/speed.merged"
+		awk -F'\t' '{ print $1 "\t" $2 }' "$RUN_DIR/speed.merged" >"$spd_map"
+		# 离散度单独一张表：colored.tsv 第 12 列要它，页面据此标「速度波动」。
+		awk -F'\t' '$4 != "" { print $1 "\t" $4 }' "$RUN_DIR/speed.merged" >"$RUN_DIR/spread.map"
 	fi
 	bg_file=$RUN_DIR/below_gate.lst
 	[ -f "$bg_file" ] || : >"$bg_file"
@@ -2612,11 +2684,13 @@ write_outputs() {
 			bsp=''
 			spd='-'
 		fi
+		# 第 12 列：两遍吞吐的相对差（空 = 只测到一遍，或没测）。
+		spd_sp=$(awk -F'\t' -v want="$ip" '$1 == want { print $2; exit }' "$RUN_DIR/spread.map" 2>/dev/null)
 		bg=0
 		grep -qxF "$ip" "$bg_file" 2>/dev/null && bg=1
 		# 列序见函数开头：bg 在第 10、bps 在最后（可能为空，必须垫底）
-		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-			"$ip" "$code" "$c" "$tls" "$ttfb" "$tot" "$colo" "$spd" "$dom" "$bg" "$bsp" >>"$colored"
+		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+			"$ip" "$code" "$c" "$tls" "$ttfb" "$tot" "$colo" "$spd" "$dom" "$bg" "$bsp" "$spd_sp" >>"$colored"
 		ck=$((ck + 1))
 		progress_set colo $ck $cptotal
 	done <"$RUN_DIR/ranked.tsv"
@@ -2628,7 +2702,7 @@ write_outputs() {
 		spd_ok=$(awk -F'\t' '$2 + 0 > 0' "$RUN_DIR/speed.tsv" | grep -c . || true)
 		spd_bad=$((${spd_all:-0} - ${spd_ok:-0}))
 		[ "$spd_bad" -lt 0 ] 2>/dev/null && spd_bad=0
-		log "吞吐实测 ${spd_all:-0} 次（粗筛 + 精测），其中 ${spd_ok:-0} 次拿到有效吞吐、$spd_bad 次没测出；页面与 JSON 用十进制 MB/s，CSV 第 6 列按 speed_unit=${C_SUUNIT:-mb} 换算"
+		log "吞吐实测 ${spd_all:-0} 次（粗筛 + 精测两遍），其中 ${spd_ok:-0} 次拿到有效吞吐、$spd_bad 次没测出；页面与 JSON 用十进制 MB/s，CSV 第 6 列按 speed_unit=${C_SUUNIT:-mb} 换算"
 	fi
 	# r89：这一行只认「进了结果的」。补足名单与榜单是同一批（r89 起补足发生在
 	# 截断之后、补的行直接进 ranked），所以这里的数字必然等于 JSON 的 below_gate
@@ -2749,12 +2823,16 @@ write_outputs() {
 			sp = ($8 == "" || $8 == "-") ? "null" : $8
 			bp = ($11 == "") ? "null" : $11
 			mi = ($11 == "") ? "null" : sprintf("%.2f", ($11 + 0) / 1048576)
+			# r220：精测跑两遍，spread 只在两遍都有效时才有值；samples 让人分清
+			# 「很稳」和「只测到一遍（稳定性未知）」——两者都是空 spread。
+			spp = ($12 == "" || $12 == "-") ? "null" : sprintf("%.3f", $12 + 0)
+			smp = ($11 == "") ? 0 : (($12 == "") ? 1 : 2)
 			l = ($1 in loss) ? loss[$1] : "null"
 			j = ($1 in jit) ? jit[$1] : "null"
 			nt = ($1 in net && net[$1] != "") ? net[$1] : "null"
 			ry = ($1 in ray) ? ray[$1] : "null"
-			printf "{\"ip\":\"%s\",\"code\":%s,\"connect_ms\":%s,\"tls_ms\":%s,\"ttfb_ms\":%s,\"total_ms\":%s,\"colo\":\"%s\",\"speed_mbytes\":%s,\"speed_bps\":%s,\"speed_mib\":%s,\"below_gate\":%s,\"domain\":\"%s\",\"loss\":%s,\"jitter_ms\":%s,\"net_ttfb_ms\":%s,\"ray_ok\":%s}",
-				$1, $2, $3, $4, $5, $6, $7, sp, bp, mi, $10, $9, l, j, nt, ry
+			printf "{\"ip\":\"%s\",\"code\":%s,\"connect_ms\":%s,\"tls_ms\":%s,\"ttfb_ms\":%s,\"total_ms\":%s,\"colo\":\"%s\",\"speed_mbytes\":%s,\"speed_bps\":%s,\"speed_mib\":%s,\"below_gate\":%s,\"domain\":\"%s\",\"loss\":%s,\"jitter_ms\":%s,\"net_ttfb_ms\":%s,\"ray_ok\":%s,\"speed_spread\":%s,\"speed_samples\":%d}",
+				$1, $2, $3, $4, $5, $6, $7, sp, bp, mi, $10, $9, l, j, nt, ry, spp, smp
 		}' "$RUN_DIR/vfields.tsv" "$colored"
 		printf ']}\n'
 	} >"$RUN_DIR/result.tmp" && mv "$RUN_DIR/result.tmp" "$RESULT"
@@ -3540,16 +3618,30 @@ do_run() {
 		if [ "$SPEED_MODE" != degraded ] && [ "$C_CONFIRMN" -gt 0 ] && [ ! -f "$STOP" ] && [ -s "$qual" ]; then
 			head -n "$C_CONFIRMN" "$qual" | cut -f1 >"$RUN_DIR/confirm.ips"
 			cftotal=$(grep -c . "$RUN_DIR/confirm.ips" || true)
-			progress_set speed 0 "$cftotal"
+			progress_set speed 0 "$((cftotal * 2))"
 			cfi=0
 			while IFS= read -r cip; do
 				[ -n "$cip" ] || continue
 				[ -f "$STOP" ] && break
 				speed_measure "$speed_tsv" "$cip" "$C_CONFBYTES" "$C_CONFTO" confirm
 				cfi=$((cfi + 1))
-				progress_set speed $cfi "$cftotal"
+				progress_set speed $cfi "$((cftotal * 2))"
 			done <"$RUN_DIR/confirm.ips"
-			[ "$cfi" = 0 ] || log "精测 $cfi 个（每个 $C_CONFBYTES 字节，超时 ${C_CONFTO}s）"
+			# 第二遍**倒序**：同一颗 IP 的两次采样因此围绕整段的时间中点对称，
+			# 线性的时段漂移（晚高峰爬升/回落）在两次里互相抵消；正序跑两遍会把它
+			# 留成「越靠前越占便宜」的顺序偏差 —— 那正是加大样本最容易被忽略的副作用。
+			if [ "$cfi" -gt 0 ] && [ ! -f "$STOP" ]; then
+				awk '{ a[NR] = $0 } END { for (i = NR; i >= 1; i--) print a[i] }' \
+					"$RUN_DIR/confirm.ips" >"$RUN_DIR/confirm.rev" 2>/dev/null
+				while IFS= read -r cip; do
+					[ -n "$cip" ] || continue
+					[ -f "$STOP" ] && break
+					speed_measure "$speed_tsv" "$cip" "$C_CONFBYTES" "$C_CONFTO" confirm
+					cfi=$((cfi + 1))
+					progress_set speed $cfi "$((cftotal * 2))"
+				done <"$RUN_DIR/confirm.rev"
+			fi
+			[ "$cfi" = 0 ] || log "精测 $cftotal 个 × 2 遍（每个 $C_CONFBYTES 字节，超时 ${C_CONFTO}s，往返顺序），共 $cfi 次测量"
 			# 换了样本就要重算分数。只重排名次，不重判是否合格 —— 已经过门槛的
 			# 不会因为精测慢了一点就被踢掉，那会让「合格数」随样本波动。
 			if [ "$SPEED_MODE" = gate ] && [ "$cfi" -gt 0 ]; then
@@ -4393,6 +4485,38 @@ selftest() {
 	check '加权分：weight=100 且 ≥5MB/s 给满分' "$got" '100'
 	got=$(sh "$0" _speedscore 1500 300000 3000 100 2>/dev/null)
 	check '加权分：weight=100 时 0.3MB/s 落在 0.30 档' "$got" '30'
+
+	# r220：精测跑两遍（正序 + 倒序），稳定性作为第三维：延迟与吞吐按 speed_weight
+	# 分 85%，稳定固定 15%。不传第 6 参时保持旧口径，老调用点与老断言不受影响。
+	got=$(sh "$0" _speedscore 1500 5000000 3000 40 '' 1.0 2>/dev/null)
+	check '加权分：稳定满分 = 45×0.5 + 40×1 + 15×1 = 77' "$got" '77'
+	got=$(sh "$0" _speedscore 1500 5000000 3000 40 '' 0.5 2>/dev/null)
+	check '加权分：稳定中性 0.5 ⇒ 70' "$got" '70'
+	got=$(sh "$0" _speedscore 1500 5000000 3000 40 '' 0 2>/dev/null)
+	check '加权分：稳定归零 ⇒ 62' "$got" '62'
+	got=$(sh "$0" _speedscore 1500 5000000 3000 40 2>/dev/null)
+	check '加权分：不传稳定性时仍是旧口径 70' "$got" '70'
+	got=$(sh "$0" _speedscore 1500 5000000 3000 100 '' 0 2>/dev/null)
+	check '加权分：weight=100 夹到 85，稳定 0 ⇒ 85' "$got" '85'
+
+	got=$(sh "$0" _stabof '' 2>/dev/null)
+	check '稳定性系数：单样本给中性 0.500' "$got" '0.500'
+	got=$(sh "$0" _stabof 0.10 2>/dev/null)
+	check '稳定性系数：10% 波动满分' "$got" '1.000'
+	got=$(sh "$0" _stabof 0.375 2>/dev/null)
+	check '稳定性系数：37.5% 波动落在中点 0.500' "$got" '0.500'
+	got=$(sh "$0" _stabof 0.60 2>/dev/null)
+	check '稳定性系数：60% 波动归零' "$got" '0.000'
+
+	sp_t=$RUN_DIR/selftest-speed.tsv
+	printf '1.1.1.1\t10000000\t200\t10485760\t10485760\t0\tconfirm\n' >"$sp_t"
+	printf '1.1.1.1\t6000000\t200\t6291456\t10485760\t1\tconfirm\n' >>"$sp_t"
+	printf '2.2.2.2\t4000000\t200\t4194304\t4194304\t0\tscreen\n' >>"$sp_t"
+	printf '3.3.3.3\t5000000\t200\t5242880\t10485760\t0\tconfirm\n' >>"$sp_t"
+	got=$(sh "$0" _speedmerge "$sp_t" 2>/dev/null | sort | awk -F'\t' '{ printf "%s:%s:%s:%s:%s;", $1, $2, $3, $4, $5 }')
+	check '精测归并：两遍取较差值 + 离散度，单遍/未精测各有标记' "$got" \
+		'1.1.1.1:6000000:1:0.4000:2;2.2.2.2:4000000:0::0;3.3.3.3:5000000:0::1;'
+	rm -f "$sp_t"
 
 	# r89：粗筛个数的来源。真机回归点是「升级后新选项缺失、旧 speed_count 恰好
 	# 等于 keep_count」，那时必须用默认 20 而不是 10，否则第 11 名永远进不来。
@@ -5314,7 +5438,10 @@ case "${1:-}" in
 	# r88：吞吐判定的三个纯函数（参考值 / 门槛 / 加权分），全部离线可跑。
 	_speedref) speed_ref ;;
 	_speedgate) speed_gate "${2:-0}" "${3:-}" "${4:-0}" "${5:-0}" "${6:-0}" "${7:-0}" ;;
-	_speedscore) speed_score "${2:-0}" "${3:-}" "${4:-3000}" "${5:-0}" "${6:-}" ;;
+	_speedscore) speed_score "${2:-0}" "${3:-}" "${4:-3000}" "${5:-0}" "${6:-}" "${7:-}" ;;
+	# r220：稳定性系数与精测归并（两遍取较差值 + 离散度），都离线可跑。
+	_stabof) stab_of "${2:-}" ;;
+	_speedmerge) speed_merge "${2:-/dev/null}" ;;
 	_latrank) lat_rank ;;
 	# r89：粗筛个数的取值来源（new/old/default）。
 	_screensrc) screen_src "${2:-}" "${3:-}" "${4:-0}" ;;

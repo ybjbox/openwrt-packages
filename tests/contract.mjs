@@ -67,7 +67,7 @@ ok('RPC 对象名一致', /var RPC_OBJECT = 'luci\.cf-ipcheck'/.test(view) && /l
 
 /* ---- JSON 契约键（引擎写、视图读） ------------------------------------ */
 const STATUS = 'state started finished pool qualified usable intercepted counts domains items reason port enabled interval daily_times stage stage_done stage_total recent upload dc_show'.split(' ');
-const ITEMS = 'ip code connect_ms tls_ms ttfb_ms total_ms colo speed_mbytes domain loss jitter_ms net_ttfb_ms ray_ok'.split(' ');
+const ITEMS = 'ip code connect_ms tls_ms ttfb_ms total_ms colo speed_mbytes domain loss jitter_ms net_ttfb_ms ray_ok speed_spread speed_samples'.split(' ');
 const SOURCES = 'url http rc ips cf_in'.split(' ');
 for (const k of [ ...STATUS, ...ITEMS, ...SOURCES ]) {
 	const inEngine = new RegExp('"' + k + '":').test(engine.replace(/\\/g, ''));

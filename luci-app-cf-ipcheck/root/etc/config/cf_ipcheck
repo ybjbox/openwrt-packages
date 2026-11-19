@@ -134,13 +134,14 @@ config global 'global'
 	option speed_screen_count '20'
 	option speed_screen_bytes '4194304'
 	option speed_screen_timeout '8'
-	# 精测：排序之后，前 N 个再用大样本复测一次（0 = 关闭）。小样本受 TCP 慢启动
-	# 影响大，名次靠前的几个值得多花点流量量准。
+	# 精测：排序之后，前 N 个再用大样本复测**两遍**（正序 + 倒序，0 = 关闭）。
+	# 小样本受 TCP 慢启动影响大，名次靠前的几个值得多花点流量量准；两遍是为了拿到
+	# 稳定性（吞吐相对差），入榜取较差的一遍。流量是 N × 字节 × 2。
 	option speed_confirm_top '3'
 	option speed_confirm_bytes '10485760'
 	option speed_confirm_timeout '25'
-	# 排序权重 0..100：吞吐在总分里占多少。0=只看延迟，100=只看吞吐。
-	# 默认 40：延迟仍然更重要，但慢到拉不动网页的那几个会被压下去。
+	# 排序权重 0..100：吞吐在总分里占多少。0=只看延迟，100=只看吞吐（两者合起来占 85%，
+	# 稳定性固定占 15%，来自精测两遍的吞吐相对差）。默认 40 折成约 51/34/15。
 	option speed_weight '40'
 	# 下面三项是旧选项，留着是为了 sysupgrade 带回来的老配置能平滑升级：
 	# speed_count 只在 speed_screen_count 没配置**且它大于 keep_count** 时才充当
