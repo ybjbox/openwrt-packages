@@ -248,7 +248,22 @@ ssh -p 22845 root@op.403333.xyz 'apk add --allow-untrusted /tmp/luci-app-cf-ipch
 
 ## 验证状态
 
-### 2026-11-18 · r219（当前）
+### 2026-11-19 · r221（当前）
+
+- CI：push `44504662883` + dispatch `44504677860` 全绿，SDK `aarch64_cortex-a53-25.12.2`
+  （Build 8m17s）；APK `luci-app-cf-ipcheck-1.0.0-r221.apk`
+  （207,398 B，sha256 `ed809b7116a36991ed5eaec0d9fd9ed1f4af1ee3400b005a32412e8617a330aa`）。
+- **精测两遍（真机一轮，18:34，224 秒）**：`speed_confirm_top=3` → 6 次 confirm 采样，
+  每个 IP 两行；归并后 `172.64.229.21` 取 15.40（17158491 / 15395444 里较小的一遍）、
+  spread 0.092；三个 IP 的 spread 分别 3.5% / 9.2% / 10.3%，都 <25%，稳定性系数 1.0。
+  `result.json` 的 `speed_spread` / `speed_samples` 正常；日志「精测 3 个 × 2 遍…共 6 次测量」。
+- 页面（1440）：质量列无「速度波动」（都 <25%，符合「只列异常」）；抽屉里精测过的显示
+  「吞吐波动 4%」，只做过粗筛的显示「吞吐波动 只测到一遍」；未捕获 JS 异常 0。
+- **受控验证**：为不动那 6 条 DNS 解析，跑之前临时把 `dns_sync` 置 0、跑完立刻还原；
+  前后 `md5 abd00d8f…` 完全一致、`dns_sync=1`。规则本身没改，只改这一轮的开关。
+- 本地五件套：build --check / lint / **110 unit** / **149 contract** / smoke 全绿。
+
+### 2026-11-18 · r219（历史）
 
 - CI：push `44279557172` + dispatch `44279588460` 全绿，SDK `aarch64_cortex-a53-25.12.2`；
   APK `luci-app-cf-ipcheck-1.0.0-r219.apk`（204,611 B，sha256 `bd269a35f50fa7320bfaba3a12a783deeba5e5108cc54f275bf6b695c47dddfc`）。
