@@ -2270,7 +2270,7 @@ speed_score() { # $1=指标毫秒 $2=bps $3=绝对上限ms $4=权重 $5=(可选)
 		wt = w + 0
 		if (wt < 0) wt = 0
 		if (wt > 100) wt = 100
-		# 稳定性只有 speed_resort 会传（精测两遍的离散度）；空 = 旧口径，纯延迟+吞吐。
+		# 稳定性只有 speed_resort 会传（精测多遍、首末两次的离散度）；空 = 旧口径，纯延迟+吞吐。
 		if (stab == "") { printf "%d", int((100 - wt) * ln + wt * sn); exit }
 		st = stab + 0
 		if (st < 0) st = 0
@@ -2428,46 +2428,59 @@ speed_measure() {
 		awk '{ printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", $1, $2, $3, $4, $5, $6, $7 }' >>"$1"
 }
 
-# 把 speed.tsv 归并成「一个 IP 一行」。精测跑两遍（正序 + 倒序），两遍都有效
-# 时取**两遍均值**入榜。
+# 把 speed.tsv 归并成「一个 IP 一行」。精测跑三遍（正 - 反 - 正），都有效时取
+# **三遍中位**入榜。
 #
-# r224：由「取较差的一遍」改为取均值。原因是实测（P2 跨轮稳定性实验，8 IP × 2 遍 ×
-# 三次访问共 48 样本，见 docs/P2-结项.md）：吞吐分布在两个模态之间跳，两遍之间
-# |a-b|/max 实测可达 0.38（14:00 轮 result.json 为 0.186/0.382/0.382），此时取小值
-# 等于「只要有一遍掉进低模态就按低模态记」，系统性偏低而非保守。均值同样会因低模态
-# 被拉低（不稳的 IP 照样吃亏），但不再双罚 —— 稳定性在 stab_of() 里已经单独扣一次分。
-# 只有一遍有效时没有选择余地，仍用它。
+# r225：由「两遍取均值」（r224）改为「三遍取中位」。原因：吞吐有约 10% 的概率单遍
+# 坍缩到 1~2 MB/s（同 IP 前后两次 16.4 → 1.8，code 200、字节满额、不是 429 也不是
+# 截断）。两遍取均值等于把坍缩平均进代表值，一颗 16.4 的好 IP 会被压到 9 上下，
+# 还会连带 spread 变成 0.9x 被稳定性项再罚一次 —— 双重惩罚。中位数丢的是两端，
+# 一次坍缩伤不到代表值。
+# 三遍的顺序是「正 - 反 - 正」：第 1 遍与第 3 遍围绕第 2 遍的时间中点对称（同一颗
+# IP 的三次采样时刻为 k、2n-k、2n+k，关于 n+k 对称），所以 spread 仍取**首、末两个
+# 有效样本**的相对差 —— 与两遍时代的口径一致，stab_of() 的 25%/50% 两道阈值不用
+# 重新标定（若改用三样本极差，会因多一个样本系统性放大而把大半 IP 打成不稳）。
 # 输出五列：ip  bps  truncated  spread  samples
-#   bps        入榜/门槛用的吞吐：两遍取均值；只有一遍有效就用它；都无效为 0
-#   truncated  任一有效遍被截断即记 1（均值掺了不完整的样本，需一并标注）
-#   spread     |a-b| / max(a,b)，两遍都有效才有值（空 = 单样本，稳定性未知）
-#   samples    有效精测遍数 0/1/2
+#   bps        入榜/门槛用的吞吐：有效样本的中位数（偶数个取中间两个的均值）
+#   truncated  任一有效样本被截断即记 1（不完整的样本掺进了中位数，需一并标注）
+#   spread     |首-末| / max(首,末)，两个以上有效样本才有值（空 = 稳定性未知）
+#   samples    有效精测遍数 0..3
 speed_merge() { # $1=speed.tsv
 	awk -F'\t' '
 	$7 == "confirm" {
 		n[$1]++
-		if (n[$1] == 1) { a[$1] = $2 + 0; atr[$1] = $6 + 0 }
-		else if (n[$1] == 2) { b[$1] = $2 + 0; btr[$1] = $6 + 0 }
+		v[$1, n[$1]] = $2 + 0
+		t[$1, n[$1]] = $6 + 0
 		next
 	}
 	{ if (!($1 in sc)) { sc[$1] = $2 + 0; str[$1] = $6 + 0 } }
 	END {
 		for (ip in n) {
-			x = a[ip] + 0; y = b[ip] + 0
-			samples = 0
-			if (x > 0) samples++
-			if (y > 0) samples++
+			cnt = 0
+			tr = 0
+			for (i = 1; i <= n[ip]; i++) {
+				x = v[ip, i] + 0
+				if (x <= 0) continue
+				cnt++
+				s[cnt] = x            # 按遍序保存，供 spread 取首末
+				if (t[ip, i] + 0 == 1) tr = 1
+			}
+			samples = cnt
 			spread = ""
-			if (samples == 2) {
-				# 代表值取均值；spread 仍按 |max-min|/max 算，不受代表值口径影响
-				mn = (x < y) ? x : y
-				mx = (x > y) ? x : y
-				bps = int((x + y) / 2 + 0.5)
-				tr = (atr[ip] || btr[ip]) ? 1 : 0
+			if (cnt >= 2) {
+				mn = (s[1] < s[cnt]) ? s[1] : s[cnt]
+				mx = (s[1] > s[cnt]) ? s[1] : s[cnt]
 				if (mx > 0) spread = sprintf("%.4f", (mx - mn) / mx)
-			} else if (samples == 1) {
-				bps = (x > 0) ? x : y
-				tr = (x > 0) ? atr[ip] : btr[ip]
+			}
+			if (cnt > 0) {
+				for (i = 1; i <= cnt; i++) z[i] = s[i]
+				for (i = 2; i <= cnt; i++) {   # busybox awk 没有 asort
+					key = z[i]; j = i - 1
+					while (j >= 1 && z[j] > key) { z[j + 1] = z[j]; j-- }
+					z[j + 1] = key
+				}
+				if (cnt % 2) bps = z[(cnt + 1) / 2]
+				else bps = int((z[cnt / 2] + z[cnt / 2 + 1]) / 2 + 0.5)
 			} else {
 				bps = 0; tr = 0
 			}
@@ -2527,7 +2540,7 @@ lat_rank() {
 }
 
 speed_resort() {
-	# 精测两遍的归并：bps 取两遍均值，spread 只在两遍都有效时才有值。
+	# 精测多遍的归并：bps 取中位，spread 取首末两次（两个以上有效样本才有值）。
 	sr_merged=$RUN_DIR/speed.merged
 	speed_merge "$2" >"$sr_merged"
 	# 稳定性只算一遍：公式留在 stab_of 里，别在这里抄第二份。
@@ -3661,30 +3674,28 @@ do_run() {
 		if [ "$SPEED_MODE" != degraded ] && [ "$C_CONFIRMN" -gt 0 ] && [ ! -f "$STOP" ] && [ -s "$qual" ]; then
 			head -n "$C_CONFIRMN" "$qual" | cut -f1 >"$RUN_DIR/confirm.ips"
 			cftotal=$(grep -c . "$RUN_DIR/confirm.ips" || true)
-			progress_set speed 0 "$((cftotal * 2))"
+			# r225：三遍，顺序「正 - 反 - 正」。
+			#  - 第 1、3 遍围绕第 2 遍的时间中点对称，线性的时段漂移（晚高峰爬升/回落）
+			#    在首末两次里互相抵消，spread 才有意义；
+			#  - 中间那遍倒序，把「被访问的先后位置」这个位置效应摊平；
+			#  - 三遍取中位：单遍坍缩（约 10% 概率掉到 1~2 MB/s）不再污染代表值。
+			# 代价是精测流量从 2 份变 3 份（默认 3 个 IP × 16 MiB ⇒ 96 → 144 MiB/轮）。
+			awk '{ a[NR] = $0 } END { for (i = NR; i >= 1; i--) print a[i] }' \
+				"$RUN_DIR/confirm.ips" >"$RUN_DIR/confirm.rev" 2>/dev/null
+			progress_set speed 0 "$((cftotal * 3))"
 			cfi=0
-			while IFS= read -r cip; do
-				[ -n "$cip" ] || continue
+			for cpass in 1 2 3; do
 				[ -f "$STOP" ] && break
-				speed_measure "$speed_tsv" "$cip" "$C_CONFBYTES" "$C_CONFTO" confirm
-				cfi=$((cfi + 1))
-				progress_set speed $cfi "$((cftotal * 2))"
-			done <"$RUN_DIR/confirm.ips"
-			# 第二遍**倒序**：同一颗 IP 的两次采样因此围绕整段的时间中点对称，
-			# 线性的时段漂移（晚高峰爬升/回落）在两次里互相抵消；正序跑两遍会把它
-			# 留成「越靠前越占便宜」的顺序偏差 —— 那正是加大样本最容易被忽略的副作用。
-			if [ "$cfi" -gt 0 ] && [ ! -f "$STOP" ]; then
-				awk '{ a[NR] = $0 } END { for (i = NR; i >= 1; i--) print a[i] }' \
-					"$RUN_DIR/confirm.ips" >"$RUN_DIR/confirm.rev" 2>/dev/null
+				if [ "$cpass" = 2 ]; then clist=$RUN_DIR/confirm.rev; else clist=$RUN_DIR/confirm.ips; fi
 				while IFS= read -r cip; do
 					[ -n "$cip" ] || continue
 					[ -f "$STOP" ] && break
 					speed_measure "$speed_tsv" "$cip" "$C_CONFBYTES" "$C_CONFTO" confirm
 					cfi=$((cfi + 1))
-					progress_set speed $cfi "$((cftotal * 2))"
-				done <"$RUN_DIR/confirm.rev"
-			fi
-			[ "$cfi" = 0 ] || log "精测 $cftotal 个 × 2 遍（每个 $C_CONFBYTES 字节，超时 ${C_CONFTO}s，往返顺序），共 $cfi 次测量"
+					progress_set speed $cfi "$((cftotal * 3))"
+				done <"$clist"
+			done
+			[ "$cfi" = 0 ] || log "精测 $cftotal 个 × 3 遍（每个 $C_CONFBYTES 字节，超时 ${C_CONFTO}s，正-反-正顺序），共 $cfi 次测量"
 			# 换了样本就要重算分数。只重排名次，不重判是否合格 —— 已经过门槛的
 			# 不会因为精测慢了一点就被踢掉，那会让「合格数」随样本波动。
 			if [ "$SPEED_MODE" = gate ] && [ "$cfi" -gt 0 ]; then
@@ -4559,6 +4570,21 @@ selftest() {
 	got=$(sh "$0" _speedmerge "$sp_t" 2>/dev/null | sort | awk -F'\t' '{ printf "%s:%s:%s:%s:%s;", $1, $2, $3, $4, $5 }')
 	check '精测归并：两遍取均值 + 离散度，单遍/未精测各有标记' "$got" \
 		'1.1.1.1:8000000:1:0.4000:2;2.2.2.2:4000000:0::0;3.3.3.3:5000000:0::1;'
+	rm -f "$sp_t"
+
+	# r225：三遍取中位。重点不是「值对不对」，而是**中间一遍坍缩时代表值不动**：
+	# 4.4.4.4 的第 2 遍掉到 1.5 MB/s（17→1.5→16），中位仍应取 16；首末两次才是
+	# spread 的来源（|17-16|/17）。5.5.5.5 则是「第 2 遍无效」，只剩两遍有效。
+	sp_t=$RUN_DIR/selftest-speed3.tsv
+	printf '4.4.4.4\t17000000\t200\t16777216\t16777216\t0\tconfirm\n' >"$sp_t"
+	printf '4.4.4.4\t1500000\t200\t1500000\t16777216\t0\tconfirm\n' >>"$sp_t"
+	printf '4.4.4.4\t16000000\t200\t16777216\t16777216\t0\tconfirm\n' >>"$sp_t"
+	printf '5.5.5.5\t9000000\t200\t9437184\t16777216\t0\tconfirm\n' >>"$sp_t"
+	printf '5.5.5.5\t0\t0\t0\t16777216\t0\tconfirm\n' >>"$sp_t"
+	printf '5.5.5.5\t8000000\t200\t8388608\t16777216\t1\tconfirm\n' >>"$sp_t"
+	got=$(sh "$0" _speedmerge "$sp_t" 2>/dev/null | sort | awk -F'\t' '{ printf "%s:%s:%s:%s:%s;", $1, $2, $3, $4, $5 }')
+	check '精测归并：三遍取中位，中间一遍坍缩不影响代表值' "$got" \
+		'4.4.4.4:16000000:0:0.0588:3;5.5.5.5:8500000:1:0.1111:2;'
 	rm -f "$sp_t"
 
 	# r89：粗筛个数的来源。真机回归点是「升级后新选项缺失、旧 speed_count 恰好

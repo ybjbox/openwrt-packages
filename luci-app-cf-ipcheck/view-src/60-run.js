@@ -3,7 +3,7 @@
 
 	var el = CFI.dom.el;
 	var F = CFI.fmt;
-	var QUALITY_NOTE = CFI.T('质量只列异常：抖动 = 同一 IP 多次测得的首字节耗时最大差（ms，>100 才标）；速度波动 = 精测两遍的吞吐相对差（>25% 才标）；丢包 = 没打通的样本占比；未验到 CF-RAY = 没拿到机房标记；— = 没发现异常。');
+	var QUALITY_NOTE = CFI.T('质量只列异常：抖动 = 同一 IP 多次测得的首字节耗时最大差（ms，>100 才标）；速度波动 = 精测三遍首末两次的吞吐相对差（>25% 才标）；丢包 = 没打通的样本占比；未验到 CF-RAY = 没拿到机房标记；— = 没发现异常。');
 
 	/* 每个可排序列「刚切进来」时朝哪个方向走。
 	 * 首字节、机房是越小 / 越靠前越好，走 asc；吞吐正相反 —— 越大越好，
@@ -32,7 +32,7 @@
 			bits.push(CFI.T('丢包 %s%').format(String(Math.round(Number(it.loss) * 100))));
 		if (it.jitter_ms != null && isFinite(Number(it.jitter_ms)) && Number(it.jitter_ms) > 100)
 			bits.push(CFI.T('抖动 %s ms').format(F.ms(it.jitter_ms)));
-		/* r221：精测两遍的吞吐相对差。≤25% 不标（正常波动），超过才进「质量」列。 */
+		/* r221：精测多遍的吞吐相对差（r225 起取首末两次）。≤25% 不标（正常波动），超过才进「质量」列。 */
 		if (it.speed_spread != null && isFinite(Number(it.speed_spread)) && Number(it.speed_spread) > 0.25)
 			bits.push(CFI.T('速度波动 %s%').format(String(Math.round(Number(it.speed_spread) * 100))));
 		if (it.ray_ok === 0)
