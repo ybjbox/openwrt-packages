@@ -2325,6 +2325,12 @@ speed_of() {
 		sp_why=not_file
 		[ "$sp_code" = 200 ] && sp_why=too_small
 		[ "$sp_code" = 0 ] && sp_why=no_response
+		# r223：429 必须单独成类。它跟「这个 IP 回的不是文件」是两码事 ——
+		# speed.cloudflare.com 按**来源 IP** 限流（与 --resolve 指哪颗边缘无关，
+		# 2026-11-20 实测：4 分钟内 26 次 10 MiB 下载即触发，两个不同候选 IP
+		# 同时被拒，冷却 >18 分钟）。混记成 not_file，看到「吞吐整列未测到」
+		# 的人会去查 IP 与线路，方向从一开始就错了。
+		[ "$sp_code" = 429 ] && sp_why=rate_limit
 		printf '%s\t%s\t%s\t%s\n' "$sp_ip" "$sp_code" "$sp_size" "$sp_why" >>"$RUN_DIR/speed_reject.tsv" 2>/dev/null
 		printf '0 %s %s %s %s\n' "$sp_code" "$sp_size" "$sp_want" "$sp_tr"
 		return 0
@@ -2398,7 +2404,12 @@ test_one_ip() {
 				log "单 IP 测速 $ti：HTTP $tcode / 首字节 ${ttf}ms / 吞吐 ${tspeed_mb} MB/s"
 			else
 				tspeed=",\"speed_bps\":null,\"speed_code\":$tscode,\"speed_bytes\":$tsize,\"speed_want\":$twant,\"speed_truncated\":$ttr"
-				log "单 IP 测速 $ti：HTTP $tcode / 首字节 ${ttf}ms / 吞吐未测到"
+				# r223：429 要单独说。否则页面只看到「HTTP 200 / 吞吐未测到」——
+				# 那个 200 是延迟探测的状态码，测速请求其实被端点拒了（限流），
+				# 真实原因只在 speed_reject.tsv 里，等于让人猜。
+				trewhy=''
+				[ "$tscode" = 429 ] && trewhy='（端点限流 429：按来源 IP 计数，等 18 分钟以上再试，换 IP 无效）'
+				log "单 IP 测速 $ti：HTTP $tcode / 首字节 ${ttf}ms / 吞吐未测到$trewhy"
 			fi
 		else
 			log "单 IP 测速 $ti：HTTP $tcode / 首字节 ${ttf}ms / $terr（不测吞吐）"
@@ -2731,10 +2742,17 @@ write_outputs() {
 	# r75：有 IP 回的不是那个文件（错误页/挑战页）时按未测出处理。这行是给人看的
 	# 解释 —— 否则页面上一片 '-' 会被当成「引擎坏了」，而实情是服务端没给文件。
 	# 样例只带 ip/code/size 三个数字，不碰配置内容；below_gate 那类不在这里重复。
-	rej_n=$(awk -F'\t' '$4 != "below_gate"' "$RUN_DIR/speed_reject.tsv" 2>/dev/null | grep -c . || true)
+	# r223：rate_limit（429）单独统计、单独报，并从上面那条里排除 —— 它说的
+	# 是「我们这个出口被端点限流」，不是「那个 IP 有问题」。混着报会让人去换 IP。
+	rl_n=$(awk -F'\t' '$4 == "rate_limit"' "$RUN_DIR/speed_reject.tsv" 2>/dev/null | grep -c . || true)
+	rl_n=${rl_n:-0}
+	if [ "$rl_n" -gt 0 ]; then
+		log "端点限流：本轮 $rl_n 次测速被 speed.cloudflare.com 以 HTTP 429 拒绝（按来源 IP 计数，换候选 IP 无效），这些样本按未测出处理；冷却通常 >18 分钟，本轮结束前别再手动补测"
+	fi
+	rej_n=$(awk -F'\t' '$4 != "below_gate" && $4 != "rate_limit"' "$RUN_DIR/speed_reject.tsv" 2>/dev/null | grep -c . || true)
 	rej_n=${rej_n:-0}
 	if [ "$rej_n" -gt 0 ]; then
-		rej_one=$(awk -F'\t' '$4 != "below_gate"' "$RUN_DIR/speed_reject.tsv" 2>/dev/null | head -1 | \
+		rej_one=$(awk -F'\t' '$4 != "below_gate" && $4 != "rate_limit"' "$RUN_DIR/speed_reject.tsv" 2>/dev/null | head -1 | \
 			awk -F'\t' '{ printf "%s code=%s 只有 %s 字节", $1, $2, $3 }')
 		log "吞吐有 $rej_n 个没测出真实吞吐（服务端回的不是文件：如 $rej_one），已记作未测出"
 	fi
@@ -2818,10 +2836,10 @@ write_outputs() {
 			END { printf "]" }')
 	fi
 	{
-		printf '{"state":"done","started":"%s","finished":"%s","pool":%s,"qualified":%s,"usable":%s,"intercepted":%s,"counts":%s,"domains":"%s","budget":%s,"port":%s,"speed_mode":"%s","speed_weight":%s,"below_gate":%s,"bypass":"%s","probe_metric":"%s","speed_unit":"%s","dc_pick":"%s","dc_summary":%s,"dc_show":%s,"items":[' \
+		printf '{"state":"done","started":"%s","finished":"%s","pool":%s,"qualified":%s,"usable":%s,"intercepted":%s,"counts":%s,"domains":"%s","budget":%s,"port":%s,"speed_mode":"%s","speed_weight":%s,"below_gate":%s,"speed_429":%s,"bypass":"%s","probe_metric":"%s","speed_unit":"%s","dc_pick":"%s","dc_summary":%s,"dc_show":%s,"items":[' \
 			"${STARTED:-}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$pool_n" "$qualified" \
 			"$(grep -c . "$colored" || true)" "$intercepted" "$counts" "$C_DOMAINS" "$C_BUDGET" "$C_PORT" \
-			"${SPEED_MODE:-display}" "${C_SPEED_W:-0}" "${bg_in:-0}" "${BYPASS:-unknown}" \
+			"${SPEED_MODE:-display}" "${C_SPEED_W:-0}" "${bg_in:-0}" "${rl_n:-0}" "${BYPASS:-unknown}" \
 			"${C_METRIC:-http}" "${C_SUUNIT:-mb}" "${C_DCPICK:-all}" "$dcsum_json" "$dcshow_json"
 		# r71：多样本验证的四个派生键（loss/jitter_ms/net_ttfb_ms/ray_ok）从边表按 IP
 		# 并入。未验证的 IP 四项都是 null——页面据此区分"没验过"和"验了没丢包"，

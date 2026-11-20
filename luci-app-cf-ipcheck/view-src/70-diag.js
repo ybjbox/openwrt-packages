@@ -134,11 +134,24 @@
 		function paintWarn(st) {
 			CFI.dom.clear(srcWarn);
 			var n = Number(st.src_bad) || 0;
-			if (!n) {
+			/* r223：端点限流（429）的提示。以前它只落在 speed_reject.tsv 里，
+			 * 页面上表现为「这一轮吞吐全空」而日志说 HTTP 200，看起来像引擎坏了。
+			 * 数据来自 status.speed_429（本轮被拒次数），0 次就整块不出现。 */
+			var rl = Number(st.speed_429) || 0;
+			if (rl > 0) {
+				srcWarn.appendChild(CFI.ui.Msg({
+					tone: 'warn',
+					title: CFI.T('上一轮有 %s 次测速被端点限流（HTTP 429）').format(String(rl)),
+					text: CFI.T('speed.cloudflare.com 按来源 IP 计数限流，与候选 IP 无关。被拒的样本按「未测出」处理，所以那一轮的吞吐可能整列偏空 —— 这不是链路变慢，换 IP 也没用；冷却通常超过 18 分钟，稍后重跑即可。')
+				}));
+			}
+			if (!n && !rl) {
 				srcWarn.hidden = true;
 				return;
 			}
 			srcWarn.hidden = false;
+			if (!n)
+				return;
 			var names = st.src_bad_names ? String(st.src_bad_names) : '';
 			var gone = Number(st.src_gone) || 0;
 			var why = gone > 0
@@ -419,7 +432,8 @@
 			var k;
 			k = CFI.store.roundKey(st);
 			if (k !== last.trace) { last.trace = k; paintTrace(st); }
-			k = String(st.src_bad || 0) + '|' + String(st.src_gone || 0) + '|' + String(st.src_bad_names || '');
+			k = String(st.src_bad || 0) + '|' + String(st.src_gone || 0) + '|' + String(st.src_bad_names || '') +
+				'|' + String(st.speed_429 || 0);
 			if (k !== last.warn) { last.warn = k; paintWarn(st); }
 			k = CFI.store.diagKey(state);
 			if (k !== last.src) { last.src = k; paintSources(state); }
