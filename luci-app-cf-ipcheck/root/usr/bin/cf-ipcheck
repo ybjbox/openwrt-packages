@@ -2428,11 +2428,18 @@ speed_measure() {
 		awk '{ printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", $1, $2, $3, $4, $5, $6, $7 }' >>"$1"
 }
 
-# 把 speed.tsv 归并成「一个 IP 一行」。精测现在跑两遍（正序 + 倒序），两遍都有效
-# 时取**较差的一遍**入榜 —— 宁可选保守值，也不要把一次侥幸的高峰当成常态。
+# 把 speed.tsv 归并成「一个 IP 一行」。精测跑两遍（正序 + 倒序），两遍都有效
+# 时取**两遍均值**入榜。
+#
+# r224：由「取较差的一遍」改为取均值。原因是实测（P2 跨轮稳定性实验，8 IP × 2 遍 ×
+# 三次访问共 48 样本，见 docs/P2-结项.md）：吞吐分布在两个模态之间跳，两遍之间
+# |a-b|/max 实测可达 0.38（14:00 轮 result.json 为 0.186/0.382/0.382），此时取小值
+# 等于「只要有一遍掉进低模态就按低模态记」，系统性偏低而非保守。均值同样会因低模态
+# 被拉低（不稳的 IP 照样吃亏），但不再双罚 —— 稳定性在 stab_of() 里已经单独扣一次分。
+# 只有一遍有效时没有选择余地，仍用它。
 # 输出五列：ip  bps  truncated  spread  samples
-#   bps        入榜/门槛用的吞吐：两遍取小；只有一遍有效就用它；都无效为 0
-#   truncated  与 bps 同一遍的截断标记
+#   bps        入榜/门槛用的吞吐：两遍取均值；只有一遍有效就用它；都无效为 0
+#   truncated  任一有效遍被截断即记 1（均值掺了不完整的样本，需一并标注）
 #   spread     |a-b| / max(a,b)，两遍都有效才有值（空 = 单样本，稳定性未知）
 #   samples    有效精测遍数 0/1/2
 speed_merge() { # $1=speed.tsv
@@ -2452,10 +2459,12 @@ speed_merge() { # $1=speed.tsv
 			if (y > 0) samples++
 			spread = ""
 			if (samples == 2) {
-				bps = (x < y) ? x : y
-				tr = (x < y) ? atr[ip] : btr[ip]
+				# 代表值取均值；spread 仍按 |max-min|/max 算，不受代表值口径影响
+				mn = (x < y) ? x : y
 				mx = (x > y) ? x : y
-				if (mx > 0) spread = sprintf("%.4f", (mx - bps) / mx)
+				bps = int((x + y) / 2 + 0.5)
+				tr = (atr[ip] || btr[ip]) ? 1 : 0
+				if (mx > 0) spread = sprintf("%.4f", (mx - mn) / mx)
 			} else if (samples == 1) {
 				bps = (x > 0) ? x : y
 				tr = (x > 0) ? atr[ip] : btr[ip]
@@ -2518,7 +2527,7 @@ lat_rank() {
 }
 
 speed_resort() {
-	# 精测两遍的归并：bps 取较差的一遍（保守），spread 只在两遍都有效时才有值。
+	# 精测两遍的归并：bps 取两遍均值，spread 只在两遍都有效时才有值。
 	sr_merged=$RUN_DIR/speed.merged
 	speed_merge "$2" >"$sr_merged"
 	# 稳定性只算一遍：公式留在 stab_of 里，别在这里抄第二份。
@@ -2670,7 +2679,7 @@ write_outputs() {
 	# 没有达标 IP、或关掉了测速）时，上一轮的离散度会被当成这一轮的。
 	: >"$RUN_DIR/spread.map"
 	if [ -s "$RUN_DIR/speed.tsv" ]; then
-		# 同一颗既有粗筛又有精测时以精测为准；精测两遍取**较差的一遍** ——
+		# 同一颗既有粗筛又有精测时以精测为准；精测两遍取**均值** ——
 		# 门槛、排序、页面三处必须是同一个数，所以统一走 speed_merge。
 		speed_merge "$RUN_DIR/speed.tsv" >"$RUN_DIR/speed.merged"
 		awk -F'\t' '{ print $1 "\t" $2 }' "$RUN_DIR/speed.merged" >"$spd_map"
@@ -4548,8 +4557,8 @@ selftest() {
 	printf '2.2.2.2\t4000000\t200\t4194304\t4194304\t0\tscreen\n' >>"$sp_t"
 	printf '3.3.3.3\t5000000\t200\t5242880\t10485760\t0\tconfirm\n' >>"$sp_t"
 	got=$(sh "$0" _speedmerge "$sp_t" 2>/dev/null | sort | awk -F'\t' '{ printf "%s:%s:%s:%s:%s;", $1, $2, $3, $4, $5 }')
-	check '精测归并：两遍取较差值 + 离散度，单遍/未精测各有标记' "$got" \
-		'1.1.1.1:6000000:1:0.4000:2;2.2.2.2:4000000:0::0;3.3.3.3:5000000:0::1;'
+	check '精测归并：两遍取均值 + 离散度，单遍/未精测各有标记' "$got" \
+		'1.1.1.1:8000000:1:0.4000:2;2.2.2.2:4000000:0::0;3.3.3.3:5000000:0::1;'
 	rm -f "$sp_t"
 
 	# r89：粗筛个数的来源。真机回归点是「升级后新选项缺失、旧 speed_count 恰好
@@ -5482,7 +5491,7 @@ case "${1:-}" in
 	_speedref) speed_ref ;;
 	_speedgate) speed_gate "${2:-0}" "${3:-}" "${4:-0}" "${5:-0}" "${6:-0}" "${7:-0}" ;;
 	_speedscore) speed_score "${2:-0}" "${3:-}" "${4:-3000}" "${5:-0}" "${6:-}" "${7:-}" ;;
-	# r221：稳定性系数与精测归并（两遍取较差值 + 离散度），都离线可跑。
+	# r221：稳定性系数与精测归并（两遍取均值 + 离散度），都离线可跑。
 	_stabof) stab_of "${2:-}" ;;
 	_speedmerge) speed_merge "${2:-/dev/null}" ;;
 	_latrank) lat_rank ;;
