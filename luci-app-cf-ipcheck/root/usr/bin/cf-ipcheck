@@ -2492,7 +2492,7 @@ speed_merge() { # $1=speed.tsv
 	}' "${1:-}"
 }
 
-# 两遍吞吐的相对差 → 稳定性系数 0..1。≤25% 满分、≥50% 归零，中间线性。
+# 首末两次吞吐的相对差 → 稳定性系数 0..1。≤25% 满分、≥50% 归零，中间线性。
 # 空（只测到一遍）给 0.5 中性：没证据说它不稳，也不能白送满分。
 stab_of() { # $1=spread（0..1，可空）
 	awk -v s="${1:-}" 'BEGIN {
@@ -2692,7 +2692,7 @@ write_outputs() {
 	# 没有达标 IP、或关掉了测速）时，上一轮的离散度会被当成这一轮的。
 	: >"$RUN_DIR/spread.map"
 	if [ -s "$RUN_DIR/speed.tsv" ]; then
-		# 同一颗既有粗筛又有精测时以精测为准；精测两遍取**均值** ——
+		# 同一颗既有粗筛又有精测时以精测为准；精测取**中位**（r225）——
 		# 门槛、排序、页面三处必须是同一个数，所以统一走 speed_merge。
 		speed_merge "$RUN_DIR/speed.tsv" >"$RUN_DIR/speed.merged"
 		awk -F'\t' '{ print $1 "\t" $2 }' "$RUN_DIR/speed.merged" >"$spd_map"
@@ -2733,7 +2733,7 @@ write_outputs() {
 			bsp=''
 			spd='-'
 		fi
-		# 第 12 列：两遍吞吐的相对差（空 = 只测到一遍，或没测）。
+		# 第 12 列：首末两次吞吐的相对差（空 = 只测到一遍，或没测）。
 		spd_sp=$(awk -F'\t' -v want="$ip" '$1 == want { print $2; exit }' "$RUN_DIR/spread.map" 2>/dev/null)
 		bg=0
 		grep -qxF "$ip" "$bg_file" 2>/dev/null && bg=1
@@ -2751,7 +2751,7 @@ write_outputs() {
 		spd_ok=$(awk -F'\t' '$2 + 0 > 0' "$RUN_DIR/speed.tsv" | grep -c . || true)
 		spd_bad=$((${spd_all:-0} - ${spd_ok:-0}))
 		[ "$spd_bad" -lt 0 ] 2>/dev/null && spd_bad=0
-		log "吞吐实测 ${spd_all:-0} 次（粗筛 + 精测两遍），其中 ${spd_ok:-0} 次拿到有效吞吐、$spd_bad 次没测出；页面与 JSON 用十进制 MB/s，CSV 第 6 列按 speed_unit=${C_SUUNIT:-mb} 换算"
+		log "吞吐实测 ${spd_all:-0} 次（粗筛 + 精测各遍），其中 ${spd_ok:-0} 次拿到有效吞吐、$spd_bad 次没测出；页面与 JSON 用十进制 MB/s，CSV 第 6 列按 speed_unit=${C_SUUNIT:-mb} 换算"
 	fi
 	# r89：这一行只认「进了结果的」。补足名单与榜单是同一批（r89 起补足发生在
 	# 截断之后、补的行直接进 ranked），所以这里的数字必然等于 JSON 的 below_gate
@@ -2879,7 +2879,7 @@ write_outputs() {
 			sp = ($8 == "" || $8 == "-") ? "null" : $8
 			bp = ($11 == "") ? "null" : $11
 			mi = ($11 == "") ? "null" : sprintf("%.2f", ($11 + 0) / 1048576)
-			# r221：精测跑两遍，spread 只在两遍都有效时才有值；samples 让人分清
+			# r221：精测跑多遍（r225 起三遍），spread 取首末两次；samples 让人分清
 			# 「很稳」和「只测到一遍（稳定性未知）」——两者都是空 spread。
 			spp = ($12 == "" || $12 == "-") ? "null" : sprintf("%.3f", $12 + 0)
 			smp = ($11 == "") ? 0 : (($12 == "") ? 1 : 2)
@@ -4568,7 +4568,7 @@ selftest() {
 	printf '2.2.2.2\t4000000\t200\t4194304\t4194304\t0\tscreen\n' >>"$sp_t"
 	printf '3.3.3.3\t5000000\t200\t5242880\t10485760\t0\tconfirm\n' >>"$sp_t"
 	got=$(sh "$0" _speedmerge "$sp_t" 2>/dev/null | sort | awk -F'\t' '{ printf "%s:%s:%s:%s:%s;", $1, $2, $3, $4, $5 }')
-	check '精测归并：两遍取均值 + 离散度，单遍/未精测各有标记' "$got" \
+	check '精测归并：偶数个取中间两个均值 + 离散度，单遍/未精测各有标记' "$got" \
 		'1.1.1.1:8000000:1:0.4000:2;2.2.2.2:4000000:0::0;3.3.3.3:5000000:0::1;'
 	rm -f "$sp_t"
 
