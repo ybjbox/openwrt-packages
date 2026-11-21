@@ -56,11 +56,18 @@ test('r203 colo 不落盘：偏好里存着 colo 要退回 all', () => {
 	assert.ok(!/board\.filter', bui\.filter\)[\s\S]{0,40}colo/.test(js), '不要把 colo 写进偏好');
 });
 
-test('r203 列菜单：复选框偏移要按根因覆盖，列按钮跟行高', () => {
+test('真实在跑的规则：列菜单复选框偏移归零但不丢定位基准', () => {
 	const cb = css.indexOf('.cfp .cols-menu .chk input[type="checkbox"]');
 	assert.ok(cb > 0, '缺少复选框重置规则');
 	const body = css.slice(css.indexOf('{', cb) + 1, css.indexOf('}', cb));
-	assert.match(body, /position:\s*static/, 'Argon 的 relative + top/left 偏移只有 static 能压掉');
+	/* r228：Argon 的 top/left 偏移要归零，但**不能**用 position: static ——
+	   方框(::before)与勾(::after)都是 absolute，靠 input 当定位基准；static 会让
+	   三行的方框一起叠到 .cols-menu 左上角，只有最上面一个可见。 */
+	assert.match(body, /position:\s*relative/, '要用 relative 保住 ::before 的定位基准');
+	assert.doesNotMatch(body, /position:\s*static/, 'position: static 会让三行方框叠到菜单左上角');
+	assert.match(body, /top:\s*0/, 'Argon 的 6.4px 下移要归零');
+	assert.match(body, /left:\s*0/, 'Argon 的 -3.2px 左移要归零');
+	assert.match(body, /flex:\s*0 0 auto/, '别被 flex 压缩，否则方框变形');
 
 	assert.match(css, /\.cfp \.cfp-board \.board-tools > \.cols \{ display: flex; align-self: stretch; \}/,
 		'列按钮要跟行高走（与窄屏那套一致）');
