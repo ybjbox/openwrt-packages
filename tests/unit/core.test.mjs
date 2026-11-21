@@ -14,6 +14,7 @@ const VIEW = path.join(root, 'luci-app-cf-ipcheck', 'htdocs', 'luci-static',
 function load() {
 	const src = fs.readFileSync(VIEW, 'utf8');
 	const mem = new Map();
+	const formOpts = [];
 	const windowStub = {
 		localStorage: {
 			getItem: (k) => (mem.has(k) ? mem.get(k) : null),
@@ -38,8 +39,12 @@ function load() {
 				return {
 					anonymous: false,
 					option: function (t, key, title, short) {
-						return { name: key, type: t, title: title, short: short, description: short,
+						var o = { name: key, type: t, title: title, short: short, description: short,
 							value: function () {} };
+						/* r229：把声明出来的 option 收集起来，供「默认值是否挂了
+						   placeholder」这类断言用（真 CBI 里这些对象就是渲染源头）。 */
+						formOpts.push(o);
+						return o;
 					}
 				};
 			};
@@ -56,7 +61,9 @@ function load() {
 	fn(formStub, rpcStub, {}, pollStub, viewStub, node, (s) => s, {},
 		windowStub, { head: null, createElement: node, createElementNS: node },
 		setTimeout, clearTimeout, {});
-	return windowStub.__cfi__;
+	const api = windowStub.__cfi__;
+	api.__opts = formOpts;
+	return api;
 }
 
 const CFI = load();
@@ -259,4 +266,30 @@ test('字段表：36 个字段 + 高级分组，短句与分组双向可查', ()
 	assert.ok(groups.probeAdv.indexOf('probe_port') >= 0);
 	const map = CFI.form.create();
 	assert.ok(map, 'create() 应返回 Map 实例');
+});
+
+test('r229 默认值同时给浅灰提示：有 default 的字段必有 placeholder', () => {
+	CFI.form.create();
+	/* create() 可能被别的用例先调过，按 name 去重再判数量 */
+	const uniq = new Map();
+	CFI.__opts.forEach((o) => { if (!uniq.has(o.name)) uniq.set(o.name, o); });
+	const byKey = Object.fromEntries(uniq);
+
+	assert.equal(byKey.dns_ttl.default, '60');
+	assert.equal(byKey.dns_ttl.placeholder, '默认 60');
+	assert.equal(byKey.probe_port.placeholder, '默认 443');
+	assert.equal(byKey.speed_path.placeholder, '默认 /__down?bytes={bytes}');
+	assert.equal(byKey.speed_domain.placeholder, '默认 speed.cloudflare.com');
+
+	/* 空默认（daily_times 留空＝不用时刻表）不该提示一个不存在的值 */
+	assert.equal(byKey.daily_times.default, '');
+	assert.ok(!byKey.daily_times.placeholder, '空默认不能挂 placeholder');
+
+	/* 提示必须与 default 同源：不能出现「50 的默认、提示却写 25」 */
+	const bad = [...uniq.values()].filter((o) => o.default !== undefined && o.default !== '' &&
+		o.placeholder !== '默认 ' + o.default);
+	assert.deepEqual(bad.map((o) => o.name), [], 'placeholder 与 default 必须一致');
+
+	const withDef = [...uniq.values()].filter((o) => o.default !== undefined && o.default !== '');
+	assert.equal(withDef.length, 24); // 25 处 dflt() 里 daily_times 是空默认
 });

@@ -22,6 +22,18 @@
 			o.depends(field, value);
 	}
 
+	/* 默认值（r229）：uci 里没写这一项时输入框是空的，用户看不出"留空会用什么值" ——
+	 * 引擎的 cfg/cfg_range 回落值与这里必须一致，只写一次才不会两边走偏。
+	 * o.default 仍交给 CBI（它自己拿来做缺省），另外挂一份 placeholder 当浅灰提示；
+	 * 空默认（如 daily_times）不挂，否则会提示一个不存在的值。
+	 * 前缀写「默认」而不是光给数字：框里出现 60 却又不生效，比空着更让人困惑。 */
+	function dflt(o, v) {
+		o.default = v;
+		if (v !== '')
+			o.placeholder = T('默认') + ' ' + v;
+		return o;
+	}
+
 	/* 渲染完成后挂说明入口：「?」紧跟字段标题，说明整行默认不占位；点开时短句与
 	 * 完整解释一起出现（触屏可达）。按钮挂在 .cbi-value-title（label）里，
 	 * 不碰 .cbi-value-field —— 后者会让 CBI 取值读错（r107 事故）。
@@ -306,12 +318,12 @@ o = field(s, 'basic', form.Value, 'interval_hours',
 	_('定时周期（小时）'), _('两轮之间的间隔，单位小时。'),
 	_('仅当下面「每天测速时刻」留空时生效。可填 1~168 小时，从上一轮开始的时刻算，一轮跑多久都不会把下一轮越推越远。周期越短结果越新，但每轮都要重新下载地址清单并逐个测试，流量和 CPU 占用都会上升；软路由上 6 小时是个折中。手动点「立即测速」也会把下一轮顺延一个周期；按每天时刻跑时这一项不参与。'));
 		o.datatype = 'and(uinteger,min(1),max(168))';
-		o.default = '6';
+		dflt(o, '6');
 
 o = field(s, 'basic', form.Value, 'daily_times',
 	_('每天测速时刻'), _('留空则按上面的周期跑。'),
 	_('填你希望每天自动测速的时刻，逗号分隔的 24 小时制 HH:MM，例如 02:00,08:00,14:00,20:00；最多 12 个，可以填非整点（如 07:35）。留空时行为与旧版完全一致，只按上面的周期循环；一旦填了，就完全按这些时刻跑，周期不再参与。改完点「保存并应用」一分钟内生效，不用重启服务。设备关机或重启错过了某个时刻不补跑，直接等下一个；手动点「立即测速」也不会改变这些时刻。每轮要重新下载地址清单并逐个测试，约 105MB，填得越密流量和 CPU 占用越高。'));
-		o.default = '';
+		dflt(o, '');
 		o.validate = function (section_id, value) {
 			var v = String(value || '');
 			if (!v.replace(/[,;\s]+/g, ''))
@@ -333,19 +345,19 @@ o = field(s, 'basic', form.Value, 'daily_times',
 o = field(s, 'basic', form.Value, 'probe_domains',
 	_('探测域名'), _('填你实际要用的域名，且必须已接入 Cloudflare；多个用英文逗号隔开。'),
 	_('测试时会把填写的域名固定指向被测试的地址，这样量到的等待时间才接近你实际打开网页的感受。可以填多个，测速程序会逐个试，并记录每个地址在哪个域名下表现最好；结果里用了不止一种域名时，才会多出「胜出域名」那一列。域名没接入 Cloudflare 时，测出来的数值不能代表真实使用效果。'));
-		o.default = 'www.cloudflare.com';
+		dflt(o, 'www.cloudflare.com');
 
 o = field(adv, 'probeAdv', form.Value, 'probe_port',
 	_('探测端口'), _('一般保持 443。'),
 	_('HTTPS 测试用的端口。除非你的用途不走 443，否则不要改 —— 改成别的端口后，大多数 Cloudflare 节点会直接拒绝连接，结果可能为空。这个端口会同时用在请求 URL 和「把候选 IP 按域名直连」的解析映射上（两边必须一致，否则探测会退回系统 DNS、测到的其实是域名的真实地址）。它只用于测试，不会写进结果文件：导出和上传的都是一行一个纯 IP 地址，不会带端口。'));
 		o.datatype = 'port';
-		o.default = '443';
+		dflt(o, '443');
 
 o = field(adv, 'probeAdv', form.Value, 'log_max_kb',
 	_('日志体积上限（KB）'), _('日志文件最多占多少 KB（千字节）。'),
 	_('日志存在内存里，不封顶会慢慢吃掉内存。超过这个大小，只保留最近的一半，并在日志里明说「较早的内容被丢弃」，不会悄悄截掉。下限 16 KB：再小就装不下一轮的记录，出问题时查不到东西。这一项不决定日志能留多久，重启后本来就会清零。'));
 		o.datatype = 'and(uinteger,min(16),max(65536))';
-		o.default = '512';
+		dflt(o, '512');
 
 o = field(adv, 'probeAdv', form.Flag, 'use_official_ranges',
 	_('Cloudflare 官方网段'), _('从 Cloudflare 官方公布的地址段里随机抽一些一起测。默认关。'),
@@ -355,7 +367,7 @@ o = field(adv, 'probeAdv', form.Flag, 'use_official_ranges',
 o = field(adv, 'probeAdv', form.Flag, 'reuse_last',
 	_('带上上一轮进榜的 IP'), _('把上一次的结果也再测一遍，让结果更稳定。'),
 	_('把上一轮选中的地址并回待测清单一起测。好处是结果不会「一轮好一轮空」地跳；代价是某个地址已经变差时，它会多占一个名额，要再过一两轮才会被换掉。'));
-		o.default = '1';
+		dflt(o, '1');
 		o.rmempty = false;
 
 o = field(adv, 'probeAdv', form.Flag, 'neighbor_expand',
@@ -366,7 +378,7 @@ o = field(adv, 'probeAdv', form.Flag, 'neighbor_expand',
 		 * 与引擎的默认值 1 相反。装机实测（r72）：老部署的 uci 里没有这一项
 		 * （升级时 apk 把新配置留在 .apk-new），页面显示关、引擎实际跑开 ——
 		 * 用户一动页面点保存，就会把默认开的功能静默写成关。 */
-		o.default = '1';
+		dflt(o, '1');
 
 		var srclist = m.section(form.TypedSection, 'global', _('源清单'));
 		srclist.anonymous = true;
@@ -384,7 +396,7 @@ o = field(srclist, 'sources', form.DynamicList, 'community_sources',
 o = field(thr, 'probe', form.ListValue, 'probe_metric',
 	_('按哪个时间判定'), _('默认按网页开始响应的快慢判定。'),
 	_('两种方式量的不是同一件事，结果不能互相比较；换过之后整张结果列表会重排，别拿新旧两轮的数字比快慢。按网页开始响应（默认）：量到服务器送回第一个字节，含建立连接、加密握手和服务器反应，最接近打开网页的感受。按建立连接：只量到连接打通，数值通常低 30%~50%，看着好看但说明不了服务器快不快，适合只想筛掉连不上的地址。选后者时，结果和各地汇总那一列会改标成 TCP。'));
-		o.default = 'http';
+		dflt(o, 'http');
 		o.value('http', _('按网页开始响应（HTTP）'));
 		o.value('tcp', _('按建立连接（TCP）'));
 
@@ -392,39 +404,38 @@ o = field(thr, 'probe', form.Value, 'ttfb_limit',
 	_('首字节上限（毫秒）'), _('网页开始响应超过这个毫秒数就不要。'),
 	_('第一道门槛：网页开始响应的时间超过这个值就判为不符合要求。这个时间反映服务器「反应过来」的速度，最接近打开网页首屏的感受，所以拿它当主门槛。默认 3000 毫秒比较宽松，想只留更快的地址可以调到 800~1000 毫秒。'));
 		o.datatype = 'and(uinteger,min(100),max(600000))';
-		o.default = '3000';
+		dflt(o, '3000');
 
 o = field(thr, 'probe', form.Value, 'total_limit',
 	_('总耗时上限（毫秒）'), _('整个请求超过这个毫秒数也不要（两个上限要同时满足）。'),
 	_('必须和上一项同时满足才算可用。它管的是整个请求从头到尾的时间，能挡掉那些「回应很快但传得慢」的地址。两项是「并且」的关系，任一超限就排除。'));
 		o.datatype = 'and(uinteger,min(200),max(600000))';
-		o.default = '5000';
+		dflt(o, '5000');
 
 o = field(thr, 'probe', form.Value, 'keep_count',
 	_('榜单保留条数'), _('最终只保留排名靠前的前 N 条。'),
 	_('排名会同时考虑网页响应速度和下载速度（见「速度在排名里的权重」），分数相同时再依次比网页响应时间、整个请求时间；这一项只决定写出多少条、页面列多少行，不影响测速本身。留 10 条左右足够客户端在其中切换。'));
 		o.datatype = 'and(uinteger,min(1),max(100))';
-		o.default = '10';
+		dflt(o, '10');
 
 o = field(adv, 'probeAdv', form.Value, 'verify_top',
 	_('多样本验证个数'), _('排名靠前的 N 个各多测 2 次，取中间值。填 0 关闭。'),
 	_('对暂时排在前 N 个的地址各再测 2 次（连同首次共 3 次），用中间那次的结果参与最终排名，顺带算出测不通的比例和忽快忽慢的差距。家宽单次测试的波动有 50~100 毫秒，比相邻名次的差距还大 —— 不多测几次，谁排第一基本靠运气。填 0 就回到只测一次。'));
 		o.datatype = 'and(uinteger,min(0),max(100))';
-		o.default = '30';
+		dflt(o, '30');
 
 		/* r90：按机房收窄榜单。填 all / auto 或三位机房码 —— 用文本框而不是下拉，
 		 * 是因为机房码有几百个、而且会新增，写死一张表就成了"每加一个机房改一次页面"。 */
 o = field(thr, 'probe', form.Value, 'dc_pick',
 	_('只留某个机房'), _('填 all 不限制，auto 只留整体最快的一个所在地。'),
 	_('all（默认）：不过滤，各地地址一起排。auto：只留整体上最快的那一个地方 —— 看的是这个地方的典型水平，不是某一颗特别快，单颗快可能只是碰巧。也可以直接填三位所在地代码（NRT 东京、SIN 新加坡、LAX 洛杉矶）只留这一个。各地速度差距大时混在一起，客户端可能切到慢的那个，所以才有人这样设。如果填的代码这一轮没有对应地址，会自动改回不限制，不会给出空结果 —— 可以先看上方汇总里有哪些地方。'));
-		o.default = 'all';
-		o.placeholder = 'all';
+		dflt(o, 'all');
 
 
 o = field(thr, 'probe', form.Flag, 'speed_probe',
 	_('进榜后再测下载速度'), _('对结果里的地址逐个下载测试文件，算出下载速度。'),
 	_('对选出来的地址一个一个下载较大的文件（不并发），算出下载速度。这一步很费流量，所以默认只对一部分地址做。测出来的速度会按「速度在排名里的权重」参与排名，不只是参考值。'));
-		o.default = '1';
+		dflt(o, '1');
 		o.rmempty = false;
 
 o = field(thr, 'probe', form.Value, 'speed_count',
@@ -432,7 +443,7 @@ o = field(thr, 'probe', form.Value, 'speed_count',
 	_('实际会先粗测约 20 个地址、再对其中较快的 3 个做精测，每轮要下载上百 MB 测试数据，流量较大。填 0 等于关掉下载测速（结果里仍保留下载速度那一列，显示为 —）。若曾在配置文件里单独设置过粗测数量，则以那个设置为准，此时填 0 不会关闭测速。'));
 		dep(o, 'speed_probe', '1');
 		o.datatype = 'and(uinteger,min(0),max(100))';
-		o.default = '10';
+		dflt(o, '10');
 
 		/* r88：吞吐判定。三步顺序（连通性 → 稳定性 → 下载速度）只在 speed_gate
 		 * 的长说明里讲一次，其余字段各说各的那一格，避免同一段话抄六遍。 */
@@ -440,21 +451,21 @@ o = field(thr, 'probe', form.Flag, 'speed_gate',
 	_('用下载测速判定 IP 好坏'), _('默认开；关掉就只按能不能连上和响应速度排序。'),
 	_('打开后按三步筛：① 能不能连上、加密连接（TLS）是否成功、网页开始响应够不够快；② 同一地址多测几次，测不通的次数超过三分之一就不要；③ 再看下载速度，低于「绝对下限」直接排除，明显慢于本轮大多数地址的也排除。下载因超时中断但已经下了不少时，按「只会更快」从宽保留。关掉这个开关，就回到只看连通性和响应速度。'));
 		o.rmempty = false;
-		o.default = '1';
+		dflt(o, '1');
 
 o = field(thr, 'probe', form.Value, 'speed_abs_min',
 	_('绝对下限（MB/s）'), _('下载速度低于这个值就直接排除。'),
 	_('单位是 MB/秒，按 1 MB = 100 万字节计算。0.5 MB/秒大概能流畅看 480p，1.5 左右够 1080p。低于这个值就没必要再跟别的地址比了。'));
 		dep(o, 'speed_gate', '1');
 		o.datatype = 'and(ufloat,min(0))';
-		o.default = '0.50';
+		dflt(o, '0.50');
 
 o = field(adv, 'probeAdv', form.Value, 'speed_rel_min',
 	_('相对下限（%）'), _('低于这一轮所有地址速度中间值的这个百分比就排除。'),
 	_('跟本轮的中间值比，而不是跟固定值比，是为了适应不同宽带：百兆和千兆该留的地址本来就不一样。中间值就是把速度从快到慢排、取正中间那个。本轮有效样本少于 5 个时只看「绝对下限」，免得少数几个地址把中间值带偏。'));
 		dep(o, 'speed_gate', '1');
 		o.datatype = 'and(uinteger,min(0),max(100))';
-		o.default = '25';
+		dflt(o, '25');
 
 		/* r227：端点两项加回「高级设置」。7-08 精简设置项时被移出界面（uci 与引擎
 		 * 一直保留），但换端点是最可能临时发生的操作 —— 换 Pages 项目、换自建反代，
@@ -462,21 +473,19 @@ o = field(adv, 'probeAdv', form.Value, 'speed_rel_min',
 o = field(adv, 'probeAdv', form.Value, 'speed_domain',
 	_('吞吐测试地址'), _('拉大文件用的域名，默认 speed.cloudflare.com。'),
 	_('用来拉大文件的域名，会像别处的探测一样用 --resolve 钉到候选 IP 上访问，所以这个域名本身不需要能解析。默认 speed.cloudflare.com，它返回一个够大的响应体；换成自己的大文件地址也可以，但要确认它同样经由 Cloudflare，否则测的是另一条路径。公共端点按出口 IP 限流，同一出口短时间下载次数过多会返回 429、本轮吞吐记为空，自己托管一个静态文件更稳。'));
-		o.default = 'speed.cloudflare.com';
-		o.placeholder = 'speed.cloudflare.com';
+		dflt(o, 'speed.cloudflare.com');
 
 o = field(adv, 'probeAdv', form.Value, 'speed_path',
 	_('吞吐请求路径'), _('一般保持 /__down?bytes={bytes}。'),
 	_('拉大文件时请求的那个路径。两个占位符：{bytes} 换成原始字节数（如 /10485760），{size} 换成带十进制单位（如 /10m、/50m，单位口径 k=1000、m=1000000）。之所以做成模板：有些端点把大小写在路径里、根本不看查询参数（比如把字节数写进文件名的静态站，填 /{bytes}.zip 就能接上）—— 一个占位符都没有时，引擎会自动在后面补 ?bytes=N，不会静默失效。必须以 / 开头。'));
-		o.default = '/__down?bytes={bytes}';
-		o.placeholder = '/__down?bytes={bytes}';
+		dflt(o, '/__down?bytes={bytes}');
 
 o = field(adv, 'probeAdv', form.Value, 'speed_weight',
 	_('速度在排名里的权重'), _('0 只看响应速度，100 只看下载速度；稳定另占 15%，默认 40。'),
 	_('0 表示完全按响应速度排，100 表示完全按下载速度排（两者合起来占 85%），稳定性固定占 15%。稳定性来自精测三遍（取首、末两次）的吞吐相对差：≤25% 满分、≥50% 归零，只测到一遍按中性算。举例：响应速度差不多时，10 MB/秒的地址会排在 0.2 MB/秒的前面。'));
 		dep(o, 'speed_gate', '1');
 		o.datatype = 'and(uinteger,min(0),max(100))';
-		o.default = '40';
+		dflt(o, '40');
 
 
 
@@ -487,14 +496,14 @@ o = field(adv, 'probeAdv', form.Value, 'speed_weight',
 o = field(adv, 'probeAdv', form.Flag, 'colo_probe',
 	_('识别落地机房'), _('查一下每个地址实际连到 Cloudflare 的哪个城市。'),
 	_('对结果里的地址额外请求一次 Cloudflare 的调试接口，读出它实际把你带到哪个城市。多花一次请求，但能一眼看出流量是不是绕了远路。'));
-		o.default = '1';
+		dflt(o, '1');
 		o.rmempty = false;
 
 
 o = field(thr, 'probe', form.Flag, 'canary_check',
 	_('每轮先自检出口是否被接管'), _('先用一个不可能连通的地址试一次，检查上网流量是不是走了代理。'),
 	_('每轮开始前，用一个保留地址（正常网络里根本连不通）走一遍和真实测速完全相同的路径。正常应该发不出去；如果收到回应，说明本机流量被透明代理或加速器接管了，这一轮量到的是「本机 → 代理 → Cloudflare」，不能用来判断地址好坏。这时页面会出红条，本轮不再测下载速度（下载速度那一列显示 —），结果仅供参考。想不再报：在代理里把探测域名和 Cloudflare 地址段设为直连或绕过（本插件不改代理），或临时关掉代理再跑一轮。'));
-		o.default = '1';
+		dflt(o, '1');
 		o.rmempty = false;
 
 
@@ -526,7 +535,7 @@ o = field(adv, 'probeAdv', form.Value, 'token_file',
 	_('Token 文件路径（备选）'), _('两处都填时，以上面直接填写的令牌为准。'),
 	_('不想把令牌写进配置文件（它会随备份一起保存、也会在页面上掩码显示）时，可以把令牌单独写进一个文件，这里填文件路径。文件建议只让所有者可读写（权限 600）。两个位置都填了，以直接填写的令牌为准。'));
 		dep(o, { upload_gist: '1', gist_token: '' });
-		o.default = '/etc/cf-ipcheck.token';
+		dflt(o, '/etc/cf-ipcheck.token');
 
 		/* ---- DNS 解析（r96，可选）----
 		 * 这一组只做一件事：把每轮榜首写进 Cloudflare 的一条 A 记录。
@@ -594,7 +603,7 @@ o = field(adv, 'probeAdv', form.Value, 'dns_ttl',
 	_('TTL 是各地缓存这条解析记录的时间（秒）。填 60 意味着换地址后一分钟内客户端就能拿到新地址；填 1 就是缓存 1 秒，不是「自动」，也不会用 Cloudflare 的默认 300 秒。可填 1~86400（一天），数值越大切换越慢。'));
 		dep(o, 'dns_sync', '1');
 		o.datatype = 'and(uinteger,min(1),max(86400))';
-		o.default = '60';
+		dflt(o, '60');
 
 o = field(dns, 'dns', form.Value, 'dns_token',
 	_('API 令牌'), _('需要在 Cloudflare 里给「区域 → DNS → 编辑」权限。'),

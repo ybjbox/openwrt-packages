@@ -92,6 +92,15 @@ ok('隐藏兼容键保留但不在界面', confKeys.includes('dns_record') && co
 ok('源清单只声明一处', (view.match(/form\.DynamicList, 'community_sources'/g) || []).length === 1);
 ok('全页只有一张 CBI Map', (view.match(/new form\.Map\(/g) || []).length === 1);
 
+/* r229：默认值只走 dflt() 一处出处，placeholder 也只在那里挂一次 ——
+   两处各写一份必然会走偏（改默认忘了改提示）。 */
+const bareDef = (view.match(/o\.default = '/g) || []).length;
+ok('默认值统一走 dflt()，不留裸 o.default 赋值', bareDef === 0, String(bareDef));
+const dfltN = (view.match(/dflt\(o, '/g) || []).length;
+ok('dflt() 覆盖 25 个字段', dfltN === 25, String(dfltN));
+const phN = (view.match(/o\.placeholder/g) || []).length;
+ok('placeholder 只在 dflt() 里挂（无第二处出处）', phN === 1, String(phN));
+
 /* ---- 版本 ------------------------------------------------------------- */
 const mk = read(MK);
 const rel = (mk.match(/PKG_RELEASE:=(\d+)/) || [])[1];
