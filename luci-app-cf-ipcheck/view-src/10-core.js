@@ -249,7 +249,11 @@
 
 	function errKindName(code) {
 		switch (String(code)) {
-			case 'none': return T('无响应');
+			/* r233：none 在 probe 语义里是**成功**（2xx/3xx/4xx 都算 none）。
+			   原来译成「无响应」，谁哪天新增一处 for-in 忘了跳过 none，
+			   就会把「120 个成功」显示成「无响应 120」。现在译成正面词，
+			   误用时显示成「正常 120」，一眼能看出是调用点写错了。 */
+			case 'none': return T('正常');
 			case 'http': return T('HTTP 错');
 			case 'dns': return T('域名解析失败');
 			case 'connect': return T('连接失败');

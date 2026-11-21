@@ -272,13 +272,35 @@
 				res,
 				el('span', { class: 'src-acts' }, [ checkBtn.node, delBtn.node ])
 			]);
-			var onEdit = function () {
-				row.url = String(input.value || '').trim();
+			/* r233：击键去抖。原来每敲一个字符就 syncHidden（重建全部 .item，
+			   12 条源 = 36 个节点）+ refreshAll（12 行各跑一次 savedIndex），
+			   整体 O(n²)，路由器上的浏览器能感觉到延迟。150ms 后合并成一次；
+			   change（失焦/回车）仍立即提交，关页面前不会丢最后一次编辑。
+			   窗格销毁后定时器不再碰已分离的节点。 */
+			var editTimer = null;
+			var commitEdit = function () {
+				editTimer = null;
+				if (!src.dyn || !src.dyn.ownerDocument || !src.dyn.ownerDocument.contains(src.dyn))
+					return;
 				syncHidden();
 				refreshAll();
 			};
+			var onEdit = function () {
+				row.url = String(input.value || '').trim();
+				if (editTimer)
+					clearTimeout(editTimer);
+				editTimer = setTimeout(commitEdit, 150);
+			};
+			var onEditCommit = function () {
+				row.url = String(input.value || '').trim();
+				if (editTimer) {
+					clearTimeout(editTimer);
+					editTimer = null;
+				}
+				commitEdit();
+			};
 			input.addEventListener('input', onEdit);
-			input.addEventListener('change', onEdit);
+			input.addEventListener('change', onEditCommit);
 			src.rows.push(row);
 			srcHost.appendChild(row.node);
 			refreshRow(row);

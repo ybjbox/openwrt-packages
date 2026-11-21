@@ -75,7 +75,7 @@
 		 * 否则刷新后会拿空 colo 去比对、一条都不剩。 */
 		if (bui.filter === 'colo')
 			bui.filter = 'all';
-		var last = { round: '', stage: '', board: '', dc: '', foot: '', recent: '' };
+		var last = { round: '', stage: '', board: '', dc: '', foot: '', recent: '', drawer: '' };
 		var lastItems = [];
 		var lastSt = {};
 		var snap = null;
@@ -558,11 +558,20 @@
 			return null;
 		}
 
+		/* r233：抽屉内容签名。轮询每 3 秒跑一次，boardKey 变化就会重开抽屉——
+		   如果用户正好按在「复制此 IP」上，down/up 落在两个不同节点，浏览器
+		   不会合成 click（正是 Table 注释里花大力气避开的那类事故）。签名
+		   不变就跳过重建；轮次刚结束、读数真正变化时才会换节点。 */
+		function drawerSig(it) {
+			return it ? JSON.stringify(it) : 'gone';
+		}
+
 		function openDrawer(ip, silent) {
 			bui.sel = ip;
 			var it = itemOf(ip);
 			if (it)
 				snap = it;
+			last.drawer = String(ip) + '|' + drawerSig(it) + '|' + drawerSig(it ? null : snap);
 			drawer.open(String(ip), drawerBody(it || snap || { ip: ip }, !it));
 			table.update({ rows: sortedFiltered(lastItems), sort: bui.sort, selected: bui.sel, hidden: hiddenCols });
 			if (!silent && actions.onSelect)
@@ -626,7 +635,12 @@
 			boardSub.textContent = st.state === 'running'
 				? CFI.T('测速中')
 				: (useN ? CFI.T('%s 条可用').format(String(useN)) : '') +
-					(bgN > 0 ? CFI.T('，另有 %s 条补足（只进详情）').format(String(bgN)) : '');
+					(bgN > 0 ? CFI.T('，另有 %s 条补足（只进详情）').format(String(bgN)) : '') +
+					/* r233：引擎 published=false 时 best-ip.txt / CSV 保持上一轮内容，
+					   result.json 却是本轮的 —— 两份产物不一致必须让用户看见，
+					   不然他会以为下载到的清单就是刚测完的这批。 */
+					(st.published === false && st.state === 'done'
+						? CFI.T('；本轮无可发布 IP，best-ip.txt 仍是上一轮') : '');
 		}
 
 		function paintBanner(st) {
@@ -745,7 +759,11 @@
 					var cur = itemOf(bui.sel);
 					if (cur)
 						snap = cur;
-					drawer.open(String(bui.sel), drawerBody(cur || snap || { ip: bui.sel }, !cur));
+					var dk = String(bui.sel) + '|' + drawerSig(cur) + '|' + drawerSig(cur ? null : snap);
+					if (dk !== last.drawer) {
+						last.drawer = dk;
+						drawer.open(String(bui.sel), drawerBody(cur || snap || { ip: bui.sel }, !cur));
+					}
 				}
 			}
 			var kd = CFI.store.dcKey(st);

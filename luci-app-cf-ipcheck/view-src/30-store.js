@@ -131,6 +131,7 @@
 	function roundKey(st) {
 		st = st || {};
 		return [ st.state, st.reason, st.intercepted, st.pool, st.qualified, st.usable, st.below_gate,
+			st.published === false ? 0 : 1,
 			JSON.stringify(st.counts || {}), st.started, st.finished, st.domains,
 			Math.floor((st.staleFor || 0) / 10) ].join('|');
 	}
@@ -165,7 +166,9 @@
 		var lg = st.logs || {};
 		var text = lg.state === 'ok' ? String(lg.text || '') : '';
 		opts = opts || {};
-		return [ lg.state || '', text.length, text.slice(-60),
+		/* r233：key 里加首段。原来只认尾部 60 字符 —— trim_log 截断通常动到
+		   尾部所以能覆盖，但日志中段被替换、首尾恰好不变时页面会停在旧内容。 */
+		return [ lg.state || '', text.length, text.slice(0, 40), text.slice(-60),
 			opts.logFilter || 'all', opts.logPaused ? 1 : 0, opts.logFull ? 1 : 0,
 			opts.logAuto ? 1 : 0 ].join('|');
 	}

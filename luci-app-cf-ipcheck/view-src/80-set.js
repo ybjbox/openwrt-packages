@@ -193,7 +193,11 @@
 			var sec = host.querySelector('.cbi-section[data-group="' + group + '"]');
 			if (!sec)
 				return false;
-			sec.hidden = false;
+			/* r233：不再强制 unhide。被 CBI depends 隐藏的组（如 dns_sync=0 时
+			   的 dns）本来就不生效，露出来只会让人填一组没用的字段。
+			   折叠状态照旧展开；组当前隐藏就返回 false，让调用方走回退。 */
+			if (sec.hidden)
+				return false;
 			setFold(sec, false, true);
 			if (sec.scrollIntoView)
 				sec.scrollIntoView({ block: 'start' });

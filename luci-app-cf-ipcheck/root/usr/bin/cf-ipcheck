@@ -2561,6 +2561,11 @@ speed_resort() {
 	sr_lnfile=$RUN_DIR/latnorm.tsv
 	: >"$sr_lnfile"
 	[ "${C_MCOL:-5}" = 3 ] && lat_rank <"$RUN_DIR/qual.bps" >"$sr_lnfile"
+	# r233：below_gate 集合一次性读进变量，循环里用 case 判 —— 原来 grep -qxF
+	# 每行 fork 一次，150 行就是 150 个进程，每轮这里跑两遍（门槛后 + 精测后）。
+	# case 模式里 "$sr_ip" 带引号是字面量，IP 里的点不会被当通配符。
+	sr_bgset=' '
+	[ -s "$3" ] && sr_bgset=" $(tr '\n' ' ' <"$3")"
 	while IFS="$(printf '\t')" read -r sr_ip sr_code sr_c sr_tls sr_ttfb sr_tot sr_err sr_dom sr_bps; do
 		[ -n "$sr_ip" ] || continue
 		# r90：判定指标可切换，加权分的延迟项与并列时的第一比较键都跟着走
@@ -2576,7 +2581,7 @@ speed_resort() {
 		[ -n "$sr_st" ] || sr_st='0.500'
 		sr_sc=$(speed_score "$sr_m" "${sr_bps:-}" "$C_TTFB" "$C_SPEED_W" "$sr_ln" "$sr_st")
 		sr_bg=0
-		grep -qxF "$sr_ip" "$3" 2>/dev/null && sr_bg=1
+		case "$sr_bgset" in *" $sr_ip "*) sr_bg=1 ;; esac
 		# r94：4xx 排在 2xx/3xx 之后，且优先级高于加权分 —— 403 的错误页正文只有
 		# 十几字节，TTFB 天然最低，加权分里延迟项必然接近满分；只改 rank() 只能让
 		# 它们进不了 qualified，能进榜的照样霸榜（真机：修完 rank 后榜单前 5 仍是
@@ -2812,6 +2817,11 @@ write_outputs() {
 		# below_gate 的行只写进 result.json：它是「比门槛差一点、但榜单太空所以拉来
 		# 凑数」的，推到客户端只会让设备连上一颗明显慢的 IP。
 		[ "${bg:-0}" = 1 ] && continue
+		# r233：4xx 也不进 best-ip.txt 与 CSV。rank/speed_resort 把 4xx 排在 tier=1
+		# 只是不让 403 的错误页靠超低 TTFB 霸榜，不是认可它可用；而 apply-dns.sh
+		# 的 ranked_ips 一直显式过滤 4xx —— 同一份榜单，DNS 侧过滤、文件侧放行，
+		# 用户拿 best-ip.txt 喂客户端就会连上 403。两份产物从现在起同口径。
+		case "$code" in 2*|3*) ;; *) continue ;; esac
 		# 渲染后去掉首尾空白：模板填成一个空格 = 只要一行纯 IP（uci 分不清
 		# “显式留空”和“没这一项”，真空值取回来是 rc=1，会落回默认模板）。
 		# 行首不拼 :端口 —— 这份文件就是推给 Gist 的那份，客户端要的是纯 IP；
@@ -2887,13 +2897,19 @@ write_outputs() {
 	# 把 below_gate=1 的补足行也算进去了 —— 页面说「10 条可用」，用户下载 CSV 只有
 	# 9 行、复制 IP 也只有 9 条，两边对不上。补足数另由 below_gate 字段给出
 	# （bg_in，同一个数写进 result.json 的 items 与日志），页面据此标注「另有 N 条补足」。
-	usable_n=$(awk -F'\t' '$10 != 1 { n++ } END { printf "%d", n + 0 }' "$colored")
+	# r233：4xx 同样不数 —— 它们与补足行一样不进两份产物（见下面写 tmp 的循环）。
+	usable_n=$(awk -F'\t' '$10 != 1 && $2 ~ /^[23]/ { n++ } END { printf "%d", n + 0 }' "$colored")
 	{
-		printf '{"state":"done","started":"%s","finished":"%s","pool":%s,"qualified":%s,"usable":%s,"intercepted":%s,"counts":%s,"domains":"%s","budget":%s,"port":%s,"speed_mode":"%s","speed_weight":%s,"below_gate":%s,"speed_429":%s,"bypass":"%s","probe_metric":"%s","speed_unit":"%s","dc_pick":"%s","dc_summary":%s,"dc_show":%s,"items":[' \
+		# r233：published 直接进 result.json —— 原来页面对「best-ip.txt 还是上一轮」
+		# 一无所知：result.json 是新的（全是补足行），文件却是旧的，两边各说一套。
+		# 现在引擎把这个状态显式交给页面，由它在榜单副标题里标注。
+		pub_json=false
+		[ "${publish:-0}" = 1 ] && pub_json=true
+		printf '{"state":"done","started":"%s","finished":"%s","pool":%s,"qualified":%s,"usable":%s,"intercepted":%s,"counts":%s,"domains":"%s","budget":%s,"port":%s,"speed_mode":"%s","speed_weight":%s,"below_gate":%s,"speed_429":%s,"bypass":"%s","probe_metric":"%s","speed_unit":"%s","dc_pick":"%s","dc_summary":%s,"dc_show":%s,"published":%s,"items":[' \
 			"${STARTED:-}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$pool_n" "$qualified" \
 			"${usable_n:-0}" "$intercepted" "$counts" "$C_DOMAINS" "$C_BUDGET" "$C_PORT" \
 			"${SPEED_MODE:-display}" "${C_SPEED_W:-0}" "${bg_in:-0}" "${rl_n:-0}" "${BYPASS:-unknown}" \
-			"${C_METRIC:-http}" "${C_SUUNIT:-mb}" "${C_DCPICK:-all}" "$dcsum_json" "$dcshow_json"
+			"${C_METRIC:-http}" "${C_SUUNIT:-mb}" "${C_DCPICK:-all}" "$dcsum_json" "$dcshow_json" "$pub_json"
 		# r71：多样本验证的四个派生键（loss/jitter_ms/net_ttfb_ms/ray_ok）从边表按 IP
 		# 并入。未验证的 IP 四项都是 null——页面据此区分"没验过"和"验了没丢包"，
 		# 不会把 null 读成 0 说成"零丢包"。边表由 do_run 保证存在（可能为空）。
@@ -2944,8 +2960,8 @@ write_outputs() {
 	# cfst 兼容 CSV（r71）与 best-ip.txt 同源，写在它之后：这份是给 edgetunnel 的
 	# ADDCSV 消费的第二产物，契约上 best-ip.txt 仍是第一产物，CSV 是加法不是替换。
 	# 同样先写临时再 rename——半截 CSV 会被 edgetunnel 当成缺列直接拒。
-	# below_gate 的行同样不进 CSV：它和 best-ip.txt 一样是给客户端用的清单，
-	# 只把「补足用」的 IP 留在 result.json 里给人看。
+		# below_gate 与 4xx 都不进 CSV：它和 best-ip.txt 一样是给客户端用的清单，
+		# 只把「补足用」的 IP 留在 result.json 里给人看（r233 起两处同口径过滤）。
 	# CSV 第 6 列与表头都跟 speed_unit 走（r90）：mb → MB/s + ÷1000000（用户习惯的
 	# 十进制，与页面/测速站同口径）；mib → MiB/s + ÷1048576（CFST 的 result.csv 口径，
 	# edgetunnel 的 DLS 阈值按那个设）。r89 曾经把值钉死在 MiB 而页面对不上，
@@ -2954,7 +2970,7 @@ write_outputs() {
 	csvtmp=$ETC_DIR/.best-ip.csv.tmp
 	{
 		printf 'IP 地址,已发送,已接收,丢包率,平均延迟,%s,地区码\n' "$csvhdr"
-		awk -F'\t' '$10 != 1' "$colored" | csv_rows "$RUN_DIR/vfields.tsv" "${C_SPDIV:-1000000}"
+		awk -F'\t' '$10 != 1 && $2 ~ /^[23]/' "$colored" | csv_rows "$RUN_DIR/vfields.tsv" "${C_SPDIV:-1000000}"
 	} >"$csvtmp" && mv "$csvtmp" "$CSV" || rm -f "$csvtmp"
 }
 
@@ -5507,6 +5523,14 @@ case "${1:-}" in
 					 # 关掉时空转短睡，LuCI 里打开开关一分钟内就开始测，
 					 # 不需要重启服务。顺手清掉待触发点：下次打开时重新算
 					 # 「下一个未来时刻」，不能拿关掉前那个已过期的点。
+					 # r233：关着也要查 stale_self —— 关着开关升级包、之后打开时，
+					 # 这一轮不能还跑旧 inode 的 do_run（stale_self 只在下面的
+					 # 等待分片里判，do_run 内部不判）。代价：每 60 秒读一次
+					 # /proc/$$/fd，量级可忽略。
+					 if stale_self; then
+						 log '检测到引擎已被升级（本进程仍指向旧 inode），就地重启守护进程以加载新代码'
+						 exec /usr/bin/cf-ipcheck daemon
+					 fi
 					 sleep 60
 					 schedule_disarm
 					 continue

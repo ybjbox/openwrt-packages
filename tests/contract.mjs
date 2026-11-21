@@ -66,7 +66,7 @@ for (const [ method ] of pairs)
 ok('RPC 对象名一致', /var RPC_OBJECT = 'luci\.cf-ipcheck'/.test(view) && /luci\.cf-ipcheck/.test(uc));
 
 /* ---- JSON 契约键（引擎写、视图读） ------------------------------------ */
-const STATUS = 'state started finished pool qualified usable intercepted counts domains items reason port enabled interval daily_times stage stage_done stage_total recent upload dc_show speed_429'.split(' ');
+const STATUS = 'state started finished pool qualified usable intercepted counts domains items reason port enabled interval daily_times stage stage_done stage_total recent upload dc_show speed_429 published'.split(' ');
 const ITEMS = 'ip code connect_ms tls_ms ttfb_ms total_ms colo speed_mbytes speed_bps domain loss jitter_ms net_ttfb_ms ray_ok speed_spread speed_samples'.split(' ');
 const SOURCES = 'url http rc ips cf_in'.split(' ');
 for (const k of [ ...STATUS, ...ITEMS, ...SOURCES ]) {
@@ -103,8 +103,8 @@ ok('best-ip 与 CSV 的临时文件与目标同目录（跨文件系统 mv 不�
 const csvLine = (engine.match(/^\tcsv\)[^\n]*$/m) || [])[0] || '';
 ok('csv 子命令无产物时输出空（机器接口不返回散文）',
 	csvLine.includes('cat "$CSV"') && !/\becho\b/.test(csvLine), csvLine.slice(0, 60));
-ok('usable 只数会进清单的行（补足行另计）',
-	/\$10 != 1 \{ n\+\+ \}/.test(engine) && /"\$\{usable_n:-0\}"/.test(engine));
+ok('usable 只数会进清单的行（补足行与 4xx 都另计，r233）',
+	/\$10 != 1 && \$2 ~ \/\^\[23\]\/ \{ n\+\+ \}/.test(engine) && /"\$\{usable_n:-0\}"/.test(engine));
 
 /* r229：默认值只走 dflt() 一处出处，placeholder 也只在那里挂一次 ——
    两处各写一份必然会走偏（改默认忘了改提示）。 */
