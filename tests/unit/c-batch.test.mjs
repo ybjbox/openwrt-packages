@@ -15,6 +15,8 @@ const CORE = rd('luci-app-cf-ipcheck/view-src/10-core.js');
 const SET = rd('luci-app-cf-ipcheck/view-src/80-set.js');
 const DIAG = rd('luci-app-cf-ipcheck/view-src/70-diag.js');
 const SHELL = rd('luci-app-cf-ipcheck/view-src/90-shell.js');
+const LOGS = rd('luci-app-cf-ipcheck/view-src/75-logs.js');
+const UI = rd('luci-app-cf-ipcheck/view-src/50-ui.js');
 const CSS = rd('luci-app-cf-ipcheck/view-src/style/00-app.css');
 
 test('#19 best-ip.txt / CSV / usable 三处同口径过滤 4xx', () => {
@@ -99,4 +101,30 @@ test('契约表同步：published 在 lint 与 contract 两处', () => {
 	const contract = rd('tests/contract.mjs');
 	assert.match(lint, /STATUS_KEYS="[^"]*published"/, 'lint STATUS_KEYS 缺 published');
 	assert.match(contract, /const STATUS = '[^']*published'/, 'contract STATUS 缺 published');
+});
+
+test('r234 ETC_DIR 三份持久产物写完即 chmod 600', () => {
+	/* umask 0022：cp/mv 新建的文件是 0644，安装时压一次 chmod 压不住每轮重建 */
+	assert.match(ENG, /chmod 600 "\$RESULT_KEEP" 2>\/dev\/null \|\| true/, 'result.json 副本没有 600');
+	assert.match(ENG, /mv "\$tmp" "\$BEST"\n\t*chmod 600 "\$BEST"/, 'best-ip.txt 没有紧跟 600');
+	assert.match(ENG, /mv "\$csvtmp" "\$CSV" \|\| rm -f "\$csvtmp"\n\t*chmod 600 "\$CSV"/, 'CSV 没有紧跟 600');
+});
+
+test('r234 面向用户的文案不带行话', () => {
+	/* 短文案按用户拍板的措辞 */
+	assert.ok(RUN.includes('') || true, '');
+	for (const [file, src] of [['50-ui.js', UI], ['70-diag.js', DIAG]]) {
+		assert.ok(src.includes('这次调用没有到引擎，请重试。'), file + ' 没换成新措辞');
+		assert.ok(!src.includes("T('调不到引擎。')"), file + ' 还留着旧文案「调不到引擎。」');
+	}
+	/* 行话（rpcd / ACL / JSON 解析失败）不再出现在任何 T('…') 用户文案里 */
+	for (const [name, src] of [['10-core', CORE], ['50-ui', UI], ['70-diag', DIAG], ['75-logs', LOGS], ['90-shell', SHELL]]) {
+		const strs = src.match(/T\('[^']+'\)/g) || [];
+		for (const s of strs)
+			assert.ok(!/rpcd|ACL|JSON 解析|合法 JSON/.test(s), name + ' 的用户文案还带行话: ' + s);
+	}
+	assert.ok(LOGS.includes('读不到日志：先确认插件正常'), '日志错误提示没改');
+	assert.ok(SHELL.includes('先在设置里打开「DNS 同步」并保存。'), 'dns_sync 提示没改成大白话');
+	/* 阶段名「写产物」→「保存结果」 */
+	assert.ok(UI.includes("label: CFI.T('保存结果')") && !UI.includes("CFI.T('写产物')"), '阶段名没改');
 });

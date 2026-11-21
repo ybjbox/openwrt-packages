@@ -102,7 +102,7 @@
 			} else
 				logView.notice(lg.state === 'empty'
 					? CFI.T('还没有日志（重启过或还没跑过）。')
-					: CFI.T('读不到日志：先确认 rpcd 正常，再点「立即刷新」。'));
+					: CFI.T('读不到日志：先确认插件正常，再点「立即刷新」。'));
 		}
 
 		function reveal() {

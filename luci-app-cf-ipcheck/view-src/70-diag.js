@@ -11,19 +11,19 @@
 		verify: CFI.T('多样本验证'),
 		colo: CFI.T('识别机房'),
 		speed: CFI.T('测吞吐'),
-		publish: CFI.T('写产物')
+		publish: CFI.T('保存结果')
 	};
 
 	function srcMessage(src) {
 		switch (src && src.state) {
 			case 'unreachable':
-				return CFI.T('调不到 luci.cf-ipcheck 的 check_sources：包没装好，或 rpcd 还拿着旧的 ACL 缓存（重启 rpcd 后重试）。');
+				return CFI.T('调不到引擎的「检测源」接口：插件没装好，或系统还缓存着旧的权限表（重启路由器后重试）。');
 			case 'hung':
 				return CFI.T('检测没有回应：可能是某条源太慢。先看日志最后几行，再点一次。');
 			case 'empty':
 				return CFI.T('引擎没有返回任何源：在下面源清单里填上并保存。');
 			case 'parse_error':
-				return CFI.T('引擎输出不是合法 JSON。把日志最后几行原样贴出来排查。');
+				return CFI.T('引擎输出的内容读不懂（格式异常）。把日志最后几行原样贴出来排查。');
 			default:
 				return '';
 		}
@@ -33,7 +33,7 @@
 		if (code === 'hung')
 			return CFI.T('检测没有回应。');
 		if (code === 'unreachable')
-			return CFI.T('调不到引擎。');
+			return CFI.T('这次调用没有到引擎，请重试。');
 		if (code === 'missing_source')
 			return CFI.T('这条源已不在保存的清单里，先保存再试。');
 		if (code === 'bad_index')

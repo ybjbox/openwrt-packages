@@ -2947,6 +2947,11 @@ write_outputs() {
 	# 而 RESULT_KEEP 是重启后页面唯一的恢复来源，它坏了就等于「从未运行过」。
 	cp "$RESULT" "$RUN_DIR/status.new" 2>/dev/null && mv -f "$RUN_DIR/status.new" "$STATUS" || rm -f "$RUN_DIR/status.new"
 	cp "$RESULT" "$ETC_DIR/result.keep.new" 2>/dev/null && mv -f "$ETC_DIR/result.keep.new" "$RESULT_KEEP" || rm -f "$ETC_DIR/result.keep.new"
+	# r234：ETC_DIR 下的持久产物一律 600。内容不含凭据（榜单本来也会经 Gist 公开），
+	# 但设备本地没必要留 0644 的副本让任意本地用户可读。procd 的 umask 是 0022，
+	# cp 新建的文件就是 0644，而这里每轮都会重建 —— 安装时压一次 chmod 压不住，
+	# 必须跟在每轮写入后面。
+	chmod 600 "$RESULT_KEEP" 2>/dev/null || true
 
 	if [ "$publish" = 0 ]; then
 		rm -f "$tmp"
@@ -2957,6 +2962,7 @@ write_outputs() {
 	# 反过来（榜单先写）真机上撞过：轮次被杀在中间，文件已经是下一轮的、
 	# status 还停在上一轮，页面和文件各说一套。
 	mv "$tmp" "$BEST"
+	chmod 600 "$BEST" 2>/dev/null || true
 	# cfst 兼容 CSV（r71）与 best-ip.txt 同源，写在它之后：这份是给 edgetunnel 的
 	# ADDCSV 消费的第二产物，契约上 best-ip.txt 仍是第一产物，CSV 是加法不是替换。
 	# 同样先写临时再 rename——半截 CSV 会被 edgetunnel 当成缺列直接拒。
@@ -2972,6 +2978,7 @@ write_outputs() {
 		printf 'IP 地址,已发送,已接收,丢包率,平均延迟,%s,地区码\n' "$csvhdr"
 		awk -F'\t' '$10 != 1 && $2 ~ /^[23]/' "$colored" | csv_rows "$RUN_DIR/vfields.tsv" "${C_SPDIV:-1000000}"
 	} >"$csvtmp" && mv "$csvtmp" "$CSV" || rm -f "$csvtmp"
+	chmod 600 "$CSV" 2>/dev/null || true
 }
 
 # ---------------- Gist 上传（可选；失败只记日志，不影响本地结果）----------

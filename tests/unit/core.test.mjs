@@ -138,7 +138,7 @@ test('六态语义：灯色与状态词分开，停止不当成故障', () => {
 	assert.equal(CFI.sem.stateWord({ state: 'unreachable', reason: 'hung' }), '没有回应');
 	assert.equal(CFI.sem.stateWord({ state: 'unreachable' }), '读取失败');
 	assert.match(CFI.sem.why('hung'), /没有回应/);
-	assert.match(CFI.sem.why('unreachable'), /调不到引擎/);
+	assert.match(CFI.sem.why('unreachable'), /连不上引擎/);
 	assert.ok(!/中途停了/.test(CFI.sem.why('hung')));
 	assert.ok(!/中途停了/.test(CFI.sem.why('unreachable')));
 });

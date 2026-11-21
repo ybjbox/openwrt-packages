@@ -416,7 +416,7 @@
 				if (d.error === 'hung')
 					return CFI.T('引擎没有回应。');
 				if (d.error === 'unreachable')
-					return CFI.T('调不到引擎。');
+					return CFI.T('这次调用没有到引擎，请重试。');
 				if (d.error === 'invalid_ip')
 					return CFI.T('IP 不合法。');
 				return CFI.T('没测到。');
@@ -966,7 +966,7 @@
 			{ id: 'rank', label: CFI.T('排序 / 验证') },
 			{ id: 'speed', label: CFI.T('测吞吐') },
 			{ id: 'colo', label: CFI.T('识别机房') },
-			{ id: 'upload', label: CFI.T('写产物') }
+			{ id: 'upload', label: CFI.T('保存结果') }
 		];
 		var bar = el('i', { class: 'pbar-fill' });
 		var pct = el('span', { class: 'pbar-n n', text: '0%' });

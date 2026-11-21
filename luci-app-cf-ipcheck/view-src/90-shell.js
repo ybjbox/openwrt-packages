@@ -354,7 +354,7 @@
 				var title = ok ? CFI.T('DNS 已更新') : (partial ? CFI.T('DNS 已部分更新') : CFI.T('DNS 没有写成'));
 				flash(ok ? 'ok' : 'warn', title, msg || CFI.T('看「日志」里的最后一行。'));
 			}, function () {
-				flash('bad', CFI.T('写 DNS 没有回应'), CFI.T('先确认 dns_sync 打开且已经保存。'));
+				flash('bad', CFI.T('写 DNS 没有回应'), CFI.T('先在设置里打开「DNS 同步」并保存。'));
 			});
 		}
 
@@ -377,7 +377,7 @@
 				}
 			}, function () {
 				if (!closed) store.setBusy('csv', false);
-				flash('bad', CFI.T('下载失败'), CFI.T('调不到引擎的 csv 子命令。'));
+				flash('bad', CFI.T('下载失败'), CFI.T('这次没有取到引擎的 CSV 数据，请重试。'));
 			});
 		}
 

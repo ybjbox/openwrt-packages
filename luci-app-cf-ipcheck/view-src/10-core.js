@@ -219,17 +219,17 @@
 	function why(reason) {
 		switch (reason) {
 			case 'unreachable':
-				return T('调不到引擎：状态接口没有回应。先点「刷新」重试；还是不行就重启 rpcd（或确认包已装好、ACL 已刷新）。');
+				return T('页面连不上引擎：状态接口没有回应。先点「刷新」重试；还不行就重启路由器（或确认插件已装好）。');
 			case 'hung':
-				return T('引擎没有回应：最后一次状态读取超时。进程可能卡住或在重启中；先看「日志」，必要时重启 rpcd。');
+				return T('引擎没有回应：最后一次读取状态超时。引擎可能卡住或正在重启；先看「日志」，必要时重启路由器。');
 			case 'parse_error':
-				return T('引擎回了话，但内容不是可用的状态（JSON 解析失败）。把「日志」最后几行原样贴出来排查。');
+				return T('引擎回了话，但内容读不懂（格式异常）。把「日志」最后几行原样贴出来排查。');
 			case 'empty_pool':
 				return T('候选池是空的：社区源一条都没拉到，官方网段又关着。去「诊断」补源并检测，或临时打开「Cloudflare 官方网段」。');
 			case 'missing_curl':
 				return T('这台机器上没有 curl。所有探测都由它发起，请安装 curl 与 ca-bundle。');
 			case 'missing_bin':
-				return T('找不到 %s：包没装好，或 rpcd 拿着旧的 ACL 缓存（重启 rpcd 后重试）。').format(CMD);
+				return T('找不到 %s 接口：插件没装好，或系统还缓存着旧的权限表（重启路由器后重试）。').format(CMD);
 			case 'sink_not_writable':
 				return T('探测身份写不了运行目录里的丢弃目标，本轮在联网之前就中止了。查运行目录所在分区剩余空间，或「探测身份」是否被改成了不存在的用户。');
 			case 'interrupted':
