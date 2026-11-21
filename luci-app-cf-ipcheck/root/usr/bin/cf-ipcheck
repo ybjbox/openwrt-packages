@@ -2053,7 +2053,7 @@ check_source_one() { # $1=已保存源清单里的序号（1 起）
 	log "收到页面指令：检测源 #$idx"
 	CF_NETS=$(cf_nets 4)
 	export CF_NETS
-	[ -n "$CF_NETS" ] || log '拿不到官方网段（也没有缓存），段内占比记 -1'
+	[ -n "$CF_NETS" ] || log '拿不到官方网段（也没有缓存），检测结果里的「段内」占比记为未知'
 	check_one_source "$src" single
 	if [ -s "$RUN_DIR/cs.out.single" ]; then
 		cat "$RUN_DIR/cs.out.single"
@@ -2072,7 +2072,7 @@ check_sources() {
 	# 比因为总耗时超了被 rpcd 掐断、连 13 条源的结果一起丢掉有用。
 	CF_NETS=$(cf_nets 4)
 	export CF_NETS
-	[ -n "$CF_NETS" ] || log '拿不到官方网段（也没有缓存），段内占比一律记 -1'
+	[ -n "$CF_NETS" ] || log '拿不到官方网段（也没有缓存），检测结果里的「段内」占比记为未知'
 	for s in $SOURCES; do
 		[ -n "$s" ] || continue
 		n=$((n + 1))
@@ -2778,7 +2778,7 @@ write_outputs() {
 		spd_ok=$(awk -F'\t' '$2 + 0 > 0' "$RUN_DIR/speed.tsv" | grep -c . || true)
 		spd_bad=$((${spd_all:-0} - ${spd_ok:-0}))
 		[ "$spd_bad" -lt 0 ] 2>/dev/null && spd_bad=0
-		log "吞吐实测 ${spd_all:-0} 次（粗筛 + 精测各遍），其中 ${spd_ok:-0} 次拿到有效吞吐、$spd_bad 次没测出；页面与 JSON 用十进制 MB/s，CSV 第 6 列按 speed_unit=${C_SUUNIT:-mb} 换算"
+		log "吞吐实测 ${spd_all:-0} 次（粗筛 + 精测各遍），其中 ${spd_ok:-0} 次拿到有效吞吐、$spd_bad 次没测出；页面与 JSON 用十进制 MB/s，CSV 第 6 列的单位跟随设置里的「速度单位」（当前 ${C_SUUNIT:-mb}）"
 	fi
 	# r89：这一行只认「进了结果的」。补足名单与榜单是同一批（r89 起补足发生在
 	# 截断之后、补的行直接进 ranked），所以这里的数字必然等于 JSON 的 below_gate
@@ -3141,7 +3141,7 @@ upload_gist() {
 		if [ -n "$gist_link" ]; then
 			log "稳定链接（不随更新变化，可直接订阅）：$gist_link"
 		else
-			log '稳定链接没从响应里取到（GitHub 换了字段形状），本轮只记“已更新”'
+			log '稳定链接没从响应里取到（GitHub 返回的格式变了），本轮只记「已更新」'
 		fi
 		if [ -s "$CSV" ]; then
 			csv_link=$(gist_stable_raw "$gist_resp" "$C_CSVFILE")
@@ -3594,7 +3594,7 @@ do_run() {
 		# 混成一句话会让人去查 CF-RAY，而问题其实在延迟门槛上。
 		log '数据中心汇总：本轮取到了机房码，但没有达标的 IP 可汇总（qualified 为空）'
 	else
-		log '数据中心汇总：本轮没有任何 IP 从响应头里拿到 CF-RAY 的机房码（dc.tsv 为空）'
+		log '数据中心汇总：本轮没有任何 IP 从响应头里拿到机房码'
 	fi
 	# 过滤只做一件事：把 qualified 收窄到一个机房。auto = 汇总第一名（按中位升序）。
 	# 收窄后为空必须**退回 all** —— 一张白榜比一张没过滤的榜糟得多。
@@ -3602,7 +3602,7 @@ do_run() {
 		if [ "$dcn" -gt 0 ]; then
 			dcw=$(dc_select "$RUN_DIR/dc.summary" "$C_DCPICK")
 			if [ "$dcw" = all ]; then
-				log "按数据中心过滤：dc_pick=$C_DCPICK 在本轮汇总里找不到，本轮不过滤"
+				log "按数据中心过滤：设置选的机房（$C_DCPICK）本轮没有出现，本轮不过滤"
 			else
 				dc_filter "$RUN_DIR/dc.tsv" "$dcw" <"$qual" >"$RUN_DIR/qual.dc.tsv"
 				dc_after=$(grep -c . "$RUN_DIR/qual.dc.tsv" 2>/dev/null || true)
@@ -3616,7 +3616,7 @@ do_run() {
 				fi
 			fi
 		else
-			log "按数据中心过滤：dc_pick=$C_DCPICK 但本轮没有可过滤的机房（汇总为空），退回不过滤"
+			log "按数据中心过滤：设置选的机房（$C_DCPICK）本轮没有机房可过滤（汇总为空），退回不过滤"
 		fi
 	fi
 
@@ -5535,7 +5535,7 @@ case "${1:-}" in
 					 # 等待分片里判，do_run 内部不判）。代价：每 60 秒读一次
 					 # /proc/$$/fd，量级可忽略。
 					 if stale_self; then
-						 log '检测到引擎已被升级（本进程仍指向旧 inode），就地重启守护进程以加载新代码'
+						 log '检测到引擎已被升级：本进程还在跑旧版程序，已自动切换到新版（不影响下一轮排程）'
 						 exec /usr/bin/cf-ipcheck daemon
 					 fi
 					 sleep 60
@@ -5557,7 +5557,7 @@ case "${1:-}" in
 					 # 新进程重算出来的仍是同一个目标时刻，不会像「错过不补跑」那样丢轮；
 					 # 正在跑的一轮在 do_run 里，压根走不到这里，所以不会被打断。
 					 if stale_self; then
-						 log '检测到引擎已被升级（本进程仍指向旧 inode），就地重启守护进程以加载新代码'
+						 log '检测到引擎已被升级：本进程还在跑旧版程序，已自动切换到新版（不影响下一轮排程）'
 						 exec /usr/bin/cf-ipcheck daemon
 					 fi
 					 if [ "$left" -lt 60 ]; then sleep "$left"; else sleep 60; fi

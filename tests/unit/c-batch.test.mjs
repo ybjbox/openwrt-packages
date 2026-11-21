@@ -103,6 +103,20 @@ test('契约表同步：published 在 lint 与 contract 两处', () => {
 	assert.match(contract, /const STATUS = '[^']*published'/, 'contract STATUS 缺 published');
 });
 
+test('r235 引擎日志不再抛内部名（uci 键 / 内部文件 / inode）', () => {
+	/* 这几条都是排障锚点，措辞变了历史经验会对不上 —— 但内部名必须走注释而不是日志 */
+	for (const bad of ['旧 inode），就地重启', '字段形状', 'dc_pick=$C_DCPICK', 'dc.tsv 为空', '段内占比记 -1'])
+		assert.ok(!ENG.includes(bad), '引擎日志还留着内部名/旧措辞: ' + bad);
+	/* 新锚点保留「检测到引擎已被升级」前缀（装机核对靠 grep 它） */
+	assert.match(ENG, /检测到引擎已被升级：本进程还在跑旧版程序，已自动切换到新版（不影响下一轮排程）/,
+		'stale_self 日志措辞变了且丢了前缀');
+	assert.match(ENG, /CSV 第 6 列的单位跟随设置里的「速度单位」/, 'CSV 单位说明没改');
+	/* 两条分支的「段内」提示必须同文（原先一字之差、各写一遍） */
+	assert.equal(
+		(ENG.match(/拿不到官方网段（也没有缓存），检测结果里的「段内」占比记为未知/g) || []).length, 2,
+		'两处「段内」提示没有统一成同一句');
+});
+
 test('r234 ETC_DIR 三份持久产物写完即 chmod 600', () => {
 	/* umask 0022：cp/mv 新建的文件是 0644，安装时压一次 chmod 压不住每轮重建 */
 	assert.match(ENG, /chmod 600 "\$RESULT_KEEP" 2>\/dev\/null \|\| true/, 'result.json 副本没有 600');
