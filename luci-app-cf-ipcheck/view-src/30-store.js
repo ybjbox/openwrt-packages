@@ -130,7 +130,7 @@
 
 	function roundKey(st) {
 		st = st || {};
-		return [ st.state, st.reason, st.intercepted, st.pool, st.qualified, st.usable,
+		return [ st.state, st.reason, st.intercepted, st.pool, st.qualified, st.usable, st.below_gate,
 			JSON.stringify(st.counts || {}), st.started, st.finished, st.domains,
 			Math.floor((st.staleFor || 0) / 10) ].join('|');
 	}
@@ -181,7 +181,7 @@
 		return [ st.state, st.reason, st.finished, st.started, st.intercepted,
 			(st.items || []).length, JSON.stringify(st.items), JSON.stringify(st.counts),
 			st.stage, st.stage_done, st.stage_total, st.upload,
-			st.enabled, st.interval, st.next_run, st.pool, st.qualified, st.usable,
+			st.enabled, st.interval, st.next_run, st.pool, st.qualified, st.usable, st.below_gate,
 			st.domains, st.speed_mode, st.bypass, st.probe_metric, st.speed_unit,
 			JSON.stringify(st.dc_summary), st.dc_pick, st.dc_show,
 			Math.floor((st.staleFor || 0) / 10), st.gaveUp ? 1 : 0 ].join('|');

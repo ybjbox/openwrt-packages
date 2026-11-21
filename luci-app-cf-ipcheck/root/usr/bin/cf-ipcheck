@@ -2664,7 +2664,14 @@ write_outputs() {
 	qualified=${3:-0}
 	intercepted=${4:-0}
 	counts=${5:-'{}'}
-	tmp=$RUN_DIR/best.tmp
+	# r230：临时文件必须与目标**同目录**。RUN_DIR 是 /tmp（tmpfs），BEST/CSV 在
+	# ETC_DIR（overlayfs），设备号不同 —— BusyBox 的 mv 在这条路径上退化成
+	# copy + unlink，不是 rename(2)。原来写的是 $RUN_DIR/best.tmp，注释里「先写
+	# 临时再 rename」在这两个产物上从来不成立：cp 途中断电 / 空间写满 / 被
+	# kill -9 会留下半截 best-ip.txt，而它正是推给客户端的那份（截在 IP 中间时
+	# 客户端会把 104.16.132.2 当成一个合法地址）。result.json 早就走的是「同目录
+	# cp 再 mv」，这里补齐成同一套写法。文件名以点开头，不会撞到任何 *.txt 通配。
+	tmp=$ETC_DIR/.best-ip.tmp
 	printf '%s\n' "$ranked" >"$RUN_DIR/ranked.tsv"
 	# 落地机房只对进榜的那几条 IP 查一次，结果并进同一张表：
 	# best-ip.txt 与 result.json 都从 colored.tsv 生成，避免两个输出内容不一致
@@ -2769,7 +2776,7 @@ write_outputs() {
 	rl_n=$(awk -F'\t' '$4 == "rate_limit"' "$RUN_DIR/speed_reject.tsv" 2>/dev/null | grep -c . || true)
 	rl_n=${rl_n:-0}
 	if [ "$rl_n" -gt 0 ]; then
-		log "端点限流：本轮 $rl_n 次测速被 speed.cloudflare.com 以 HTTP 429 拒绝（按来源 IP 计数，换候选 IP 无效），这些样本按未测出处理；冷却通常 >18 分钟，本轮结束前别再手动补测"
+		log "端点限流：本轮 $rl_n 次测速被 ${C_SPEEDDOM:-测速端点} 以 HTTP 429 拒绝（按来源 IP 计数，换候选 IP 无效），这些样本按未测出处理；冷却通常 >18 分钟，本轮结束前别再手动补测"
 	fi
 	rej_n=$(awk -F'\t' '$4 != "below_gate" && $4 != "rate_limit"' "$RUN_DIR/speed_reject.tsv" 2>/dev/null | grep -c . || true)
 	rej_n=${rej_n:-0}
@@ -2857,10 +2864,15 @@ write_outputs() {
 			NF >= 2 { printf "%s{\"dc\":\"%s\",\"n\":%d}", (n++ ? "," : ""), $1, $2 }
 			END { printf "]" }')
 	fi
+	# r230：usable 只数「会进 best-ip.txt / CSV 的行」。原来是 grep -c . "$colored"，
+	# 把 below_gate=1 的补足行也算进去了 —— 页面说「10 条可用」，用户下载 CSV 只有
+	# 9 行、复制 IP 也只有 9 条，两边对不上。补足数另由 below_gate 字段给出
+	# （bg_in，同一个数写进 result.json 的 items 与日志），页面据此标注「另有 N 条补足」。
+	usable_n=$(awk -F'\t' '$10 != 1 { n++ } END { printf "%d", n + 0 }' "$colored")
 	{
 		printf '{"state":"done","started":"%s","finished":"%s","pool":%s,"qualified":%s,"usable":%s,"intercepted":%s,"counts":%s,"domains":"%s","budget":%s,"port":%s,"speed_mode":"%s","speed_weight":%s,"below_gate":%s,"speed_429":%s,"bypass":"%s","probe_metric":"%s","speed_unit":"%s","dc_pick":"%s","dc_summary":%s,"dc_show":%s,"items":[' \
 			"${STARTED:-}" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$pool_n" "$qualified" \
-			"$(grep -c . "$colored" || true)" "$intercepted" "$counts" "$C_DOMAINS" "$C_BUDGET" "$C_PORT" \
+			"${usable_n:-0}" "$intercepted" "$counts" "$C_DOMAINS" "$C_BUDGET" "$C_PORT" \
 			"${SPEED_MODE:-display}" "${C_SPEED_W:-0}" "${bg_in:-0}" "${rl_n:-0}" "${BYPASS:-unknown}" \
 			"${C_METRIC:-http}" "${C_SUUNIT:-mb}" "${C_DCPICK:-all}" "$dcsum_json" "$dcshow_json"
 		# r71：多样本验证的四个派生键（loss/jitter_ms/net_ttfb_ms/ray_ok）从边表按 IP
@@ -2916,10 +2928,11 @@ write_outputs() {
 	# edgetunnel 的 DLS 阈值按那个设）。r89 曾经把值钉死在 MiB 而页面对不上，
 	# r90 起改成「值、表头、配置三者永远一致」——不再需要用户自己对齐口径。
 	csvhdr=$( [ "${C_SUUNIT:-mb}" = mib ] && printf '下载速度(MiB/s)' || printf '下载速度(MB/s)' )
+	csvtmp=$ETC_DIR/.best-ip.csv.tmp
 	{
 		printf 'IP 地址,已发送,已接收,丢包率,平均延迟,%s,地区码\n' "$csvhdr"
 		awk -F'\t' '$10 != 1' "$colored" | csv_rows "$RUN_DIR/vfields.tsv" "${C_SPDIV:-1000000}"
-	} >"$RUN_DIR/best-ip.csv.tmp" && mv "$RUN_DIR/best-ip.csv.tmp" "$CSV" || rm -f "$RUN_DIR/best-ip.csv.tmp"
+	} >"$csvtmp" && mv "$csvtmp" "$CSV" || rm -f "$csvtmp"
 }
 
 # ---------------- Gist 上传（可选；失败只记日志，不影响本地结果）----------
@@ -3571,6 +3584,16 @@ do_run() {
 	# 那批「没测出」的 IP 当成这一轮的，日志里的 N 也越滚越大。
 	: >"$RUN_DIR/speed_reject.tsv"
 	: >"$RUN_DIR/below_gate.lst"
+	# r230：门槛三件套同理，而且比上面两个更危险 —— 它们只在**真的进 gate 分支**
+	# 时才重建（下面 speed_gate>0 那一段），而 speed_refill 的调用是无条件的。
+	# 于是「上一轮 gate 刷掉过 IP」+「这一轮 speed_gate=0 或整段跳过测速」+「本轮
+	# 达标数不足 keep_count」三个条件同时成立时，补足会从上轮的 gate.drop 里捞 IP，
+	# 行内容去上轮的 qual.pre 里抓 —— 这批 IP 本轮可能压根没测、甚至已经不可用，
+	# 却被当成「最接近门槛」写进 result.json。补足行不进 best-ip.txt，所以症状
+	# 只是页面上多出几条来源不明的 IP，极难联想到这里。
+	: >"$RUN_DIR/gate.pass"
+	: >"$RUN_DIR/gate.drop"
+	rm -f "$RUN_DIR/qual.pre"
 	SPEED_MODE=display
 	spd_pass=0
 	spd_meas=0
@@ -5417,7 +5440,10 @@ case "${1:-}" in
 	show)    if [ -s "$BEST" ]; then cat "$BEST"; else echo '尚无结果，先执行 cf-ipcheck run'; fi ;;
 	# CSV（r98 P1-2）：与 show 一样是纯读 —— 不写日志、不改任何东西。
 	# 页面用它给「下载 CSV」提供内容，替代原先「只能靠 Gist 拿到 CSV」这件事。
-	csv)     if [ -s "$CSV" ]; then cat "$CSV"; else echo '尚无结果，先执行 cf-ipcheck run'; fi ;;
+	# r230：没产物时**什么都不输出**（原来回一句「尚无结果，先执行 cf-ipcheck run」）。
+	# 这是机器接口 —— 页面侧只判「非空」，一句散文会被当成 CSV 内容，用户点下载
+	# 就得到一个只有那一行的 cf-ipcheck.csv。提示语归页面（90-shell.js 已经写好了）。
+	csv)     if [ -s "$CSV" ]; then cat "$CSV"; fi ;;
 	pool)    load_config; build_pool ;;
 	canary)  load_config; printf '{"intercepted":%s}\n' "$(canary_check)" ;;
 	check-sources) log '收到页面指令：检测源可用性'

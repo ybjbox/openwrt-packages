@@ -595,7 +595,15 @@
 			}
 			stPool.set(F.num(st.pool));
 			stQual.set(F.num(st.qualified));
-			stBoard.set(F.num(st.usable != null ? st.usable : (st.items || []).length));
+			/* r230：usable 只数「会进 best-ip.txt / CSV 的行」，补足行（below_gate=1）
+			   不算 —— 否则页面说 10 条可用、用户下载 CSV 只有 9 行。补足数单独由
+			   below_gate 给出，下面在副标题里标注，免得信息反而丢了。
+			   旧引擎的 status 没有这个语义，回退成 items 减补足数。 */
+			var bgN = Number(st.below_gate) || 0;
+			var useN = st.usable != null
+				? (Number(st.usable) || 0)
+				: Math.max(0, (st.items || []).length - bgN);
+			stBoard.set(F.num(useN));
 			stFail.hide(!(fail > 0));
 			if (fail > 0)
 				stFail.set(F.num(fail));
@@ -606,7 +614,8 @@
 				? CFI.T('耗时 %s s').format(String(Math.round((t1 - t0) / 1000))) : '';
 			boardSub.textContent = st.state === 'running'
 				? CFI.T('测速中')
-				: (lastItems.length ? CFI.T('%s 条可用').format(String(lastItems.length)) : '');
+				: (useN ? CFI.T('%s 条可用').format(String(useN)) : '') +
+					(bgN > 0 ? CFI.T('，另有 %s 条补足（只进详情）').format(String(bgN)) : '');
 		}
 
 		function paintBanner(st) {

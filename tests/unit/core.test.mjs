@@ -182,6 +182,17 @@ test('hash：#/cfi/<zone> 直通，旧 #cf-tab= 一律不识别', () => {
 	assert.equal(CFI.nav.routeHash('run', 'ip', '1.1.1.1'), '#/cfi/run/ip/1.1.1.1');
 });
 
+test('hash：畸形转义不许把整页打断（r230）', () => {
+	/* decodeURIComponent 对半截 % 转义抛 URIError。原来没有 try，异常冒到 render()
+	   外面 → 视图渲染失败、整页空白，用户得清 hash 才能恢复。现在丢弃 arg 继续。 */
+	for (const h of [ '#/cfi/run/ip/%E0%A4%A', '#/cfi/set/dns/%', '#/cfi/logs/x/%ZZ' ]) {
+		const r = CFI.nav.parseRoute(h);
+		assert.ok(r, h + ' 应仍可解析');
+		assert.equal(r.arg, '', h + ' 的 arg 应退化为空');
+	}
+	assert.equal(CFI.nav.parseRoute('#/cfi/set/dns/%').sub, 'dns', '子区不受影响');
+});
+
 test('存储：旧键零读写，新键只在 cfi3.* 前缀下', () => {
 	const ls = CFI.prefs;
 	assert.equal(ls.NS, 'cfi3.');

@@ -57,11 +57,20 @@
 #view div.cfp { display: block; width: 100%; }
 
 .cfp {
-	--cfi-line: color-mix(in srgb, currentColor 20%, transparent);
-	--cfi-line-strong: color-mix(in srgb, currentColor 55%, transparent);
-	--cfi-muted: color-mix(in srgb, currentColor 74%, transparent);
+	/* r230：先给静态回退值。下面那组 color-mix 是"跟着正文色走"的正解，但
+	   **不支持 color-mix 的引擎里自定义属性不会失效** —— 它照收 token 流，于是
+	   `border: 1px solid var(--cfi-line)` 在计算值阶段整条作废，退化成无边框：
+	   卡片轮廓、表格分隔线、chip 描边、输入框边框同时消失，只剩文字浮在背景上。
+	   color-mix 要 Chrome 111 / Safari 16.2 / Firefox 113（2023 上半年），
+	   2026 年桌面端早已覆盖，风险集中在嵌入式 WebView（微信 X5、国产兼容内核、
+	   老平板）—— 那恰好是手机管理路由器的主力。回退值按「白底 + #333 正文」折算，
+	   与 color-mix 版本在默认主题下肉眼无差。 */
+	--cfi-line: rgba(51, 51, 51, .2);
+	--cfi-line-strong: rgba(51, 51, 51, .55);
+	--cfi-muted: rgba(51, 51, 51, .74);
 	--cfi-primary: var(--primary, #0b6bcb);
-	--cfi-primary-strong: color-mix(in srgb, var(--cfi-primary) 88%, #000);
+	/* 88% 主色混黑（#0b6bcb → #0a5eb3）的静态等价物 */
+	--cfi-primary-strong: #0a5eb3;
 	/* 「首选」徽标字色：浅色用深一档的主色（对白底 5.21:1），暗色在末尾暗色块里
 	   换成提亮的混色。做成令牌而不是在暗色块里重写同一条选择器 —— 基础规则在源文件里
 	   排在暗色块之后，同权重会把它压回去，只有靠构建期把媒体块后移才「碰巧」正常。 */
@@ -73,6 +82,17 @@
 	font: inherit;
 	color: inherit;
 	min-width: 0;
+}
+/* 有 color-mix 时才换成会跟着正文色走的版本（暗色正文变浅，描边与次要文字自动
+   跟着变浅，不用再维护一套暗色覆盖）。注意只能靠 @supports 做条件 —— 自定义属性
+   不做值校验，"后写一条 color-mix 覆盖前一条"在不支持的引擎里反而更糟。 */
+@supports (color: color-mix(in srgb, red 50%, transparent)) {
+	.cfp {
+		--cfi-line: color-mix(in srgb, currentColor 20%, transparent);
+		--cfi-line-strong: color-mix(in srgb, currentColor 55%, transparent);
+		--cfi-muted: color-mix(in srgb, currentColor 74%, transparent);
+		--cfi-primary-strong: color-mix(in srgb, var(--cfi-primary) 88%, #000);
+	}
 }
 .cfp .mono, .cfp .n {
 	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;

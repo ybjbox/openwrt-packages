@@ -92,6 +92,20 @@ ok('隐藏兼容键保留但不在界面', confKeys.includes('dns_record') && co
 ok('源清单只声明一处', (view.match(/form\.DynamicList, 'community_sources'/g) || []).length === 1);
 ok('全页只有一张 CBI Map', (view.match(/new form\.Map\(/g) || []).length === 1);
 
+/* r230（审查 P1-1/P1-2/P2-6）：引擎里四件「一眼看不住、坏了很难查」的事。
+   都只做文本钉，不跑引擎 —— 这些是结构约束，不是行为。 */
+ok('补足用的门槛三件套每轮开头就清空',
+	/: >"\$RUN_DIR\/gate\.pass"/.test(engine) && /: >"\$RUN_DIR\/gate\.drop"/.test(engine) &&
+	/rm -f "\$RUN_DIR\/qual\.pre"/.test(engine));
+ok('best-ip 与 CSV 的临时文件与目标同目录（跨文件系统 mv 不是 rename）',
+	/tmp=\$ETC_DIR\/\.best-ip\.tmp/.test(engine) && /csvtmp=\$ETC_DIR\/\.best-ip\.csv\.tmp/.test(engine) &&
+	!/^\s*(tmp|csvtmp)=\$RUN_DIR\//m.test(engine));
+const csvLine = (engine.match(/^\tcsv\)[^\n]*$/m) || [])[0] || '';
+ok('csv 子命令无产物时输出空（机器接口不返回散文）',
+	csvLine.includes('cat "$CSV"') && !/\becho\b/.test(csvLine), csvLine.slice(0, 60));
+ok('usable 只数会进清单的行（补足行另计）',
+	/\$10 != 1 \{ n\+\+ \}/.test(engine) && /"\$\{usable_n:-0\}"/.test(engine));
+
 /* r229：默认值只走 dflt() 一处出处，placeholder 也只在那里挂一次 ——
    两处各写一份必然会走偏（改默认忘了改提示）。 */
 const bareDef = (view.match(/o\.default = '/g) || []).length;

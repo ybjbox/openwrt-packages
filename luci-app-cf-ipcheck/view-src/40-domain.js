@@ -14,10 +14,18 @@
 		var zone = parts[1];
 		if (ZONES.indexOf(zone) < 0)
 			return null;
+		/* r230：decodeURIComponent 对畸形转义（'%E0%A4%A'、旧书签里的半截 %）会抛
+		   URIError。原来这里没有 try，异常一路冒到 render() 外面，LuCI 的视图渲染
+		   直接失败 —— 用户看到整页空白，控制台一条 URIError，而且要清 hash 才恢复。
+		   解码失败就丢掉 arg：区/子区照常进，代价只是少一个参数。 */
+		var arg = '';
+		if (parts[3]) {
+			try { arg = decodeURIComponent(parts[3]); } catch (e) { arg = ''; }
+		}
 		return {
 			zone: zone,
 			sub: parts[2] || '',
-			arg: parts[3] ? decodeURIComponent(parts[3]) : ''
+			arg: arg
 		};
 	}
 
