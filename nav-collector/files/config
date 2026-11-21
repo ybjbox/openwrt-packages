@@ -1,0 +1,56 @@
+# NAV 采集器路由器插件配置（UCI）
+# 修改后：uci commit nav && /etc/init.d/nav restart
+
+config main 'main'
+	option enabled '1'
+	# 云端摄入地址与令牌（与 Cloudflare COLLECTOR_TOKEN 一致）
+	option push_url 'https://nav.pages.dev/api/ingest'
+	option push_token 'change-me-collector-token'
+	# 采集器实例标识（云端多源分桶；路由器侧固定 router）
+	option source 'router'
+	# 采样/推送间隔（秒）
+	option interval '60'
+	# 导航卡片 TCP 探活（单采集器方案下由本插件执行）
+	option checks '1'
+
+config self 'self'
+	option id 'router'
+	option name '主路由'
+	option kind 'router'
+	# 路由器本机直接读 /proc（无需挂载）
+	option host_proc '/proc'
+	option host_sys '/sys'
+	# WAN 口网名（ip link 查看）
+	option traffic_iface 'eth0'
+	# FanchmWrt 固件置 1：本地 ubus 读 conntrack/联网状态/固件版本（非 FanchmWrt 保持 0）
+	option fwx '1'
+
+config openclash 'openclash'
+	# OpenClash 运行状态监控开关
+	option enabled '1'
+	option host '127.0.0.1'
+	option api_port '9090'
+	# OpenClash「外部控制」secret（未设置留空）
+	option api_secret ''
+
+config nas 'nas'
+	# NAS 指标回采：NAS 只需开启自带 SSH 并建受限只读账号（不装任何东西）
+	option enabled '1'
+	option host '192.168.100.10:22'
+	option user 'monitor'
+	# /etc/init.d/nav keygen 生成密钥对后，把公钥放入 NAS 的 authorized_keys
+	option key_file '/etc/nav/nas_ed25519'
+	option wan_iface 'eth0'
+
+config thresholds 'thresholds'
+	option cpu '85'
+	option mem '90'
+	option disk '90'
+	option temp '65'
+	option conn '30000'
+
+config ui 'ui'
+	# 本地配置页（展示 Cloudflare 连接状态、在线改配置）；仅局域网可达
+	option listen ':12900'
+	# 修改配置所需密码；空 = 只读模式（推荐设置）
+	option password ''

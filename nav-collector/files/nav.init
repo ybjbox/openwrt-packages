@@ -1,0 +1,165 @@
+#!/bin/sh /etc/rc.common
+# NAV 采集器 procd 启动脚本：把 UCI 配置生成 YAML，再启动二进制
+START=99
+STOP=10
+USE_PROCD=1
+
+RUN_DIR=/var/run/nav
+KEY_DIR=/etc/nav
+CONF=$RUN_DIR/config.yaml
+PROG=/usr/bin/nav-collector
+
+uciget() {
+	# uciget <section> <option> <default>
+	config_get _v "$1" "$2" "$3"
+	echo "$_v"
+}
+
+gen_yaml() {
+	local enabled
+	config_get enabled main enabled '1'
+	[ "$enabled" = "1" ] || return 1
+
+	local push_url push_token source interval checks
+	push_url=$(uciget main push_url '')
+	push_token=$(uciget main push_token '')
+	source=$(uciget main source 'router')
+	interval=$(uciget main interval '60')
+	checks=$(uciget main checks '1')
+
+	local self_id self_name self_kind host_proc host_sys iface fwx
+	self_id=$(uciget self id 'router')
+	self_name=$(uciget self name '主路由')
+	self_kind=$(uciget self kind 'router')
+	host_proc=$(uciget self host_proc '/proc')
+	host_sys=$(uciget self host_sys '/sys')
+	iface=$(uciget self traffic_iface 'eth0')
+	fwx=$(uciget self fwx '0')
+
+	local oc_enabled oc_host oc_port oc_secret
+	oc_enabled=$(uciget openclash enabled '1')
+	oc_host=$(uciget openclash host '127.0.0.1')
+	oc_port=$(uciget openclash api_port '9090')
+	oc_secret=$(uciget openclash api_secret '')
+
+	local nas_enabled nas_host nas_user nas_key nas_iface
+	nas_enabled=$(uciget nas enabled '0')
+	nas_host=$(uciget nas host '192.168.100.10:22')
+	nas_user=$(uciget nas user 'monitor')
+	nas_key=$(uciget nas key_file '/etc/nav/nas_ed25519')
+	nas_iface=$(uciget nas wan_iface 'eth0')
+
+	local t_cpu t_mem t_disk t_temp t_conn
+	t_cpu=$(uciget thresholds cpu '85')
+	t_mem=$(uciget thresholds mem '90')
+	t_disk=$(uciget thresholds disk '90')
+	t_temp=$(uciget thresholds temp '65')
+	t_conn=$(uciget thresholds conn '30000')
+
+	local a_fail a_sustain
+	a_fail=$(uciget alerts fail_threshold '3')
+	a_sustain=$(uciget alerts sustain '3')
+
+	local ui_listen ui_password
+	ui_listen=$(uciget ui listen ':12900')
+	ui_password=$(uciget ui password '')
+
+	mkdir -p "$RUN_DIR"
+	cat > "$CONF" <<EOF_YAML
+push:
+  url: $push_url
+  token: "$push_token"
+  source: $source
+  interval: ${interval}s
+self:
+  id: $self_id
+  name: "$self_name"
+  kind: $self_kind
+  host_proc: $host_proc
+  host_sys: $host_sys
+  traffic_iface: $iface
+  fwx: $( [ "$fwx" = "1" ] && echo true || echo false )
+devices:
+EOF_YAML
+
+	if [ "$oc_enabled" = "1" ]; then
+		cat >> "$CONF" <<EOF_YAML
+  - id: openclash
+    name: OpenClash
+    kind: service
+    type: openclash
+    host: $oc_host
+    api_port: $oc_port
+    api_secret: "$oc_secret"
+    timeout: 8s
+EOF_YAML
+	fi
+
+	# NAS 回采：SSH 读宿主 /proc（NAS 侧只需开 SSH + authorized_keys 受限公钥）
+	if [ "$nas_enabled" = "1" ] && [ -f "$nas_key" ]; then
+		cat >> "$CONF" <<EOF_YAML
+  - id: nas
+    name: 飞牛 NAS
+    kind: nas
+    type: ssh
+    host: $nas_host
+    user: $nas_user
+    key_file: $nas_key
+    timeout: 10s
+EOF_YAML
+	fi
+
+	cat >> "$CONF" <<EOF_YAML
+alerts:
+  fail_threshold: $a_fail
+  sustain: $a_sustain
+thresholds:
+  cpu: $t_cpu
+  mem: $t_mem
+  disk: $t_disk
+  temp: $t_temp
+  conn: $t_conn
+ui:
+  listen: "$ui_listen"
+  password: "$ui_password"
+EOF_YAML
+	return 0
+}
+
+# 生成 NAS 回采用密钥对：/etc/init.d/nav keygen
+# 输出公钥内容 → 加入 NAS 的 authorized_keys（建议附 forced command，见 docs/SECURITY.md）
+keygen() {
+	local key=$KEY_DIR/nas_ed25519
+	if [ -f "$key" ]; then
+		echo "nav: 密钥已存在 $key（如需重新生成请先删除）" >&2
+	else
+		mkdir -p "$KEY_DIR"
+		dropbearkey -t ed25519 -f "$key" > /dev/null 2>&1 || ssh-keygen -t ed25519 -f "$key" -N '' -q
+		chmod 600 "$key"
+	fi
+	if [ -f "${key}.pub" ]; then
+		cat "${key}.pub"
+	else
+		dropbearkey -y -f "$key" 2>/dev/null | grep '^ssh-' || ssh-keygen -y -f "$key"
+	fi
+}
+
+start_service() {
+	config_load nav
+	if ! gen_yaml; then
+		echo "nav: disabled via UCI" >&2
+		return
+	}
+	procd_open_instance
+	procd_set_param command "$PROG" -config "$CONF"
+	procd_set_param env NAV_CHECKS="$(uciget main checks '1')"
+	procd_set_param respawn 3600 5 0
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+reload_service() {
+	stop
+	start
+}
