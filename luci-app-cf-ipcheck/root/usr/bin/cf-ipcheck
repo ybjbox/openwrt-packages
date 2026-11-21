@@ -2444,7 +2444,9 @@ speed_measure() {
 #   bps        入榜/门槛用的吞吐：有效样本的中位数（偶数个取中间两个的均值）
 #   truncated  任一有效样本被截断即记 1（不完整的样本掺进了中位数，需一并标注）
 #   spread     |首-末| / max(首,末)，两个以上有效样本才有值（空 = 稳定性未知）
-#   samples    有效精测遍数 0..3
+#   samples    参与代表值的有效样本数 0..3。只有粗筛记录（没进精测）的记 1 ——
+#              它确实只有一个样本，页面据此说「只测到一遍」是对的；记 0 会让
+#              它显示成「没测」，而那一格明明有吞吐数字（r232）。
 speed_merge() { # $1=speed.tsv
 	awk -F'\t' '
 	$7 == "confirm" {
@@ -2488,7 +2490,7 @@ speed_merge() { # $1=speed.tsv
 		}
 		for (ip in sc)
 			if (!(ip in n))
-				printf "%s\t%d\t%d\t\t0\n", ip, sc[ip], str[ip]
+				printf "%s\t%d\t%d\t\t%d\n", ip, sc[ip], str[ip], (sc[ip] > 0 ? 1 : 0)
 	}' "${1:-}"
 }
 
@@ -2677,10 +2679,11 @@ write_outputs() {
 	# best-ip.txt 与 result.json 都从 colored.tsv 生成，避免两个输出内容不一致
 	# （页面上的「落地机房」列读的就是 result.json 的 colo 字段）。
 	#
-	# colored.tsv 的 11 列（r89 调整过顺序）：
+	# colored.tsv 的 13 列（r232 补上第 13 列）：
 	#   1 ip 2 code 3 connect 4 tls 5 ttfb 6 total 7 colo
 	#   8 吞吐（十进制 MB/s，'-' = 未测出） 9 胜出时用的域名
 	#   10 below_gate 标记（1 = 只进 result.json） 11 bps 真值（整数，空 = 未测出）
+	#   12 spread（首末相对差，空 = 单样本或没测） 13 samples（有效样本数 0..3）
 	#
 	# 为什么 bps 放在最后一列而不是第 10 列：`read` 的 IFS 是制表符，而 POSIX 把
 	# 制表符算「IFS 空白」—— 连续两个制表符会被当成**一个**分隔符。未测出时 bps 是
@@ -2695,16 +2698,23 @@ write_outputs() {
 	: >"$colored"
 	spd_map=$RUN_DIR/speed.map
 	: >"$spd_map"
-	# 运行目录跨轮保留：spread.map 必须先清空。否则本轮没测速（出口被接管、
-	# 没有达标 IP、或关掉了测速）时，上一轮的离散度会被当成这一轮的。
+	# 运行目录跨轮保留：spread.map / samples.map 都必须先清空。否则本轮没测速
+	# （出口被接管、没有达标 IP、或关掉了测速）时，上一轮的离散度与样本数会被
+	# 当成这一轮的 —— r230 在 gate 三件套上踩过同一个坑。
 	: >"$RUN_DIR/spread.map"
+	: >"$RUN_DIR/samples.map"
 	if [ -s "$RUN_DIR/speed.tsv" ]; then
 		# 同一颗既有粗筛又有精测时以精测为准；精测取**中位**（r225）——
 		# 门槛、排序、页面三处必须是同一个数，所以统一走 speed_merge。
 		speed_merge "$RUN_DIR/speed.tsv" >"$RUN_DIR/speed.merged"
 		awk -F'\t' '{ print $1 "\t" $2 }' "$RUN_DIR/speed.merged" >"$spd_map"
-		# 离散度单独一张表：colored.tsv 第 12 列要它，页面据此标「速度波动」。
-		awk -F'\t' '$4 != "" { print $1 "\t" $4 }' "$RUN_DIR/speed.merged" >"$RUN_DIR/spread.map"
+		# 离散度与样本数各一张表：colored.tsv 第 12/13 列要它们，页面据此标
+		# 「速度波动」，JSON 的 speed_samples 据此说「只测到一遍」还是「三遍都测了」。
+		# 两个文件一次 awk 写出，别为了并列多 fork 一遍 —— 进榜那几颗对 A53 来说
+		# 每次 fork 都是几十毫秒。
+		awk -F'\t' -v sp="$RUN_DIR/spread.map" -v mp="$RUN_DIR/samples.map" '
+			{ printf "%s\t%d\n", $1, $5 > mp
+			  if ($4 != "") printf "%s\t%s\n", $1, $4 > sp }' "$RUN_DIR/speed.merged"
 	fi
 	bg_file=$RUN_DIR/below_gate.lst
 	[ -f "$bg_file" ] || : >"$bg_file"
@@ -2742,11 +2752,16 @@ write_outputs() {
 		fi
 		# 第 12 列：首末两次吞吐的相对差（空 = 只测到一遍，或没测）。
 		spd_sp=$(awk -F'\t' -v want="$ip" '$1 == want { print $2; exit }' "$RUN_DIR/spread.map" 2>/dev/null)
+		# 第 13 列：这颗 IP 的代表值到底由几个有效样本撑起来。表里没有它（没测速、
+		# 或只进了粗筛但那一遍失败）就是 0；写空则 JSON 退回「有 bps 就算 1」的旧推算，
+		# 那正是 r232 要修的错报（真实三遍被写成 2）。
+		spd_smp=$(awk -F'\t' -v want="$ip" '$1 == want { print $2; exit }' "$RUN_DIR/samples.map" 2>/dev/null)
+		case "${spd_smp:-}" in ''|*[!0-9]*) spd_smp=0 ;; esac
 		bg=0
 		grep -qxF "$ip" "$bg_file" 2>/dev/null && bg=1
 		# 列序见函数开头：bg 在第 10、bps 在最后（可能为空，必须垫底）
-		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-			"$ip" "$code" "$c" "$tls" "$ttfb" "$tot" "$colo" "$spd" "$dom" "$bg" "$bsp" "$spd_sp" >>"$colored"
+		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+			"$ip" "$code" "$c" "$tls" "$ttfb" "$tot" "$colo" "$spd" "$dom" "$bg" "$bsp" "$spd_sp" "$spd_smp" >>"$colored"
 		ck=$((ck + 1))
 		progress_set colo $ck $cptotal
 	done <"$RUN_DIR/ranked.tsv"
@@ -2788,7 +2803,11 @@ write_outputs() {
 
 	: >"$tmp"
 	bn=0
-	while IFS="$(printf '\t')" read -r ip code c tls ttfb tot colo spd dom bg bsp; do
+	# 变量要按 colored.tsv 的列数读全（13 列）。read 的规则是「变量少于字段时，
+	# 最后一个变量收下剩下的全部字段（连着制表符）」—— 原来只读到 bsp（第 11 列），
+	# 于是第 12/13 列会被并进 bsp 变成 "123456<TAB>0.0909<TAB>3"。本循环不用 bsp，
+	# 所以一直没露出来，但谁哪天在这里读 bsp 就会拿到一串脏值（r232 补齐）。
+	while IFS="$(printf '\t')" read -r ip code c tls ttfb tot colo spd dom bg bsp spd_sp spd_smp; do
 		[ -n "$ip" ] || continue
 		# below_gate 的行只写进 result.json：它是「比门槛差一点、但榜单太空所以拉来
 		# 凑数」的，推到客户端只会让设备连上一颗明显慢的 IP。
@@ -2893,8 +2912,12 @@ write_outputs() {
 			mi = ($11 == "") ? "null" : sprintf("%.2f", ($11 + 0) / 1048576)
 			# r221：精测跑多遍（r225 起三遍），spread 取首末两次；samples 让人分清
 			# 「很稳」和「只测到一遍（稳定性未知）」——两者都是空 spread。
+			# r232：samples 直接读第 13 列（引擎已经数好的有效样本数）。旧写法按
+			# 「有 spread 就是 2」倒推，三遍全测的 IP 被报成 2，与日志/页面口径打架。
 			spp = ($12 == "" || $12 == "-") ? "null" : sprintf("%.3f", $12 + 0)
-			smp = ($11 == "") ? 0 : (($12 == "") ? 1 : 2)
+			smp = ($13 == "") ? (($11 == "") ? 0 : 1) : $13 + 0
+			if (smp > 3) smp = 3
+			if (smp > 0 && bp == "null") smp = 0
 			l = ($1 in loss) ? loss[$1] : "null"
 			j = ($1 in jit) ? jit[$1] : "null"
 			nt = ($1 in net && net[$1] != "") ? net[$1] : "null"
@@ -5565,6 +5588,10 @@ case "${1:-}" in
 	_csvrows)
 		# $2 = vfields.tsv 路径，stdin = colored.tsv
 		csv_rows "${2:-/dev/null}" ;;
+	# r232：$2 = speed.tsv 路径，stdout = 归并后的五列。离线可跑（纯 awk，
+	# 不联网），用来钉住 samples 的口径：三遍精测记 3、只有粗筛记 1、
+	# 全失败记 0 —— 页面「只测到一遍」和 JSON 的 speed_samples 都读它。
+	_speedmerge) speed_merge "${2:-/dev/null}" ;;
 	_locklive) lock_live && echo alive || echo dead ;;
 	# r199：本次运行的流水切片（只给本轮的行）。离线可跑，真机上用
 	# CFIP_RUN_DIR 指一份造好的日志就能验「起轮前不掺上一轮」。

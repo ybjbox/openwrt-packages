@@ -297,6 +297,38 @@ else
 	rc=1
 fi
 
+# r232：samples 口径。speed.tsv 七列 = ip bps ? ? ? truncated stage。
+# 三遍全成功记 3、只有粗筛记 1、全失败记 0 —— 页面「只测到一遍」与 result.json
+# 的 speed_samples 都读这一列，旧写法按 spread 倒推会把三遍压成 2。
+{
+	printf '%s\n' \
+		'1.1.1.1	1000000	0	0	100	0	confirm' \
+		'1.1.1.1	900000	0	0	100	0	confirm' \
+		'1.1.1.1	1100000	0	0	100	0	confirm' \
+		'2.2.2.2	500000	0	0	100	0	screen' \
+		'3.3.3.3	0	0	0	0	0	confirm' \
+		'4.4.4.4	800000	0	0	100	0	confirm' \
+		'4.4.4.4	0	0	0	0	0	confirm'
+} >"$RUN/speed.tsv"
+sm=$(sh "$BIN" _speedmerge "$RUN/speed.tsv" 2>/dev/null)
+smp_of() { printf '%s\n' "$sm" | awk -F'\t' -v w="$1" '$1 == w { print $5; exit }'; }
+s3=$(smp_of 1.1.1.1); s1=$(smp_of 2.2.2.2); s0=$(smp_of 3.3.3.3); s1b=$(smp_of 4.4.4.4)
+if [ "$s3" = 3 ] && [ "$s1" = 1 ] && [ "$s0" = 0 ] && [ "$s1b" = 1 ]; then
+	echo '[PASS] _speedmerge 的 samples 是真实有效样本数（3/1/0/1）'
+else
+	echo "::error::_speedmerge samples 口径不对 三遍=<$s3> 只粗筛=<$s1> 全失败=<$s0> 一有效=<$s1b>"
+	rc=1
+fi
+# 中位与 spread 一起钉住：别为了改 samples 把 r225 的归并口径碰坏
+med=$(printf '%s\n' "$sm" | awk -F'\t' '$1 == "1.1.1.1" { print $2; exit }')
+spr=$(printf '%s\n' "$sm" | awk -F'\t' '$1 == "1.1.1.1" { print $4; exit }')
+if [ "$med" = 1000000 ] && [ "$spr" = '0.0909' ]; then
+	echo '[PASS] _speedmerge 三遍取中位、spread 取首末'
+else
+	echo "::error::_speedmerge 归并口径变了 med=<$med> spread=<$spr>"
+	rc=1
+fi
+
 rm -rf "$RUN" "$ETC" 2>/dev/null || true
 
 if [ "$rc" = 0 ]; then
