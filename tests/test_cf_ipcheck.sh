@@ -312,11 +312,11 @@ fi
 } >"$RUN/speed.tsv"
 sm=$(sh "$BIN" _speedmerge "$RUN/speed.tsv" 2>/dev/null)
 smp_of() { printf '%s\n' "$sm" | awk -F'\t' -v w="$1" '$1 == w { print $5; exit }'; }
-s3=$(smp_of 1.1.1.1); s1=$(smp_of 2.2.2.2); s0=$(smp_of 3.3.3.3); s1b=$(smp_of 4.4.4.4)
-if [ "$s3" = 3 ] && [ "$s1" = 1 ] && [ "$s0" = 0 ] && [ "$s1b" = 1 ]; then
+s3=$(smp_of 1.1.1.1); s0b=$(smp_of 2.2.2.2); s0=$(smp_of 3.3.3.3); s1b=$(smp_of 4.4.4.4)
+if [ "$s3" = 3 ] && [ "$s0b" = 0 ] && [ "$s0" = 0 ] && [ "$s1b" = 1 ]; then
 	echo '[PASS] _speedmerge 的 samples 是真实有效样本数（3/1/0/1）'
 else
-	echo "::error::_speedmerge samples 口径不对 三遍=<$s3> 只粗筛=<$s1> 全失败=<$s0> 一有效=<$s1b>"
+	echo "::error::_speedmerge samples 口径不对 三遍=<$s3> 只粗筛=<$s0b> 全失败=<$s0> 一有效=<$s1b>"
 	rc=1
 fi
 # 中位与 spread 一起钉住：别为了改 samples 把 r225 的归并口径碰坏

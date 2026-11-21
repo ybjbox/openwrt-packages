@@ -28,15 +28,24 @@ function body(name) {
 	return engine.slice(i, engine.indexOf('\n}\n', i));
 }
 
-test('r232 speed_merge：只有粗筛的记录 samples 记 1，不是 0', () => {
+test('r232 speed_merge：只有粗筛的记录 samples 记 0（没进精测）', () => {
 	const sm = body('speed_merge');
-	/* 第二个循环（只有 screen 记录的 IP）里，samples 必须跟着 bps 走 */
+	/* 第二个循环（只有 screen 记录的 IP）里 samples 必须是 0：这一列说的是
+	 * 「精测跑成了几遍」，粗筛那一个样本不算 —— 它不是精测。 */
 	const tail = sm.slice(sm.lastIndexOf('for (ip in sc)'));
-	assert.match(tail, /printf "%s\\t%d\\t%d\\t\\t%d\\n", ip, sc\[ip\], str\[ip\], \(sc\[ip\] > 0 \? 1 : 0\)/,
-		'只有粗筛时 samples 又写死成 0 了 —— 页面会把「只有一个样本」显示成「没测」');
-	assert.ok(!/\\t\\t0\\n", ip, sc\[ip\], str\[ip\]/.test(tail), '还有写死 0 的旧写法');
+	assert.match(tail, /printf "%s\\t%d\\t%d\\t\\t0\\n", ip, sc\[ip\], str\[ip\]/,
+		'只有粗筛时 samples 不再记 0 —— 「仅粗测」与「精测只成一遍」就分不开了');
 	/* confirm 分支的 samples 仍是有效样本计数（cnt 只数 bps>0 的遍） */
 	assert.match(sm, /samples = cnt/, 'samples 不再是有效样本计数');
+});
+
+test('r232 抽屉：spread 为空时按 samples 分「仅粗测 / 精测只成 1 遍」', () => {
+	const run = fs.readFileSync(path.join(pkg, 'view-src', '60-run.js'), 'utf8');
+	assert.match(run, /var smp = Number\(it\.speed_samples\) \|\| 0;/, '抽屉没取 samples');
+	assert.match(run, /else if \(smp === 0 && it\.speed_bps != null\)/, '缺「仅粗测」分支');
+	assert.match(run, /CFI\.T\('仅粗测（未进精测）'\)/, '「仅粗测」文案没写');
+	assert.match(run, /else if \(smp === 1\)/, '缺「精测只成一遍」分支');
+	assert.ok(run.indexOf("CFI.T('只测到一遍')") === -1, '旧的「只测到一遍」还在（会把只粗筛说成测了没成）');
 });
 
 test('r232 write_outputs：samples.map 跨轮清空，且与 spread.map 一次写出', () => {

@@ -489,6 +489,19 @@
 			if (!it)
 				return el('p', { class: 'dim', text: CFI.T('这条 IP 已不在本轮榜单。') });
 			var unit = st.speed_unit === 'mib' ? ' MiB/s' : ' MB/s';
+			/* r232：样本数区分三种情况，别再一律说「只测到一遍」——
+			   spread 为空且 samples 为 0，说明这颗只跑了粗筛（压根没进精测），
+			   说成「测了但只成一遍」是在暗示链路不稳，方向刚好相反。 */
+			var smp = Number(it.speed_samples) || 0;
+			var spreadTxt = F.DASH;
+			if (it.speed_spread != null && isFinite(Number(it.speed_spread)))
+				spreadTxt = Math.round(Number(it.speed_spread) * 100) + '%';
+			else if (smp === 0 && it.speed_bps != null)
+				spreadTxt = CFI.T('仅粗测（未进精测）');
+			else if (smp === 1)
+				spreadTxt = CFI.T('精测仅成 1 遍');
+			else if (smp >= 2)
+				spreadTxt = CFI.T('精测 %s 遍').format(smp);
 			var rows = [
 				[ CFI.T('引擎名次'), rankOf(it.ip) ? String(rankOf(it.ip)) : F.DASH ],
 				[ CFI.T('HTTP'), it.code != null ? String(it.code) : F.DASH ],
@@ -499,9 +512,7 @@
 				[ CFI.T('机房'), it.colo || F.DASH, it.colo ? CFI.colo.name(it.colo) : '' ],
 				[ CFI.T('胜出域名'), it.domain || F.DASH ],
 				[ CFI.T('吞吐'), F.mbps(F.speedOf(it, st.speed_unit === 'mib' ? 'mib' : 'mb')) + unit ],
-				[ CFI.T('吞吐波动'), it.speed_spread != null && isFinite(Number(it.speed_spread))
-					? Math.round(Number(it.speed_spread) * 100) + '%'
-					: (Number(it.speed_samples) === 1 ? CFI.T('只测到一遍') : F.DASH) ],
+				[ CFI.T('吞吐波动'), spreadTxt ],
 				[ CFI.T('丢包'), it.loss != null && isFinite(Number(it.loss)) ? (Number(it.loss) * 100).toFixed(1) + '%' : F.DASH ],
 				[ CFI.T('抖动'), F.ms(it.jitter_ms) + ' ms' ],
 				[ 'CF-RAY', it.ray_ok == null ? F.DASH : (Number(it.ray_ok) ? CFI.T('已验到') : CFI.T('未验到')) ]
