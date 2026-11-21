@@ -341,8 +341,8 @@ if [ -f "$VIEW" ] && [ -f "$ENGINE" ]; then
     if [ "$nopts" -eq 0 ]; then
         echo "[FAIL] help-7: 从视图里一个字段都没提取到（field(...) 的形状变了？）"
         rl7=1
-    elif [ "$nopts" -lt 34 ]; then
-        echo "[FAIL] help-7: 只提取到 $nopts 个字段，r196 起应为 34 个（少了的字段没被本检查覆盖）"
+    elif [ "$nopts" -lt 36 ]; then
+        echo "[FAIL] help-7: 只提取到 $nopts 个字段，r227 起应为 36 个（少了的字段没被本检查覆盖）"
         rl7=1
     fi
     if [ ! -s "$TMP_PAIRS" ]; then

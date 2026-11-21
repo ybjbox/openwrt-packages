@@ -84,7 +84,7 @@ const confKeys = [...conf.matchAll(/^\toption\s+([a-z_]+)/gm)].map((m) => m[1]);
 ok('默认配置 56 个 option', confKeys.length === 56, String(confKeys.length));
 const fields = [...view.matchAll(/field\([a-z]+, '[A-Za-z]+', form\.[A-Za-z]+, '([a-z_]+)'/g)]
 	.map((m) => m[1]);
-ok('视图 field() 声明 34 个字段', fields.length === 34, String(fields.length));
+ok('视图 field() 声明 36 个字段', fields.length === 36, String(fields.length));
 for (const k of fields)
 	ok('字段 ' + k + ' 在默认配置里', confKeys.includes(k) || conf.indexOf('	list ' + k + ' ') >= 0);
 ok('隐藏兼容键保留但不在界面', confKeys.includes('dns_record') && confKeys.includes('dns_proxied') &&

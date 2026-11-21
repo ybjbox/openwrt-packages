@@ -1143,6 +1143,7 @@ html.cfp-force-light .cfp-modal[class] {
 	   只放长长字段；端口/条数这类短数字字段保持原宽。 */
 	#view .cfp[class] #cfi-pane-set .cbi-value[data-name="probe_domains"] input,
 	#view .cfp[class] #cfi-pane-set .cbi-value[data-name="speed_domain"] input,
+	#view .cfp[class] #cfi-pane-set .cbi-value[data-name="speed_path"] input,
 	#view .cfp[class] #cfi-pane-set .cbi-value[data-name="dns_zone"] input,
 	#view .cfp[class] #cfi-pane-set .cbi-value[data-name="dns_comment"] input,
 	#view .cfp[class] #cfi-pane-set .cbi-value[data-name="dns_record"] input,
