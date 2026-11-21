@@ -61,6 +61,19 @@ function parseRules(css) {
 	return rules;
 }
 
+test('CSS：不许用 @supports（构建期 CssTidy 会整块丢弃）', () => {
+	/* r230 实测：为了给 color-mix 令牌加回退，写了
+	   `@supports (color: color-mix(...)) { .cfp { --cfi-line: color-mix(...) } }`，
+	   本地 build --check 全绿、源码看着正常，装机后产物里 `grep -c '@supports'` 是 0，
+	   内层规则也没被合并进 .cfp —— 等于回退值静默生效、color-mix 版本彻底消失。
+	   后果比不加回退更糟：暗色下 --cfi-muted 变成深灰字压在深底上。
+	   这条钉住「源文件里不出现 @supports」，避免有人再走一遍。
+	   （@media 是被搬到文件末尾，不是丢弃，可以继续用。） */
+	const css = read();
+	assert.equal((css.match(/@supports/g) || []).length, 0,
+		'CssTidy 会丢弃 @supports 整块，回退方案不能靠它；改用静态值或换方案');
+});
+
 test('CSS：同一（媒体条件 + 选择器）里没有重复属性', () => {
 	const groups = new Map();
 	for (const r of parseRules(read())) {
