@@ -65,6 +65,38 @@ jobs:
       - name: 对外契约测试
         run: node tests/contract.mjs
 
+      - name: ingest 字段契约校验（采集器源码 ↔ 字段清单）
+        # 防止改了 metrics.go 忘了更新 ingest-fields.txt 清单
+        run: node tests/test_ingest_contract.mjs
+
+  ingest-contract-crossrepo:
+    name: Ingest contract (Go ↔ cloud)
+    # 跨私有仓库比对：需要 NAV_READ_TOKEN（可读 ybjbox/nav 的 PAT）。
+    # 未配置时跳过（不算失败），配置后若两边字段不一致则拦截。
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出采集器仓库
+        uses: actions/checkout@v4
+
+      - name: 准备 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 拉取云端 handlers.ts 并校验字段一致
+        env:
+          NAV_READ_TOKEN: ${{ secrets.NAV_READ_TOKEN }}
+        run: |
+          if [ -z "$NAV_READ_TOKEN" ]; then
+            echo "::notice::NAV_READ_TOKEN 未配置，跳过跨仓契约校验（本地基线校验仍在其他 job 执行）"
+            exit 0
+          fi
+          curl -fsSL -H "Authorization: Bearer $NAV_READ_TOKEN" \
+            -H "Accept: application/vnd.github.raw" \
+            "https://api.github.com/repos/ybjbox/nav/contents/worker/handlers.ts?ref=main" \
+            -o /tmp/nav-handlers.ts
+          node tests/test_ingest_contract.mjs --nav-source /tmp/nav-handlers.ts
+
   build:
     name: Build package (OpenWrt SDK)
     # Only build on manual dispatch to avoid burning SDK minutes on every push/PR.
