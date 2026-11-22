@@ -53,10 +53,13 @@ define Package/nav-collector/description
   同时提供 LuCI 后台「服务 → NAV 采集器」配置页，与 :12900 互通。
 endef
 
-# 默认 GO_PKG_TARGET_VARS 里有 GOOS/GOARCH/CGO_ENABLED=1，直接 := 赋值会把
-# 交叉编译参数一起抹掉（会编出 runner 本机的 amd64）。只翻 CGO，其余保留。
-# 必须放在 include 之后：默认值定义在 golang-package.mk 里。
-GO_PKG_TARGET_VARS:=$(filter-out CGO_ENABLED=1,$(GO_PKG_TARGET_VARS)) CGO_ENABLED=0
+# 不要关 CGO。golang-package.mk 的 GO_PKG_DEFAULT_LDFLAGS 里写死了
+#   -linkmode external -extldflags '...'
+# 而 Go 在 CGO_ENABLED=0 时拒绝外部链接，直接报
+#   -linkmode requires external (cgo) linking, but cgo is not enabled
+# 交叉链接用的是 TARGET_CC（aarch64-openwrt-linux-musl-gcc），工具链里有。
+# 若确实要静态二进制，得同时清空 GO_PKG_DEFAULT_LDFLAGS，代价是丢掉上游的
+# hardening（PIE/RELRO），不建议。
 
 define Build/Prepare
 	$(INSTALL_DIR) $(PKG_BUILD_DIR)
