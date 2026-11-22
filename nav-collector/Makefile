@@ -14,6 +14,26 @@ PKG_CONFIG_DEPENDS:=CONFIG_PACKAGE_nav-collector
 # 无 PKG_SOURCE_URL：Prepare 阶段手动把 ./src 复制进 PKG_BUILD_DIR
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 
+# ⚠️ GO_PKG 及相关的 GO_* 变量必须写在 include golang-package.mk 之前。
+# 该文件末尾有一段 include 时求值的条件：
+#   ifneq ($(strip $(GO_PKG)),)
+#     Build/Configure=$(call GoPackage/Build/Configure)
+#     Build/Compile=$(call GoPackage/Build/Compile)
+# 如果 GO_PKG 定义在 include 之后，这段不生效：Build/Configure 保持默认（不会
+# 创建 .go_work 工作区），Build/Compile 落回 Build/Compile/Default（在
+# PKG_BUILD_DIR 里跑 make）。两种结果都是编译失败。
+GO_PKG:=nav/collector
+# go install 目标必须是完整 import path（GOPATH 布局下相对 GO_PKG 根）
+GO_PKG_BUILD_PKG:=nav/collector/cmd/collector
+# golang-build.sh 拷源码时只认 .c/.cc/.cpp/.go/.h/.hh/.hpp/.proto/.s、
+# /testdata/、go.mod|go.sum|go.work。internal/ui/page.html 不在其中，
+# 而 ui.go 里有 //go:embed page.html —— 必须整包拷贝，否则报
+# "pattern page.html: no matching files found"。
+GO_PKG_INSTALL_ALL:=1
+GO_PKG_LDFLAGS_X:=$(GO_PKG)/internal/version.Version=$(PKG_VERSION)-$(PKG_RELEASE)
+# 体积约束：裁剪调试信息
+GO_PKG_LDFLAGS+=-s -w
+
 include $(INCLUDE_DIR)/package.mk
 # 需要 packages feed 的 golang 构建（feeds update/install packages 后可用）
 include $(TOPDIR)/feeds/packages/lang/golang/golang-package.mk
@@ -33,19 +53,9 @@ define Package/nav-collector/description
   同时提供 LuCI 后台「服务 → NAV 采集器」配置页，与 :12900 互通。
 endef
 
-GO_PKG:=nav/collector
-# go install 目标必须是完整 import path（GOPATH 布局下相对 GO_PKG 根）
-GO_PKG_BUILD_PKG:=nav/collector/cmd/collector
-# golang-build.sh 拷源码时只认 .c/.cc/.cpp/.go/.h/.hh/.hpp/.proto/.s、
-# /testdata/、go.mod|go.sum|go.work。internal/ui/page.html 不在其中，
-# 而 ui.go 里有 //go:embed page.html —— 必须整包拷贝，否则报
-# "pattern page.html: no matching files found"。
-GO_PKG_INSTALL_ALL:=1
-GO_PKG_LDFLAGS_X:=$(GO_PKG)/internal/version.Version=$(PKG_VERSION)-$(PKG_RELEASE)
-# 体积约束：裁剪调试信息
-GO_PKG_LDFLAGS+=-s -w
 # 默认 GO_PKG_TARGET_VARS 里有 GOOS/GOARCH/CGO_ENABLED=1，直接 := 赋值会把
 # 交叉编译参数一起抹掉（会编出 runner 本机的 amd64）。只翻 CGO，其余保留。
+# 必须放在 include 之后：默认值定义在 golang-package.mk 里。
 GO_PKG_TARGET_VARS:=$(filter-out CGO_ENABLED=1,$(GO_PKG_TARGET_VARS)) CGO_ENABLED=0
 
 define Build/Prepare
@@ -53,12 +63,8 @@ define Build/Prepare
 	$(CP) ./src/. $(PKG_BUILD_DIR)/
 endef
 
-# 必须显式定义：golang-package.mk 的 GoBinPackage 只定义 install，不定义编译。
-# 缺了它就会落到 package.mk 的 Build/Compile/Default，在 PKG_BUILD_DIR 里跑
-# make —— Go 项目没有 Makefile，报 "No targets specified and no makefile found"。
-define Build/Compile
-	$(call GoPackage/Build/Compile)
-endef
+# Build/Configure 与 Build/Compile 由 golang-package.mk 在 GO_PKG 非空时自动
+# 挂上（见文件开头说明），这里不要再定义，否则容易漏掉 Configure 那一半。
 
 define Package/nav-collector/install
 	$(call GoPackage/Package/Install/Bin,$(1))
