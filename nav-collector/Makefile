@@ -4,7 +4,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=nav-collector
 PKG_VERSION:=0.2.1
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 PKG_MAINTAINER:=NAV
 PKG_LICENSE:=MIT
 PKG_CONFIG_DEPENDS:=CONFIG_PACKAGE_nav-collector
@@ -34,17 +34,36 @@ endef
 GO_PKG:=nav/collector
 # go install 目标必须是完整 import path（GOPATH 布局下相对 GO_PKG 根）
 GO_PKG_BUILD_PKG:=nav/collector/cmd/collector
+# golang-build.sh 拷源码时只认 .c/.cc/.cpp/.go/.h/.hh/.hpp/.proto/.s、
+# /testdata/、go.mod|go.sum|go.work。internal/ui/page.html 不在其中，
+# 而 ui.go 里有 //go:embed page.html —— 必须整包拷贝，否则报
+# "pattern page.html: no matching files found"。
+GO_PKG_INSTALL_ALL:=1
 GO_PKG_LDFLAGS_X:=$(GO_PKG)/internal/version.Version=$(PKG_VERSION)-$(PKG_RELEASE)
-# 体积约束：裁剪调试信息（交叉 CGO 默认禁用，无需显式）
+# 体积约束：裁剪调试信息
 GO_PKG_LDFLAGS+=-s -w
+# 默认 GO_PKG_TARGET_VARS 里有 GOOS/GOARCH/CGO_ENABLED=1，直接 := 赋值会把
+# 交叉编译参数一起抹掉（会编出 runner 本机的 amd64）。只翻 CGO，其余保留。
+GO_PKG_TARGET_VARS:=$(filter-out CGO_ENABLED=1,$(GO_PKG_TARGET_VARS)) CGO_ENABLED=0
 
 define Build/Prepare
 	$(INSTALL_DIR) $(PKG_BUILD_DIR)
 	$(CP) ./src/. $(PKG_BUILD_DIR)/
 endef
 
+# 必须显式定义：golang-package.mk 的 GoBinPackage 只定义 install，不定义编译。
+# 缺了它就会落到 package.mk 的 Build/Compile/Default，在 PKG_BUILD_DIR 里跑
+# make —— Go 项目没有 Makefile，报 "No targets specified and no makefile found"。
+define Build/Compile
+	$(call GoPackage/Build/Compile)
+endef
+
 define Package/nav-collector/install
 	$(call GoPackage/Package/Install/Bin,$(1))
+	# go install 的产物名取包目录名（cmd/collector → collector），
+	# 而 files/nav.init 里 PROG=/usr/bin/nav-collector，这里改名对齐。
+	$(INSTALL_BIN) $(1)/usr/bin/collector $(1)/usr/bin/nav-collector
+	$(RM) $(1)/usr/bin/collector
 	$(INSTALL_DIR) $(1)/etc/config $(1)/etc/init.d
 	$(INSTALL_DATA) ./files/config $(1)/etc/config/nav
 	$(INSTALL_BIN) ./files/nav.init $(1)/etc/init.d/nav
