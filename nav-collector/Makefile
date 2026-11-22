@@ -1,5 +1,6 @@
 # OpenWrt 包：NAV 采集器（路由器插件）
-# 集成方式见 navpage/docs/PLUGIN.md（固件内置 或 SDK 独立出 ipk）
+# 本目录是采集器的唯一真源：Go module（src/）+ OpenWrt 包（Makefile/files）+ NAS Docker（Dockerfile）
+# 云端项目见 ybjbox/nav（前端 + Worker）；采集器经 HTTPS 出站推送到 NAV 云端。
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=nav-collector
@@ -22,13 +23,14 @@ define Package/nav-collector
   CATEGORY:=Network
   TITLE:=NAV router collector (OpenClash/system monitoring)
   URL:=https://github.com/ybjbox/nav
-  DEPENDS:=$(GO_ARCH_DEPENDS)
+  DEPENDS:=$(GO_ARCH_DEPENDS) +luci-base
 endef
 
 define Package/nav-collector/description
   NAV 采集器路由器插件：采集本机系统指标（/proc）、OpenClash 运行状态
   （Clash External Controller API），阈值告警并出站推送到 NAV 云端。
   仅出站 HTTPS，不监听对外端口；本地配置页 :12900 仅局域网；配置见 /etc/config/nav。
+  同时提供 LuCI 后台「服务 → NAV 采集器」配置页，与 :12900 互通。
 endef
 
 GO_PKG:=nav/collector
@@ -67,6 +69,13 @@ define Package/nav-collector/install
 	$(INSTALL_DIR) $(1)/etc/config $(1)/etc/init.d
 	$(INSTALL_DATA) ./files/config $(1)/etc/config/nav
 	$(INSTALL_BIN) ./files/nav.init $(1)/etc/init.d/nav
+	# LuCI 后台配置页：菜单入口 + rpcd 授权 + JS 视图
+	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d
+	$(INSTALL_DATA) ./files/nav-menu.json $(1)/usr/share/luci/menu.d/luci-app-nav.json
+	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
+	$(INSTALL_DATA) ./files/nav.acl $(1)/usr/share/rpcd/acl.d/luci-app-nav.json
+	$(INSTALL_DIR) $(1)/www/luci-static/resources/view/nav
+	$(INSTALL_DATA) ./files/luci-nav.js $(1)/www/luci-static/resources/view/nav/config.js
 endef
 
 $(eval $(call BuildPackage,nav-collector))

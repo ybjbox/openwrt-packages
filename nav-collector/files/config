@@ -4,7 +4,7 @@
 config main 'main'
 	option enabled '1'
 	# 云端摄入地址与令牌（与 Cloudflare COLLECTOR_TOKEN 一致）
-	option push_url 'https://nav.pages.dev/api/ingest'
+	option push_url 'https://nav.403333.xyz/api/ingest'
 	option push_token 'change-me-collector-token'
 	# 采集器实例标识（云端多源分桶；路由器侧固定 router）
 	option source 'router'

@@ -1,0 +1,53 @@
+# 独立 ipk 构建：按架构矩阵出 OpenWrt 包并发布到 Releases
+# 本 workflow 位于 ybjbox/openwrt-packages 仓库根目录，nav-collector/ 即本仓库内的包目录。
+# 固件在线编译场景可直接通过 feed:ybjbox 引用本仓库，无需本 workflow。
+name: build-ipk
+on:
+  workflow_dispatch:
+    inputs:
+      sdk_url:
+        description: "OpenWrt SDK tarball 地址（与路由器固件版本匹配）"
+        required: true
+        default: "https://downloads.openwrt.org/releases/24.10.1/targets/x86/64/openwrt-sdk-24.10.1-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.xz"
+  push:
+    tags: ["ipk-v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            sdk: x86/64
+          - arch: aarch64_generic
+            sdk: armsr/armv8
+    steps:
+      - uses: actions/checkout@v4
+      - name: 下载并展开 SDK
+        run: |
+          SDK_URL="${{ inputs.sdk_url || format('https://downloads.openwrt.org/snapshots/targets/{0}/openwrt-sdk-{0}-linux-x86_64.tar.xz', matrix.sdk) }}"
+          curl -sL "$SDK_URL" | tar -xJ --strip-components=1 -C sdk || (mkdir sdk && curl -sL "$SDK_URL" | tar -xJ --strip-components=1 -C sdk)
+      - name: 安装 golang feed 与依赖
+        working-directory: sdk
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install golang
+      - name: 拷贝插件包
+        run: cp -r nav-collector sdk/package/
+      - name: 编译 ipk
+        working-directory: sdk
+        run: |
+          make defconfig
+          make package/nav-collector/compile V=s
+      - name: 收集产物
+        run: find sdk/bin -name "*.ipk" -exec cp {} out/ \; || (mkdir out && find sdk/bin -name "*.ipk" -exec cp {} out/ \;)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nav-collector-${{ matrix.arch }}
+          path: out/
+      - name: 发布到 Release（tag 触发时）
+        if: startsWith(github.ref, 'refs/tags/ipk-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/*.ipk
