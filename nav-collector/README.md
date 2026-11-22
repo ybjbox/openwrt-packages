@@ -34,6 +34,31 @@
   `NAV_READ_TOKEN`（一个能读取私有仓库 `ybjbox/nav` 的 PAT，仅需 repo 读权限）。未配置时该 job 跳过，不影响其他检查。
 - 本地也可手动跑：`node tests/test_ingest_contract.mjs --nav-source <nav仓库>/worker/handlers.ts`
 
+### 配置 NAV_READ_TOKEN（一次性，启用跨仓校验）
+
+用**细粒度 PAT**（fine-grained token），只授予读私有仓库 `ybjbox/nav` 的权限，泄露影响面很小。
+
+1. 打开 GitHub → 头像 → Settings → Developer settings → Personal access tokens → **Fine-grained tokens** → Generate new token。
+   可用这个**预填链接**跳过大部分字段（名称/描述/所有者/90 天过期/`Contents: read` 已填好）：
+   ```
+   https://github.com/settings/personal-access-tokens/new?name=NAV+contract+reader&description=Read+ybjbox%2Fnav+handlers.ts+for+ingest+contract+check&target_name=ybjbox&expires_in=90&contents=read
+   ```
+2. 核对三项关键设置（预填链接**不会**自动勾仓库，第 2 项要手动点）：
+   - **Resource owner**：`ybjbox`
+   - **Repository access**：选 `Only select repositories` → 勾选 `ybjbox/nav`（只此一个）
+   - **Permissions → Repository permissions**：`Contents: Read-only`（其余保持 `No access`；Metadata 是强制自带的，忽略）
+3. 点 **Generate token**，**立刻复制**（形如 `github_pat_11A...`，只显示一次）。不要贴到聊天/文件/代码里。
+4. 本仓库 → Settings → Secrets and variables → Actions → **New repository secret**：
+   - Name：`NAV_READ_TOKEN`（全大写下划线，拼写必须完全一致）
+   - Value：粘贴刚复制的令牌
+
+**验证**：在 Actions 页手动运行一次 CI，看 `Ingest contract (Go ↔ cloud)` job：
+- 日志出现 `跨仓 ingest 契约一致（37 个字段全部对齐）` → 配置成功。
+- 若出现 `NAV_READ_TOKEN 未配置，跳过...` 的 **notice** → 注意：脚本本身会被 GitHub 回显，那行只是"没配就跳过"的兜底分支文本；以实际 `[PASS]` 输出为准。若确实没 PASS，检查 Secret 名是否拼错。
+- 若报 401/404 → 令牌没读到私有仓库，回第 2 步确认 `Repository access` 勾了 `nav`。
+
+令牌设 90 天过期即可，到期 GitHub 会提醒；轮换时重新生成 PAT 并覆盖同名 Secret，workflow 无需改。
+
 ## 构建
 ```sh
 # Go 静态检查与编译

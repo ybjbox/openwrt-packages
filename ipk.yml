@@ -23,7 +23,7 @@ jobs:
           - arch: aarch64_generic
             sdk: armsr/armv8
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: 下载并展开 SDK
         run: |
           SDK_URL="${{ inputs.sdk_url || format('https://downloads.openwrt.org/snapshots/targets/{0}/openwrt-sdk-{0}-linux-x86_64.tar.xz', matrix.sdk) }}"
