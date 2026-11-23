@@ -537,74 +537,66 @@
 	.cfp .drawer-a { justify-content: stretch; }
 	.cfp .drawer-a .btn { flex: 1 1 auto; justify-content: center; min-height: 44px; }
 }
-@media (prefers-color-scheme: dark) {
-	.cfp[class],
-	.cfp-modal[class] {
-		--background-color: #1e1e1e;
-		/* 页面底 #1e1e1e 与卡片原来只差 2.7%（#252526），卡片几乎看不出来；
-		   抬到 #2b2b2e 后差 5%，边界才成立（r182 审查 P0-2）。 */
-		--cfi-card: #2b2b2e;
-		/* r194（审查 P3-1）：徽标 11px 用主色原色在卡片上只有 3.36:1；
-		   混 30% 白提亮到 5.46:1，与浅色的 5.21:1 对齐，色相仍是同一个紫。 */
-		--cfi-lead: color-mix(in srgb, var(--cfi-primary) 70%, #fff);
-		--cfi-ok: #6ee7a8;
-		--cfi-warn: #fbbf24;
-		--cfi-bad: #ff8a80;
-		color-scheme: dark;
-	}
-	.cfp[class] .cfp-tabs { background: transparent; }
-	.cfp[class] .cfp-tabs .cbi-tabmenu > li.cbi-tab { --dark-primary: transparent; }
-	.cfp[class] .cfp-title h1 { border-bottom: 0; }
-	/* r189（审查 P1-1）：设置页的 5 个分组卡是 CBI 生成的 .cbi-section，不是 .card ——
-	   r182 抬升的 --cfi-card 只被 .card 消费，暗色下这 5 块与页面底同为 #1e1e1e
-	   （对比 1.00），只能靠 1px 描边认出边界。
-	   主题把底色写死成 #1e1e1e 并带强制优先，而本插件构建期禁止强制优先声明，
-	   background 改不动；改用内阴影 —— 它绘制在元素背景之上、内容之下，
-	   不需要强制优先，且自动被圆角裁剪。 */
-	.cfp[class] #cfi-pane-set .cbi-section {
-		box-shadow: inset 0 0 0 9999px var(--cfi-card), 0 0 .5rem 0 rgba(0, 0, 0, .35);
-	}
-	.cfp[class] .tbl th { background: var(--background-color); }
-	.cfp[class] .log-pill { background: var(--background-color); }
-	.cfp[class] .ctl,
-	.cfp[class] #cfi-pane-set input:not([type=hidden]):not([type=checkbox]):not([type=radio]),
-	.cfp[class] #cfi-pane-set select,
-	.cfp[class] #cfi-pane-set textarea,
-	.cfp[class] .btn { box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 55%, transparent); }
-	.cfp[class] .btn.primary,
-	.cfp[class] .btn.cbi-button.cbi-button-add { box-shadow: inset 0 0 0 1px var(--cfi-primary); }
-	.cfp[class] .btn.link { box-shadow: inset 0 0 0 1px var(--cfi-primary); }
-	.cfp[class] .btn.is-danger { box-shadow: inset 0 0 0 1px var(--cfi-bad); }
-	/* r193（审查 P2-1）：暗色下复选框只剩一道 #3c3c3c 描边，对卡片 #2b2b2e 只有
-	   1.28:1（WCAG 1.4.11 非文本要 3:1），未勾选时几乎看不出方框在哪。
-	   主题把 border-color 写死成 #3c3c3c 且带强制优先，构建期又禁止强制优先，
-	   改不动边框；内阴影画在边框**内侧**，不需要强制优先、不参与布局，正好补一圈：
-	   实测内侧 1px 为 rgb(123,123,125)，对卡片 #2b2b2e 是 3.34:1（外侧那道 1px
-	   深边是主题的 border，压不掉，但视觉边界落在这道浅环上）。
-	   勾选态一起上环 —— 只给未勾选的话，勾上的瞬间边线会跳一下。
-	   不走 outline：那是焦点指示的通道，键盘聚焦要留给主题/LuCI 自己的规则。 */
-	.cfp[class] input[type=checkbox] {
-		box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 50%, transparent);
-	}
+/* r236：暗色不再挂 @media (prefers-color-scheme) —— 主题可能用自己的开关
+   （FanchmWrt: :root[data-darkmode="true"]），系统偏好与页面实际明暗可以不一致：
+   系统亮 + 主题暗 时，媒体查询不触发，变量停在浅色，白卡片压着主题的浅色文字。
+   现在由 CFI.theme 按**页面实际背景亮度**给 html 加 cfp-dark，一套选择器同时覆盖
+   「系统暗 + 主题浅」（不加类）与「主题暗 + 系统亮」（加类）两个方向。 */
+
+html.cfp-dark .cfp[class],
+html.cfp-dark .cfp-modal[class] {
+	--background-color: #1e1e1e;
+	/* 页面底 #1e1e1e 与卡片原来只差 2.7%（#252526），卡片几乎看不出来；
+	   抬到 #2b2b2e 后差 5%，边界才成立（r182 审查 P0-2）。 */
+	--cfi-card: #2b2b2e;
+	/* r194（审查 P3-1）：徽标 11px 用主色原色在卡片上只有 3.36:1；
+	   混 30% 白提亮到 5.46:1，与浅色的 5.21:1 对齐，色相仍是同一个紫。 */
+	--cfi-lead: color-mix(in srgb, var(--cfi-primary) 70%, #fff);
+	--cfi-ok: #6ee7a8;
+	--cfi-warn: #fbbf24;
+	--cfi-bad: #ff8a80;
+	color-scheme: dark;
 }
+html.cfp-dark .cfp[class] .cfp-tabs { background: transparent; }
+html.cfp-dark .cfp[class] .cfp-tabs .cbi-tabmenu > li.cbi-tab { --dark-primary: transparent; }
+html.cfp-dark .cfp[class] .cfp-title h1 { border-bottom: 0; }
+/* r189（审查 P1-1）：设置页的 5 个分组卡是 CBI 生成的 .cbi-section，不是 .card ——
+   r182 抬升的 --cfi-card 只被 .card 消费，暗色下这 5 块与页面底同为 #1e1e1e
+   （对比 1.00），只能靠 1px 描边认出边界。
+   主题把底色写死成 #1e1e1e 并带强制优先，而本插件构建期禁止强制优先声明，
+   background 改不动；改用内阴影 —— 它绘制在元素背景之上、内容之下，
+   不需要强制优先，且自动被圆角裁剪。 */
+html.cfp-dark .cfp[class] #cfi-pane-set .cbi-section {
+	box-shadow: inset 0 0 0 9999px var(--cfi-card), 0 0 .5rem 0 rgba(0, 0, 0, .35);
+}
+html.cfp-dark .cfp[class] .tbl th { background: var(--background-color); }
+html.cfp-dark .cfp[class] .log-pill { background: var(--background-color); }
+html.cfp-dark .cfp[class] .ctl,
+html.cfp-dark .cfp[class] #cfi-pane-set input:not([type=hidden]):not([type=checkbox]):not([type=radio]),
+html.cfp-dark .cfp[class] #cfi-pane-set select,
+html.cfp-dark .cfp[class] #cfi-pane-set textarea,
+html.cfp-dark .cfp[class] .btn { box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 55%, transparent); }
+html.cfp-dark .cfp[class] .btn.primary,
+html.cfp-dark .cfp[class] .btn.cbi-button.cbi-button-add { box-shadow: inset 0 0 0 1px var(--cfi-primary); }
+html.cfp-dark .cfp[class] .btn.link { box-shadow: inset 0 0 0 1px var(--cfi-primary); }
+html.cfp-dark .cfp[class] .btn.is-danger { box-shadow: inset 0 0 0 1px var(--cfi-bad); }
+/* r193（审查 P2-1）：暗色下复选框只剩一道 #3c3c3c 描边，对卡片 #2b2b2e 只有
+   1.28:1（WCAG 1.4.11 非文本要 3:1），未勾选时几乎看不出方框在哪。
+   主题把 border-color 写死成 #3c3c3c 且带强制优先，构建期又禁止强制优先，
+   改不动边框；内阴影画在边框**内侧**，不需要强制优先、不参与布局，正好补一圈：
+   实测内侧 1px 为 rgb(123,123,125)，对卡片 #2b2b2e 是 3.34:1（外侧那道 1px
+   深边是主题的 border，压不掉，但视觉边界落在这道浅环上）。
+   勾选态一起上环 —— 只给未勾选的话，勾上的瞬间边线会跳一下。
+   不走 outline：那是焦点指示的通道，键盘聚焦要留给主题/LuCI 自己的规则。 */
+html.cfp-dark .cfp[class] input[type=checkbox] {
+	box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 50%, transparent);
+}
+
+
 @media (prefers-reduced-motion: reduce) {
 	.cfp *, .cfp *::before, .cfp *::after { transition: none; animation: none; }
 }
 
-/* r213：FanchmWrt 等主题不响应 prefers-color-scheme，但浏览器暗色偏好会让上面的
-   暗色块生效，页面却仍是浅色，形成"浅页面 + 黑卡片 + 深灰字"。CFI.theme 检测到
-   页面实际是浅色时给 html 加 cfp-force-light，把暗色块改过的变量整体改回浅色。
-   特异性 (0,2,1) 高于暗色块的 .cfp[class] (0,1,1)，与源顺序无关。 */
-html.cfp-force-light .cfp[class],
-html.cfp-force-light .cfp-modal[class] {
-	--background-color: #ffffff;
-	--cfi-card: #ffffff;
-	--cfi-lead: var(--cfi-primary-strong);
-	--cfi-ok: #1f7a45;
-	--cfi-warn: #9a5b00;
-	--cfi-bad: #b3261e;
-	color-scheme: light;
-}
 
 /* =====================================================================
  * r140 控制台版面：顶部标题 + 榜单大卡 + 右侧概况/机房/动作

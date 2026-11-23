@@ -28,14 +28,22 @@ return view.extend({
 	render: function (raw) {
 		linkStyle();
 		CFI.theme.sync();
-		if (!CFI_THEME_BOUND && window.matchMedia) {
+		if (!CFI_THEME_BOUND) {
 			CFI_THEME_BOUND = true;
-			var mq = window.matchMedia('(prefers-color-scheme: dark)');
 			var onTheme = function () { CFI.theme.sync(); };
-			if (mq.addEventListener)
-				mq.addEventListener('change', onTheme);
-			else if (mq.addListener)
-				mq.addListener(onTheme);
+			if (window.matchMedia) {
+				var mq = window.matchMedia('(prefers-color-scheme: dark)');
+				if (mq.addEventListener)
+					mq.addEventListener('change', onTheme);
+				else if (mq.addListener)
+					mq.addListener(onTheme);
+			}
+			/* r236：主题自己的暗色开关（FanchmWrt 是 :root[data-darkmode]）不触发
+			   matchMedia，只在 html 上改属性/类。监听它，切主题不用刷新页面。 */
+			if (window.MutationObserver) {
+				new MutationObserver(onTheme).observe(document.documentElement,
+					{ attributes: true, attributeFilter: [ 'data-darkmode', 'class', 'style' ] });
+			}
 		}
 		var sh = CFI.shell.create(raw);
 		CFI_SHELL = sh;

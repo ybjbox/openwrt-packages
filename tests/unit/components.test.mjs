@@ -890,9 +890,10 @@ test('移动端头部：主按钮用自然宽度并靠右，不再吃剩余空�
 test('设置页：暗色下分组卡用内阴影补上卡片色，暗色块里没有硬编码底色', () => {
 	const css = fs.readFileSync(
 		path.join(root, 'luci-app-cf-ipcheck', 'view-src', 'style', '00-app.css'), 'utf8');
-	const start = css.indexOf('@media (prefers-color-scheme: dark)');
+	/* r236：暗色块从 @media 换成 html.cfp-dark（主题自己的暗色开关不触发媒体查询） */
+	const start = css.indexOf('html.cfp-dark .cfp[class]');
 	const end = css.indexOf('@media (prefers-reduced-motion', start);
-	assert.ok(start >= 0 && end > start, '存在 prefers-color-scheme: dark 块');
+	assert.ok(start >= 0 && end > start, '存在 html.cfp-dark 暗色块');
 	const dark = css.slice(start, end);
 	assert.match(dark, /#cfi-pane-set\s+\.cbi-section\s*\{[^}]*box-shadow:\s*inset[^;]*var\(--cfi-card\)/,
 		'设置页分组卡在暗色下补上卡片底色，不再与页面底同色');
@@ -1060,20 +1061,24 @@ test('r212：768–1152 长字段撑满可用宽度', () => {
 		assert.match(css, new RegExp('data-name="' + n + '"\\] input'), '长字段 ' + n + ' 缺宽度规则');
 });
 
-/* r213：FanchmWrt 不响应 prefers-color-scheme，系统暗色偏好会让插件暗色块生效，
- * 但页面仍是浅色。CFI.theme 按页面实际背景亮度判断，浅色时加 cfp-force-light。 */
-test('r213：浅色主题下的暗色偏好不许把卡片变黑', () => {
+/* r236：暗色判据统一成「页面实际背景亮度」。
+ * r213 的 cfp-force-light 只堵了「系统暗 + 主题浅」；反向的「系统亮 + 主题暗」
+ * （FanchmWrt 的 data-darkmode）会留下白卡片压浅色字。现在只留一个类。 */
+test('r236：暗色按页面实际亮度切换 cfp-dark，与媒体查询解耦', () => {
 	const css = fs.readFileSync(path.join(root, 'luci-app-cf-ipcheck', 'view-src', 'style', '00-app.css'), 'utf8');
-	assert.match(css, /html\.cfp-force-light \.cfp\[class\]/, '缺 cfp-force-light 的 .cfp 覆盖');
-	assert.match(css, /html\.cfp-force-light \.cfp-modal\[class\]/, '弹窗也要覆盖');
-	assert.match(css, /--cfi-card: #ffffff/, '必须把卡片底色改回白色');
+	assert.ok(!css.includes('@media (prefers-color-scheme: dark)'), '暗色块不再挂媒体查询');
+	assert.ok(!css.includes('cfp-force-light'), 'cfp-force-light 已退场（死 CSS 不留）');
+	assert.match(css, /html\.cfp-dark \.cfp\[class\]/, '缺 cfp-dark 的 .cfp 覆盖');
+	assert.match(css, /html\.cfp-dark \.cfp-modal\[class\]/, '弹窗也要覆盖');
+	assert.match(css, /--cfi-card: #2b2b2e/, '暗色卡片底色仍在');
 	const pre = fs.readFileSync(path.join(root, 'luci-app-cf-ipcheck', 'view-src', '00-pre.js'), 'utf8');
 	assert.match(pre, /CFI\.theme = \(function/, '缺 CFI.theme');
 	assert.match(pre, /getComputedStyle\(el\)\.backgroundColor/, '必须读实际背景色');
-	assert.match(pre, /cfp-force-light/, '必须切换 cfp-force-light');
+	assert.match(pre, /bgLum\(\) <= 0\.5/, '判据是背景亮度，不是 prefers-color-scheme');
+	assert.match(pre, /classList\.toggle\('cfp-dark', dark\)/, '必须切换 cfp-dark');
 	const view = fs.readFileSync(path.join(root, 'luci-app-cf-ipcheck', 'view-src', '99-view.js'), 'utf8');
 	assert.match(view, /CFI\.theme\.sync\(\)/, 'render 时必须同步一次');
-	assert.match(view, /prefers-color-scheme: dark/, '必须监听系统偏好变化');
+	assert.match(view, /MutationObserver/, '主题改 html 属性时要重新判（FanchmWrt 走 data-darkmode）');
 });
 
 /* r214：中位与最佳 IP 之间要有分组竖线，且窄屏必须关掉（r212 的 318/318 无余量）。 */

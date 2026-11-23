@@ -145,7 +145,8 @@ test('CSS：暗色复选框在边框内侧补一圈内阴影', () => {
 	   这条测试守三件事：规则在暗色块里、用的是 box-shadow 而不是 border、
 	   且不去碰 outline（那是焦点指示的通道，抢了会把键盘焦点吃掉）。 */
 	const rules = parseRules(read());
-	const dark = rules.filter((r) => r.media === '@media (prefers-color-scheme: dark)');
+	/* r236：暗色块挂在 html.cfp-dark 上（不再用媒体查询） */
+	const dark = rules.filter((r) => r.sel.includes('html.cfp-dark'));
 	const hit = dark.find((r) => /input\[type=checkbox\]/.test(r.sel));
 	assert.ok(hit, '暗色块里应有一条复选框描边规则');
 	assert.ok(hit.props.includes('box-shadow'),
@@ -166,13 +167,14 @@ test('CSS：P3 三处可读性收口（首选徽标 / 问号间距 / 显示密�
 	      2.95:1；压深到 #64748b 后 4.76:1。 */
 	const css = read();
 	/* parseRules 只收属性名，这里要核对具体值，直接按块取正文。 */
-	const mediaRange = (q) => {
-		const at = css.indexOf(q);
-		assert.ok(at >= 0, `没有找到 ${q}`);
+	const blockRange = (mark) => {
+		const at = css.indexOf(mark);
+		assert.ok(at >= 0, `没有找到 ${mark}`);
 		let i = css.indexOf('{', at), depth = 1, j = i + 1;
 		while (j < css.length && depth) { if (css[j] === '{') depth++; else if (css[j] === '}') depth--; j++; }
 		return [i, j];
 	};
+	const mediaRange = (q) => blockRange(q);
 	const mediaBody = (q) => { const [i, j] = mediaRange(q); return css.slice(i + 1, j - 1); };
 	const ruleBody = (text, sel) => {
 		const at = text.indexOf(sel);
@@ -181,7 +183,8 @@ test('CSS：P3 三处可读性收口（首选徽标 / 问号间距 / 显示密�
 		if (open < 0) return '';
 		return text.slice(open + 1, text.indexOf('}', open));
 	};
-	const [ds, de] = mediaRange('@media (prefers-color-scheme: dark)');
+	/* r236：暗色块从媒体查询换成 html.cfp-dark 类 */
+	const [ds, de] = blockRange('html.cfp-dark .cfp[class]');
 	const base = css.slice(0, ds) + css.slice(de);
 
 	const leadBody = (base.match(/\.cfp\[class\] \.tbl \.lead\s*\{([^}]*)\}/g) || []).join(' ');
@@ -191,7 +194,7 @@ test('CSS：P3 三处可读性收口（首选徽标 / 问号间距 / 显示密�
 	assert.match(base, /--cfi-lead:\s*var\(--cfi-primary-strong\)/,
 		'浅色令牌应是深一档的主色（5.21:1）');
 
-	const darkBody = mediaBody('@media (prefers-color-scheme: dark)');
+	const darkBody = css.slice(ds + 1, de - 1);
 	assert.match(darkBody, /--cfi-lead:\s*color-mix\(in srgb, var\(--cfi-primary\) 70%, #fff\)/,
 		'暗色令牌要提亮到 70% 主色 + 30% 白（5.46:1）');
 	assert.ok(!/\.cfp\[class\] \.tbl \.lead\s*\{/.test(darkBody),

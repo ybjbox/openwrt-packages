@@ -16,7 +16,7 @@
  * 编号小的不得调用编号大的；面板不直接碰 IPC，只能经 store 的动作层。
  */
 
-var VIEW_BUILD = 'r235';
+var VIEW_BUILD = 'r236';
 var CMD = '/usr/bin/cf-ipcheck';
 
 var CFI = {
@@ -36,10 +36,13 @@ function T(s) {
 }
 CFI.T = T;
 
-/* 主题明暗：FanchmWrt 等主题完全不响应 prefers-color-scheme，但浏览器/系统的
- * 暗色偏好仍会让本文件末尾的暗色块生效，于是出现「浅页面 + 黑卡片 + 深灰字」。
- * 这里按页面**实际背景亮度**判断，只有页面真的是深色时才让暗色块生效；
- * 页面是浅色但系统偏好暗色时，给 html 加 cfp-force-light，由 CSS 把变量改回浅色。
+/* 主题明暗：按页面**实际背景亮度**判断，不看 prefers-color-scheme。
+ * 历史上两种翻车都出现过：
+ *  - r213：系统暗 + 主题浅（FanchmWrt 不响应媒体查询）→ 暗色块生效但页面是白的；
+ *  - r236：系统亮 + 主题自己开暗色（FanchmWrt 的 :root[data-darkmode]）→ 媒体查询
+ *    不触发，变量停在浅色，白卡片压着主题的浅色文字，几乎读不出来。
+ * 现在只有一个判据：页面亮 → 浅色；页面暗 → html.cfp-dark（CSS 里整套暗色变量与
+ * 覆盖都挂在这个类上）。与主题用什么开关无关，两个方向自动都对。
  * ES5：JsMin 会字符级压缩，别用箭头函数/模板字符串。 */
 CFI.theme = (function () {
 	function bgLum() {
@@ -59,12 +62,9 @@ CFI.theme = (function () {
 	}
 	function sync() {
 		var dark = false;
+		try { dark = bgLum() <= 0.5; } catch (e) {}
 		try {
-			dark = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
-		} catch (e) {}
-		var force = dark && bgLum() > 0.5;
-		try {
-			document.documentElement.classList.toggle('cfp-force-light', force);
+			document.documentElement.classList.toggle('cfp-dark', dark);
 		} catch (e2) {}
 	}
 	return { sync: sync, bgLum: bgLum };
