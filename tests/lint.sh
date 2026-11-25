@@ -1,5 +1,5 @@
 #!/bin/sh
-# luci-app-dhcp-comment CI lint.
+# 仓库 CI lint（最初为 luci-app-dhcp-comment 而写，现已覆盖全仓库）。
 # POSIX sh; intended to run under BusyBox ash (alpine container).
 # Uses ONLY shell builtins + sed + grep + find (all provided by BusyBox).
 #

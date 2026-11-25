@@ -243,7 +243,7 @@ ssh -p 22845 root@op.403333.xyz 'apk add --allow-untrusted /tmp/luci-app-cf-ipch
 ```
 
 包当前是 `PKGARCH := all`，产物在 apk 记账里是 `A:noarch`，所以哪个架构的 SDK 编出来
-的都通用（与本仓库 luci-app-dhcp-comment 一致，已在真机核对）。
+的都通用（`PKGARCH := all` 的包各架构通用，已在真机核对）。
 装完浏览器要**硬刷新**：`?v=` 跟 luci-base，不跟本包版本走；否则会看到旧 UI。
 
 ## 验证状态
@@ -531,7 +531,7 @@ ssh -p 22845 root@op.403333.xyz 'apk add --allow-untrusted /tmp/luci-app-cf-ipch
 
 未覆盖：肉眼在普通浏览器里看整页排版。验证用的内嵌页签 `document.hidden=true` 且
 `requestAnimationFrame` 不触发，LuCI 的视图引导和 CBI `Map.render()` 在这种页签里根本不会
-完成 —— 同环境下已装的 luci-app-dhcp-comment 一样停在「正在载入视图」，一个空的
+完成 —— 同环境下当时的 luci-app-dhcp-comment（已从本仓库移除）一样停在「正在载入视图」，一个空的
 `new form.Map()` 也不 resolve，故与本包无关。视图代码是拿设备自带的
 `form/rpc/ui/view` 直接编译执行 `load()`/`render()` 验的（含 luci.mk 压缩后的那一份）。
 
