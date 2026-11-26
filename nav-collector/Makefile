@@ -8,6 +8,7 @@ PKG_VERSION:=0.2.1
 PKG_RELEASE:=5
 PKG_MAINTAINER:=NAV
 PKG_LICENSE:=MIT
+PKG_BUILD_DEPENDS:=golang/host
 PKG_CONFIG_DEPENDS:=CONFIG_PACKAGE_nav-collector
 
 # 源码随包目录分发（src/ 下为完整 Go module：cmd/ internal/ go.mod go.sum）
