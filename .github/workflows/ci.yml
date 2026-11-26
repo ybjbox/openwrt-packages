@@ -68,8 +68,7 @@ jobs:
 
   ingest-contract-crossrepo:
     name: Ingest contract (Go ↔ cloud)
-    # 跨私有仓库比对：需要 NAV_READ_TOKEN（可读 ybjbox/MyNav 的 PAT）。
-    # 未配置时跳过（不算失败），配置后若两边字段不一致则拦截。
+    # 跨仓库比对：直接从公开仓 ybjbox/MyNav 拉取 worker/handlers.ts 与采集器字段对齐
     runs-on: ubuntu-latest
     steps:
       - name: 检出采集器仓库
@@ -81,16 +80,9 @@ jobs:
           node-version: '22'
 
       - name: 拉取云端 handlers.ts 并校验字段一致
-        env:
-          NAV_READ_TOKEN: ${{ secrets.NAV_READ_TOKEN }}
         run: |
-          if [ -z "$NAV_READ_TOKEN" ]; then
-            echo "::notice::NAV_READ_TOKEN 未配置，跳过跨仓契约校验（本地基线校验仍在其他 job 执行）"
-            exit 0
-          fi
-          curl -fsSL -H "Authorization: Bearer $NAV_READ_TOKEN" \
-            -H "Accept: application/vnd.github.raw" \
-            "https://api.github.com/repos/ybjbox/MyNav/contents/worker/handlers.ts?ref=main" \
+          curl -fsSL \
+            "https://raw.githubusercontent.com/ybjbox/MyNav/main/worker/handlers.ts" \
             -o /tmp/nav-handlers.ts
           node tests/test_ingest_contract.mjs --nav-source /tmp/nav-handlers.ts
 
