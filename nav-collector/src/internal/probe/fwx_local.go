@@ -19,13 +19,19 @@ type FwxLocalProbe struct{}
 
 func NewFwxLocal() *FwxLocalProbe { return &FwxLocalProbe{} }
 
-func (p *FwxLocalProbe) call(api string) (map[string]any, error) {
+func (p *FwxLocalProbe) callUbus(object, method, payload string) ([]byte, error) {
 	cmdName := os.Getenv("NAV_UBUS_CMD")
 	if cmdName == "" {
 		cmdName = "ubus"
 	}
-	out, err := exec.Command(cmdName, "call", "fwx", "common",
-		fmt.Sprintf(`{"api":"%s","data":{}}`, api)).Output()
+	if payload == "" {
+		return exec.Command(cmdName, "call", object, method).Output()
+	}
+	return exec.Command(cmdName, "call", object, method, payload).Output()
+}
+
+func (p *FwxLocalProbe) call(api string) (map[string]any, error) {
+	out, err := p.callUbus("fwx", "common", fmt.Sprintf(`{"api":"%s","data":{}}`, api))
 	if err != nil {
 		return nil, err
 	}
@@ -40,6 +46,20 @@ func (p *FwxLocalProbe) call(api string) (map[string]any, error) {
 		return nil, fmt.Errorf("fwx %s code=%d", api, inner.Code)
 	}
 	return inner.Data, nil
+}
+
+func (p *FwxLocalProbe) wanInterfaceUp() bool {
+	out, err := p.callUbus("network.interface.wan", "status", "")
+	if err != nil {
+		return false
+	}
+	var st struct {
+		Up bool `json:"up"`
+	}
+	if err := json.Unmarshal(out, &st); err != nil {
+		return false
+	}
+	return st.Up
 }
 
 // Enrich 为本机样本补充 FanchmWrt 信息（尽力而为，失败静默）
@@ -61,6 +81,24 @@ func (p *FwxLocalProbe) Enrich(s *metrics.DeviceSample) {
 	if net != nil {
 		if internet, ok := net["internet"].(float64); ok {
 			up := internet == 1
+			if !up {
+				// FanchmWrt 内置联网探测易受 OpenClash/Fake-IP 干扰返回 0，结合 WAN 口与 IP 真实状态兜底
+				wan, _ := net["wan"].(map[string]any)
+				wanIP, _ := wan["ip"].(string)
+				portUp := false
+				if ports, ok := net["port_status"].([]any); ok {
+					for _, raw := range ports {
+						pm, _ := raw.(map[string]any)
+						if role, _ := pm["role"].(string); role == "wan" {
+							portUp = asFloat(pm["up"]) == 1
+							break
+						}
+					}
+				}
+				if (strings.TrimSpace(wanIP) != "" && portUp) || p.wanInterfaceUp() {
+					up = true
+				}
+			}
 			s.Internet = &up
 		}
 	}
