@@ -23,6 +23,7 @@ jobs:
         env:
           ARCH: ${{ inputs.sdk_arch }}
           PACKAGES: nav-collector
+          V: 's'
           IGNORE_ERRORS: '0'
           BUILD: '1'
 
