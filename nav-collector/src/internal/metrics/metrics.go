@@ -50,6 +50,11 @@ type Alert struct {
 	LastSeen  int64 `json:"last_seen"`
 }
 
+type LogPayload struct {
+	OpenWrt   []string `json:"openwrt,omitempty"`
+	OpenClash []string `json:"openclash,omitempty"`
+}
+
 type Snapshot struct {
 	TS               int64           `json:"ts"` // unix ms
 	Source           string          `json:"source,omitempty"` // 采集器实例标识（router/nas/…）
@@ -57,4 +62,5 @@ type Snapshot struct {
 	Services         []ServiceStatus `json:"services"`
 	Alerts           []Alert         `json:"alerts"`
 	ResolvedAlertIDs []string        `json:"resolved_alert_ids,omitempty"`
+	Logs             *LogPayload     `json:"logs,omitempty"`
 }

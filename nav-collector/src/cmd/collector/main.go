@@ -171,6 +171,7 @@ func main() {
 				fwx.Enrich(selfSample)
 			}
 			snap.Devices = append(snap.Devices, *selfSample)
+			snap.Logs = probe.CollectRouterLogs()
 		}
 
 		// 设备（并行）

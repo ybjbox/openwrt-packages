@@ -13,10 +13,13 @@ kind
 last_seen
 latency_ms
 load1
+logs
 mem
 message
 mount
 name
+openclash
+openwrt
 resolved_alert_ids
 rule
 rx_bps
