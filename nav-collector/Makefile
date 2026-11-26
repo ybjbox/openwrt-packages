@@ -5,7 +5,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=nav-collector
 PKG_VERSION:=0.2.1
-PKG_RELEASE:=4
+PKG_RELEASE:=5
 PKG_MAINTAINER:=NAV
 PKG_LICENSE:=MIT
 PKG_CONFIG_DEPENDS:=CONFIG_PACKAGE_nav-collector
@@ -42,7 +42,7 @@ define Package/nav-collector
   SECTION:=net
   CATEGORY:=Network
   TITLE:=NAV router collector (OpenClash/system monitoring)
-  URL:=https://github.com/ybjbox/nav
+  URL:=https://github.com/ybjbox/MyNav
   DEPENDS:=$(GO_ARCH_DEPENDS) +luci-base
 endef
 

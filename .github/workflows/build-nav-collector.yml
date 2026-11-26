@@ -1,0 +1,46 @@
+name: Build nav-collector
+
+on:
+  workflow_dispatch:
+    inputs:
+      sdk_arch:
+        description: >-
+          OpenWrt SDK 镜像 tag：<arch>-<完整小版本>，例如
+          aarch64_cortex-a53-25.12.5（雅典娜 IPQ6018 / LibWrt 25.12）或 x86_64-24.10.1
+        required: false
+        default: aarch64_cortex-a53-25.12.5
+
+jobs:
+  build:
+    name: Build nav-collector (OpenWrt SDK)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Build with OpenWrt SDK
+        uses: openwrt/gh-action-sdk@v11
+        env:
+          ARCH: ${{ inputs.sdk_arch }}
+          PACKAGES: nav-collector
+          IGNORE_ERRORS: '0'
+          BUILD: '1'
+
+      - name: List built packages
+        run: |
+          if [ ! -d bin ]; then
+            echo "::error::SDK 没有产出 bin/ 目录"
+            exit 1
+          fi
+          find bin -type f \( -name '*.ipk' -o -name '*.apk' \) -exec ls -l {} +
+          find bin -type f \( -name '*.ipk' -o -name '*.apk' \) | grep -q nav-collector || {
+            echo "::error::bin/ 里没有 nav-collector 的包文件"
+            exit 1
+          }
+
+      - name: Upload built packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: nav-collector-${{ inputs.sdk_arch }}
+          path: bin/
+          retention-days: 30
