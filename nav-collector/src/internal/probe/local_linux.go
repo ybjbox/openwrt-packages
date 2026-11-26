@@ -47,7 +47,11 @@ func readFirstLine(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(b)), nil
+	s := string(b)
+	if idx := strings.IndexByte(s, '\n'); idx >= 0 {
+		s = s[:idx]
+	}
+	return strings.TrimSpace(s), nil
 }
 
 func parseCPUStat(line string) (cpuStat, error) {

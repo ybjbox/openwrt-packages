@@ -5,7 +5,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=nav-collector
 PKG_VERSION:=0.2.1
-PKG_RELEASE:=6
+PKG_RELEASE:=7
 PKG_MAINTAINER:=NAV
 PKG_LICENSE:=MIT
 PKG_BUILD_DEPENDS:=golang/host
