@@ -158,8 +158,17 @@ return view.extend({
 		o.rmempty = false;
 		o.depends('enabled', '1');
 
-		o = sensitiveOption(s, 'push_token', _('推送令牌'),
-			_('与 Cloudflare Secret COLLECTOR_TOKEN 一致（≥16 位）；留空不修改'));
+		o = s.option(form.Value, 'push_username', _('云端登录账号'),
+			_('NAV 网页端登录账号；采集器将自动登录换取短期推送令牌'));
+		o.datatype = 'string';
+		o.depends('enabled', '1');
+
+		o = sensitiveOption(s, 'push_password', _('云端登录密码'),
+			_('与 NAV 账号对应的密码（PBKDF2 验证）；留空不修改'));
+		o.depends('enabled', '1');
+
+		o = sensitiveOption(s, 'push_token', _('兼容旧静态令牌（可选·即将废弃）'),
+			_('仅在尚未切换账号密码时过渡使用；配置账号密码后请留空'));
 		o.depends('enabled', '1');
 
 		o = s.option(form.Value, 'interval', _('采样间隔（秒）'),
@@ -284,8 +293,12 @@ return view.extend({
 			_('仅限局域网访问，默认 :12900；留空可关闭'));
 		o.default = ':12900';
 
-		o = sensitiveOption(s, 'password', _('访问密码'),
-			_('修改 :12900 页面配置时所需密码；未设置则该页面只读，留空不修改'));
+		o = s.option(form.Value, 'username', _('本地登录账号'),
+			_('登录 :12900 本地状态页的账号名，默认 admin'));
+		o.default = 'admin';
+
+		o = sensitiveOption(s, 'password', _('本地登录密码'),
+			_('登录 :12900 页面所需密码；未设置则禁止在线修改配置，留空不修改'));
 
 		return m.render().then(function(mapEl) {
 			return E('div', {}, [

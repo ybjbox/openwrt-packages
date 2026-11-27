@@ -11,8 +11,10 @@ import (
 
 type PushConfig struct {
 	URL      string        `yaml:"url"`
-	Token    string        `yaml:"token"`
-	Source   string        `yaml:"source"` // 采集器实例标识（多源云端分桶）；缺省用 self.id
+	Username string        `yaml:"username"` // 云端登录账号（调用 /api/collector/login 换取临时 JWT）
+	Password string        `yaml:"password"` // 云端登录密码
+	Token    string        `yaml:"token"`    // 过渡兼容：旧版静态 COLLECTOR_TOKEN（逐步废弃）
+	Source   string        `yaml:"source"`   // 采集器实例标识（多源云端分桶）；缺省用 self.id
 	Interval time.Duration `yaml:"interval"`
 	Timeout  time.Duration `yaml:"timeout"`
 }
@@ -74,7 +76,8 @@ type AlertsConfig struct {
 
 type UIConfig struct {
 	Listen   string `yaml:"listen"`   // 本地配置页监听地址（仅局域网）
-	Password string `yaml:"password"` // 修改配置所需密码；空 = 只读
+	Username string `yaml:"username"` // 本地配置页登录账号（默认 admin）
+	Password string `yaml:"password"` // 登录配置页所需密码；空 = 禁止在线修改配置
 }
 
 type Thresholds struct {
@@ -120,6 +123,9 @@ func Load(path string) (*Config, error) {
 	}
 	if c.Thresholds.Conn <= 0 {
 		c.Thresholds.Conn = 30000
+	}
+	if c.UI.Password != "" && c.UI.Username == "" {
+		c.UI.Username = "admin"
 	}
 	return c, nil
 }

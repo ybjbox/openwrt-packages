@@ -65,7 +65,7 @@ func main() {
 	var remote remoteConfig
 
 	refreshRemote := func() {
-		if cfg.Push.Token == "" || cfg.Push.URL == "" {
+		if cfg.Push.URL == "" || pusher.AuthMode() == "none" {
 			return
 		}
 		base, err := url.Parse(cfg.Push.URL)
@@ -74,47 +74,63 @@ func main() {
 		}
 		base.Path = "/api/collector-config"
 		client := &http.Client{Timeout: 10 * time.Second}
-		req, err := http.NewRequest(http.MethodGet, base.String(), nil)
-		if err != nil {
-			return
-		}
-		req.Header.Set("authorization", "Bearer "+cfg.Push.Token)
-		resp, err := client.Do(req)
-		if err != nil {
-			ui.SetRemote(ui.RemoteInfo{LastFetchOK: false, LastError: err.Error(), LastFetchAt: time.Now()})
-			log.Printf("remote-config: 拉取失败: %v", err)
-			return
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode == 200 {
-			var rc remoteConfig
-			if err := json.NewDecoder(resp.Body).Decode(&rc); err == nil {
-				remoteMu.Lock()
-				remote = rc
-				if rc.Thresholds != nil {
-					// 只覆盖有效值（云端旧配置可能缺少新增阈值字段，不能覆盖成 0）
-					nt := cfg.Thresholds
-					if rc.Thresholds.CPU > 0 {
-						nt.CPU = rc.Thresholds.CPU
-					}
-					if rc.Thresholds.Mem > 0 {
-						nt.Mem = rc.Thresholds.Mem
-					}
-					if rc.Thresholds.Disk > 0 {
-						nt.Disk = rc.Thresholds.Disk
-					}
-					if rc.Thresholds.Temp > 0 {
-						nt.Temp = rc.Thresholds.Temp
-					}
-					if rc.Thresholds.Conn > 0 {
-						nt.Conn = rc.Thresholds.Conn
-					}
-					cfg.Thresholds = nt
-				}
-				remoteMu.Unlock()
-				ui.SetRemote(ui.RemoteInfo{ConfigVersion: rc.ConfigVersion, Checks: len(rc.Checks), LastFetchOK: true, LastFetchAt: time.Now()})
-				log.Printf("remote-config: 已更新 (v%v, %d 个探活目标)", rc.ConfigVersion, len(rc.Checks))
+		for attempt := 0; attempt < 2; attempt++ {
+			auth, err := pusher.AuthHeader()
+			if err != nil {
+				ui.SetRemote(ui.RemoteInfo{LastFetchOK: false, LastError: err.Error(), LastFetchAt: time.Now()})
+				log.Printf("remote-config: 认证失败: %v", err)
+				return
 			}
+			req, err := http.NewRequest(http.MethodGet, base.String(), nil)
+			if err != nil {
+				return
+			}
+			req.Header.Set("authorization", auth)
+			resp, err := client.Do(req)
+			if err != nil {
+				ui.SetRemote(ui.RemoteInfo{LastFetchOK: false, LastError: err.Error(), LastFetchAt: time.Now()})
+				log.Printf("remote-config: 拉取失败: %v", err)
+				return
+			}
+			if resp.StatusCode == 401 && attempt == 0 && pusher.AuthMode() == "account" {
+				resp.Body.Close()
+				pusher.InvalidateToken()
+				continue
+			}
+			if resp.StatusCode == 200 {
+				var rc remoteConfig
+				if err := json.NewDecoder(resp.Body).Decode(&rc); err == nil {
+					remoteMu.Lock()
+					remote = rc
+					if rc.Thresholds != nil {
+						// 只覆盖有效值（云端旧配置可能缺少新增阈值字段，不能覆盖成 0）
+						nt := cfg.Thresholds
+						if rc.Thresholds.CPU > 0 {
+							nt.CPU = rc.Thresholds.CPU
+						}
+						if rc.Thresholds.Mem > 0 {
+							nt.Mem = rc.Thresholds.Mem
+						}
+						if rc.Thresholds.Disk > 0 {
+							nt.Disk = rc.Thresholds.Disk
+						}
+						if rc.Thresholds.Temp > 0 {
+							nt.Temp = rc.Thresholds.Temp
+						}
+						if rc.Thresholds.Conn > 0 {
+							nt.Conn = rc.Thresholds.Conn
+						}
+						cfg.Thresholds = nt
+					}
+					remoteMu.Unlock()
+					ui.SetRemote(ui.RemoteInfo{ConfigVersion: rc.ConfigVersion, Checks: len(rc.Checks), LastFetchOK: true, LastFetchAt: time.Now()})
+					log.Printf("remote-config: 已更新 (v%v, %d 个探活目标)", rc.ConfigVersion, len(rc.Checks))
+				}
+			} else if resp.StatusCode >= 300 {
+				ui.SetRemote(ui.RemoteInfo{LastFetchOK: false, LastError: fmt.Sprintf("HTTP %d", resp.StatusCode), LastFetchAt: time.Now()})
+			}
+			resp.Body.Close()
+			return
 		}
 	}
 
@@ -288,7 +304,7 @@ func main() {
 	// 本地配置页（仅局域网）：展示 Cloudflare 连接状态，写回 UCI
 	if cfg.UI.Listen != "" {
 		go func() {
-			err := ui.Serve(cfg.UI.Listen, cfg.UI.Password, cfg,
+			err := ui.Serve(cfg, pusher.AuthMode(),
 				func() push.StatusSnapshot { return pusher.Status.Snapshot(version.Version) },
 				func() ui.RemoteInfo {
 					remoteMu.Lock()

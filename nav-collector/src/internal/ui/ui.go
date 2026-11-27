@@ -2,7 +2,10 @@
 package ui
 
 import (
+	"crypto/rand"
+	"crypto/subtle"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -19,6 +22,8 @@ import (
 //go:embed page.html
 var pageHTML []byte
 
+const uiSessionCookie = "nav_ui_session"
+
 type RemoteInfo struct {
 	ConfigVersion float64
 	Checks        int
@@ -28,15 +33,24 @@ type RemoteInfo struct {
 }
 
 type Server struct {
-	cfg     *config.Config
-	status  func() push.StatusSnapshot
-	remote  func() RemoteInfo
-	mu      sync.Mutex
-	started time.Time
+	cfg      *config.Config
+	authMode string
+	status   func() push.StatusSnapshot
+	remote   func() RemoteInfo
+	mu       sync.Mutex
+	sessions map[string]time.Time
+	started  time.Time
 }
 
-func Serve(listen, password string, cfg *config.Config, statusFn func() push.StatusSnapshot, remoteFn func() RemoteInfo) error {
-	s := &Server{cfg: cfg, status: statusFn, remote: remoteFn, started: time.Now()}
+func Serve(cfg *config.Config, authMode string, statusFn func() push.StatusSnapshot, remoteFn func() RemoteInfo) error {
+	s := &Server{
+		cfg:      cfg,
+		authMode: authMode,
+		status:   statusFn,
+		remote:   remoteFn,
+		sessions: map[string]time.Time{},
+		started:  time.Now(),
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
@@ -52,23 +66,88 @@ func Serve(listen, password string, cfg *config.Config, statusFn func() push.Sta
 			"source":    cfg.Push.Source,
 			"interval":  int(cfg.Push.Interval.Seconds()),
 			"push_url":  cfg.Push.URL,
+			"auth_mode": s.authMode,
 			"push":      s.status(),
 			"remote":    s.remoteSnapshot(),
 			"uptime_ms": time.Since(s.started).Milliseconds(),
 		})
 	})
+	mux.HandleFunc("GET /api/session", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{
+			"authenticated": s.sessionOK(r),
+			"username":      cfg.UI.Username,
+			"password_set":  cfg.UI.Password != "",
+			"auth_mode":     s.authMode,
+		})
+	})
+	mux.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
+		if cfg.UI.Password == "" {
+			writeErr(w, http.StatusForbidden, "尚未设置本地登录密码：请在 LuCI 或 SSH 配置 nav.ui.username / nav.ui.password")
+			return
+		}
+		var body struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeErr(w, http.StatusBadRequest, "请求格式错误")
+			return
+		}
+		wantUser := cfg.UI.Username
+		if wantUser == "" {
+			wantUser = "admin"
+		}
+		if !constTimeEq(strings.TrimSpace(body.Username), wantUser) || !constTimeEq(body.Password, cfg.UI.Password) {
+			writeErr(w, http.StatusUnauthorized, "账号或密码错误")
+			return
+		}
+		sid, err := s.createSession()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "创建会话失败")
+			return
+		}
+		http.SetCookie(w, &http.Cookie{
+			Name:     uiSessionCookie,
+			Value:    sid,
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+			MaxAge:   86400,
+		})
+		writeJSON(w, map[string]any{"ok": true, "username": wantUser})
+	})
+	mux.HandleFunc("POST /api/logout", func(w http.ResponseWriter, r *http.Request) {
+		if c, err := r.Cookie(uiSessionCookie); err == nil && c.Value != "" {
+			s.deleteSession(c.Value)
+		}
+		http.SetCookie(w, &http.Cookie{
+			Name:     uiSessionCookie,
+			Value:    "",
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+			MaxAge:   -1,
+		})
+		writeJSON(w, map[string]any{"ok": true})
+	})
 	mux.HandleFunc("GET /api/config", func(w http.ResponseWriter, r *http.Request) {
-		if !s.authOK(r, password) {
-			http.Error(w, "未授权", http.StatusUnauthorized)
+		if cfg.UI.Password == "" {
+			writeErr(w, http.StatusForbidden, "尚未设置本地登录密码：请配置 nav.ui.username 与 nav.ui.password")
+			return
+		}
+		if !s.sessionOK(r) {
+			writeErr(w, http.StatusUnauthorized, "请先登录账号")
 			return
 		}
 		writeJSON(w, map[string]any{
 			"main": map[string]string{
-				"push_url":  uciGet("main", "push_url"),
-				"push_token_set": boolStr(uciGet("main", "push_token") != ""),
-				"source":    uciGet("main", "source"),
-				"interval":  uciGet("main", "interval"),
-				"checks":    uciGet("main", "checks"),
+				"push_url":          uciGet("main", "push_url"),
+				"push_username":     uciGet("main", "push_username"),
+				"push_password_set": boolStr(uciGet("main", "push_password") != ""),
+				"push_token_set":    boolStr(uciGet("main", "push_token") != ""),
+				"source":            uciGet("main", "source"),
+				"interval":          uciGet("main", "interval"),
+				"checks":            uciGet("main", "checks"),
 			},
 			"self": map[string]string{
 				"id": uciGet("self", "id"), "name": uciGet("self", "name"),
@@ -89,50 +168,54 @@ func Serve(listen, password string, cfg *config.Config, statusFn func() push.Sta
 				"disk": uciGet("thresholds", "disk"), "temp": uciGet("thresholds", "temp"),
 				"conn": uciGet("thresholds", "conn"),
 			},
-			"ui": map[string]string{"listen": uciGet("ui", "listen"), "password_set": boolStr(password != "")},
+			"ui": map[string]string{
+				"listen":       uciGet("ui", "listen"),
+				"username":     uciGet("ui", "username"),
+				"password_set": boolStr(cfg.UI.Password != ""),
+			},
 		})
 	})
 	mux.HandleFunc("POST /api/config", func(w http.ResponseWriter, r *http.Request) {
-		if password == "" {
-			http.Error(w, "未设置访问密码：uci set nav.ui.password='<密码>' 后才能修改配置", http.StatusForbidden)
+		if cfg.UI.Password == "" {
+			writeErr(w, http.StatusForbidden, "未设置本地登录密码，禁止修改配置")
 			return
 		}
-		if !s.authOK(r, password) {
-			http.Error(w, "密码错误", http.StatusUnauthorized)
+		if !s.sessionOK(r) {
+			writeErr(w, http.StatusUnauthorized, "会话已失效，请重新登录")
 			return
 		}
 		var body map[string]map[string]string
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, "请求格式错误", http.StatusBadRequest)
+			writeErr(w, http.StatusBadRequest, "请求格式错误")
 			return
 		}
 		// 仅允许白名单字段；值不允许换行（UCI 单行约束）
 		allowed := map[string]map[string]bool{
-			"main":       {"push_url": true, "push_token": true, "source": true, "interval": true, "checks": true},
+			"main":       {"push_url": true, "push_username": true, "push_password": true, "push_token": true, "source": true, "interval": true, "checks": true},
 			"self":       {"id": true, "name": true, "traffic_iface": true, "fwx": true},
 			"openclash":  {"enabled": true, "host": true, "api_port": true, "api_secret": true},
 			"nas":        {"enabled": true, "host": true, "user": true, "key_file": true, "logs": true},
 			"thresholds": {"cpu": true, "mem": true, "disk": true, "temp": true, "conn": true},
-			"ui":         {"password": true},
+			"ui":         {"username": true, "password": true},
 		}
 		changed := 0
 		for section, kv := range body {
 			okKeys, exist := allowed[section]
 			if !exist {
-				http.Error(w, "未知分组: "+section, http.StatusBadRequest)
+				writeErr(w, http.StatusBadRequest, "未知分组: "+section)
 				return
 			}
 			for k, v := range kv {
 				if !okKeys[k] {
-					http.Error(w, section+" 不允许修改字段: "+k, http.StatusBadRequest)
+					writeErr(w, http.StatusBadRequest, section+" 不允许修改字段: "+k)
 					return
 				}
 				if strings.ContainsAny(v, "\n\r\x00") {
-					http.Error(w, "值包含非法字符", http.StatusBadRequest)
+					writeErr(w, http.StatusBadRequest, "值包含非法字符")
 					return
 				}
 				if err := exec.Command("uci", "set", fmt.Sprintf("nav.%s.%s=%s", section, k, v)).Run(); err != nil {
-					http.Error(w, "uci set 失败: "+err.Error(), http.StatusInternalServerError)
+					writeErr(w, http.StatusInternalServerError, "uci set 失败: "+err.Error())
 					return
 				}
 				changed++
@@ -140,7 +223,7 @@ func Serve(listen, password string, cfg *config.Config, statusFn func() push.Sta
 		}
 		if changed > 0 {
 			if err := exec.Command("uci", "commit", "nav").Run(); err != nil {
-				http.Error(w, "uci commit 失败: "+err.Error(), http.StatusInternalServerError)
+				writeErr(w, http.StatusInternalServerError, "uci commit 失败: "+err.Error())
 				return
 			}
 		}
@@ -153,15 +236,63 @@ func Serve(listen, password string, cfg *config.Config, statusFn func() push.Sta
 			}()
 		}
 	})
-	srv := &http.Server{Addr: listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Addr: cfg.UI.Listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	return srv.ListenAndServe()
 }
 
-func (s *Server) authOK(r *http.Request, password string) bool {
-	if password == "" {
+func constTimeEq(a, b string) bool {
+	if len(a) != len(b) {
 		return false
 	}
-	return r.Header.Get("x-ui-password") == password
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+func (s *Server) createSession() (string, error) {
+	b := make([]byte, 24)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	sid := hex.EncodeToString(b)
+	s.mu.Lock()
+	now := time.Now()
+	for k, exp := range s.sessions {
+		if now.After(exp) {
+			delete(s.sessions, k)
+		}
+	}
+	s.sessions[sid] = now.Add(24 * time.Hour)
+	s.mu.Unlock()
+	return sid, nil
+}
+
+func (s *Server) deleteSession(sid string) {
+	s.mu.Lock()
+	delete(s.sessions, sid)
+	s.mu.Unlock()
+}
+
+func (s *Server) sessionOK(r *http.Request) bool {
+	if s.cfg.UI.Password == "" {
+		return false
+	}
+	c, err := r.Cookie(uiSessionCookie)
+	if err != nil || c.Value == "" {
+		return false
+	}
+	s.mu.Lock()
+	exp, ok := s.sessions[c.Value]
+	if ok && time.Now().After(exp) {
+		delete(s.sessions, c.Value)
+		ok = false
+	}
+	s.mu.Unlock()
+	return ok
+}
+
+func writeErr(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("content-type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": msg})
 }
 
 var (

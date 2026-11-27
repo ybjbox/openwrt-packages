@@ -51,6 +51,7 @@ h1{font-size:18px;font-weight:650;margin:0 0 4px;display:flex;align-items:center
   <div class="card">
     <h2>Cloudflare 连接状态</h2>
     <div class="kv"><span class="k">连接状态</span><span class="v state" id="pushState">—</span></div>
+    <div class="kv"><span class="k">认证方式</span><span class="v" id="authMode">—</span></div>
     <div class="kv"><span class="k">最近成功推送</span><span class="v" id="lastOk">—</span></div>
     <div class="kv"><span class="k">最近一次尝试</span><span class="v" id="lastAttempt">—</span></div>
     <div class="kv"><span class="k">最近错误</span><span class="v" id="lastErr">—</span></div>
@@ -62,27 +63,35 @@ h1{font-size:18px;font-weight:650;margin:0 0 4px;display:flex;align-items:center
   </div>
 
   <div class="card">
-    <h2>配置（写回 UCI 并自动重启服务）</h2>
-    <div class="pwrow">
-      <div class="field" style="flex:1;margin:0"><label>访问密码（nav.ui.password；未设置则无法修改）</label>
-        <input type="password" id="pw" autocomplete="off" placeholder="留空则只能查看状态"></div>
-      <button class="btn" id="loadBtn" style="margin-top:18px">加载配置</button>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px">
+      <h2 style="margin:0">采集器配置（写回 UCI 并自动重启服务）</h2>
+      <button class="btn" id="logoutBtn" style="display:none;height:28px;padding:0 12px;font-size:12px">退出登录</button>
+    </div>
+    <div id="loginBox">
+      <div class="grid2">
+        <div class="field"><label>本地登录账号</label><input id="lg-user" autocomplete="username" placeholder="admin"></div>
+        <div class="field"><label>本地登录密码（nav.ui.password）</label><input type="password" id="lg-pw" autocomplete="current-password" placeholder="请输入本地登录密码"></div>
+      </div>
+      <button class="btn" id="loginBtn" style="margin-top:4px">账号密码登录</button>
     </div>
     <div id="form" style="display:none">
       <div class="field"><label>推送地址 push_url</label><input id="f-push_url"></div>
       <div class="grid2">
-        <div class="field"><label>推送令牌（留空表示不修改）</label><input id="f-push_token" type="password" placeholder="••••••" autocomplete="off"></div>
+        <div class="field"><label>云端推送账号 push_username</label><input id="f-push_username" placeholder="与网页登录账号一致"></div>
+        <div class="field"><label>云端推送密码（留空不修改）</label><input id="f-push_password" type="password" placeholder="••••••" autocomplete="off"></div>
+      </div>
+      <div class="grid2">
         <div class="field"><label>实例标识 source</label><input id="f-source"></div>
-      </div>
-      <div class="grid2">
         <div class="field"><label>间隔（秒）</label><input id="f-interval" type="number"></div>
-        <div class="field"><label>服务探活 checks（1/0）</label><input id="f-checks"></div>
       </div>
       <div class="grid2">
+        <div class="field"><label>服务探活 checks（1/0）</label><input id="f-checks"></div>
         <div class="field"><label>OpenClash 端口</label><input id="f-oc_port" type="number"></div>
-        <div class="field"><label>OpenClash secret（留空不修改）</label><input id="f-oc_secret" type="password" placeholder="••••••" autocomplete="off"></div>
       </div>
-      <div class="field"><label>阈值 cpu,mem,disk,temp,conn（逗号分隔）</label><input id="f-th"></div>
+      <div class="grid2">
+        <div class="field"><label>OpenClash secret（留空不修改）</label><input id="f-oc_secret" type="password" placeholder="••••••" autocomplete="off"></div>
+        <div class="field"><label>阈值 cpu,mem,disk,temp,conn</label><input id="f-th"></div>
+      </div>
       <div class="grid2">
         <div class="field"><label>NAS SSH 主机</label><input id="f-nas_host"></div>
         <div class="field"><label>NAS SSH 用户</label><input id="f-nas_user"></div>
@@ -90,26 +99,31 @@ h1{font-size:18px;font-weight:650;margin:0 0 4px;display:flex;align-items:center
       <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin:4px 0 8px;cursor:pointer">
         <input type="checkbox" id="f-nas_logs"> 采集 NAS 系统日志（独立开关）
       </label>
-      <div class="field"><label>新访问密码（留空不修改）</label><input id="f-ui_password" type="password" autocomplete="off"></div>
+      <div class="grid2">
+        <div class="field"><label>本地登录账号 ui.username</label><input id="f-ui_username"></div>
+        <div class="field"><label>新本地登录密码（留空不修改）</label><input id="f-ui_password" type="password" autocomplete="off"></div>
+      </div>
       <button class="btn" id="saveBtn">保存并重启服务</button>
     </div>
     <div class="msg" id="msg"></div>
     <div class="warnbox" id="pwWarn" style="display:none">
-      未设置 ui.password —— 配置页当前只读。设置方法：
-      <code>uci set nav.ui.password='你的密码' && uci commit nav && /etc/init.d/nav restart</code>
+      未设置 ui.password —— 配置页当前禁止修改。设置方法：
+      <code>uci set nav.ui.username='admin' && uci set nav.ui.password='你的密码' && uci commit nav && /etc/init.d/nav restart</code>
     </div>
   </div>
 
-  <div class="foot">仅监听局域网 · 采集器不会把令牌回显到本页 · NAV</div>
+  <div class="foot">仅监听局域网 · 采集器不会把密码或令牌回显到本页 · NAV</div>
 </div>
 <script>
 const $=(id)=>document.getElementById(id);
 const fmt=(ms)=>ms?new Date(ms).toLocaleTimeString("zh-CN"):"—";
+const authLabel=(m)=>m==="account"?"账号密码（自动换取短期 JWT）":m==="legacy_token"?"旧静态令牌（建议改用账号密码）":"未配置";
 function setDot(el,cls){el.className="dot "+cls}
 async function loadStatus(){
   try{
     const s=await (await fetch("/api/status")).json();
     $("ver").textContent="v"+s.version;
+    $("authMode").textContent=authLabel(s.auth_mode);
     const p=s.push;
     const ok=p.connected&&p.last_ok_at>0;
     setDot($("connDot"),p.last_attempt_at===0?"":(ok?"ok":"bad"));
@@ -127,47 +141,72 @@ async function loadStatus(){
     $("summary").textContent="实例 "+s.source+" · 推送 "+s.push_url+" · 每 "+s.interval+" 秒";
   }catch(e){$("summary").textContent="状态加载失败: "+e.message}
 }
-$("loadBtn").addEventListener("click",async()=>{
-  const pw=$("pw").value;
+async function loadConfig(){
+  const res=await fetch("/api/config",{credentials:"same-origin"});
+  const c=await res.json().catch(()=>({}));
+  if(!res.ok||!c.main)throw new Error(c.error||("HTTP "+res.status));
+  $("loginBox").style.display="none";
+  $("form").style.display="block";
+  $("logoutBtn").style.display="inline-block";
+  $("pwWarn").style.display="none";
+  $("f-push_url").value=c.main.push_url||"";
+  $("f-push_username").value=c.main.push_username||"";
+  $("f-source").value=c.main.source||"";
+  $("f-interval").value=c.main.interval||"60";
+  $("f-checks").value=c.main.checks||"1";
+  $("f-oc_port").value=c.openclash.api_port||"9090";
+  $("f-th").value=[c.thresholds.cpu,c.thresholds.mem,c.thresholds.disk,c.thresholds.temp,c.thresholds.conn].join(",");
+  $("f-nas_host").value=c.nas.host||"";
+  $("f-nas_user").value=c.nas.user||"";
+  $("f-nas_logs").checked=c.nas.logs==="1";
+  $("f-ui_username").value=c.ui.username||"admin";
+}
+async function checkSession(){
   try{
-    const c=await (await fetch("/api/config",{headers:{"x-ui-password":pw}})).json();
-    if(c.error!==undefined&&typeof c.error==="string")throw new Error(c.error);
-    if(!c.main){$("msg").textContent=c.error||"加载失败";$("msg").className="msg err";
-      if((c.error||"").includes("未设置访问密码"))$("pwWarn").style.display="block";return}
-    $("form").style.display="block";
-    $("pwWarn").style.display="none";
-    $("f-push_url").value=c.main.push_url;
-    $("f-source").value=c.main.source;
-    $("f-interval").value=c.main.interval;
-    $("f-checks").value=c.main.checks;
-    $("f-oc_port").value=c.openclash.api_port;
-    const th=[c.thresholds.cpu,c.thresholds.mem,c.thresholds.disk,c.thresholds.temp,c.thresholds.conn].join(",");
-    $("f-th").value=th;
-    $("f-nas_host").value=c.nas.host;
-    $("f-nas_user").value=c.nas.user;
-    $("f-nas_logs").checked=c.nas.logs==="1";
-    $("msg").textContent="配置已加载";$("msg").className="msg ok";
+    const s=await (await fetch("/api/session",{credentials:"same-origin"})).json();
+    if(!s.password_set){$("pwWarn").style.display="block";}
+    if(s.username&&!$("lg-user").value)$("lg-user").value=s.username;
+    if(s.authenticated){await loadConfig();$("msg").textContent="已登录账号："+(s.username||"admin");$("msg").className="msg ok";}
+  }catch{}
+}
+$("loginBtn").addEventListener("click",async()=>{
+  const username=$("lg-user").value.trim(),password=$("lg-pw").value;
+  if(!username||!password){$("msg").textContent="请输入账号和密码";$("msg").className="msg err";return}
+  try{
+    const res=await fetch("/api/login",{method:"POST",credentials:"same-origin",headers:{"content-type":"application/json"},body:JSON.stringify({username,password})});
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok)throw new Error(j.error||("HTTP "+res.status));
+    $("lg-pw").value="";
+    await loadConfig();
+    $("msg").textContent="登录成功（"+j.username+"）";$("msg").className="msg ok";
   }catch(e){$("msg").textContent=e.message;$("msg").className="msg err"}
 });
+$("logoutBtn").addEventListener("click",async()=>{
+  await fetch("/api/logout",{method:"POST",credentials:"same-origin"});
+  $("form").style.display="none";$("logoutBtn").style.display="none";$("loginBox").style.display="block";
+  $("msg").textContent="已退出登录";$("msg").className="msg";
+});
 $("saveBtn").addEventListener("click",async()=>{
-  const pw=$("pw").value;
-  const body={main:{push_url:$("f-push_url").value.trim(),source:$("f-source").value.trim(),interval:$("f-interval").value.trim(),checks:$("f-checks").value.trim()},
-              openclash:{api_port:$("f-oc_port").value.trim()},
-              nas:{host:$("f-nas_host").value.trim(),user:$("f-nas_user").value.trim(),logs:$("f-nas_logs").checked?"1":"0"}};
-  if($("f-push_token").value)body.main.push_token=$("f-push_token").value;
+  const body={
+    main:{push_url:$("f-push_url").value.trim(),push_username:$("f-push_username").value.trim(),source:$("f-source").value.trim(),interval:$("f-interval").value.trim(),checks:$("f-checks").value.trim()},
+    openclash:{api_port:$("f-oc_port").value.trim()},
+    nas:{host:$("f-nas_host").value.trim(),user:$("f-nas_user").value.trim(),logs:$("f-nas_logs").checked?"1":"0"},
+    ui:{username:$("f-ui_username").value.trim()||"admin"}
+  };
+  if($("f-push_password").value)body.main.push_password=$("f-push_password").value;
   if($("f-oc_secret").value)body.openclash.api_secret=$("f-oc_secret").value;
   const th=$("f-th").value.split(",").map(x=>x.trim());
   if(th.length===5&&!th.some(x=>!x)){body.thresholds={cpu:th[0],mem:th[1],disk:th[2],temp:th[3],conn:th[4]}}
-  if($("f-ui_password").value)body.ui={password:$("f-ui_password").value};
+  if($("f-ui_password").value)body.ui.password=$("f-ui_password").value;
   try{
-    const res=await fetch("/api/config",{method:"POST",headers:{"content-type":"application/json","x-ui-password":pw},body:JSON.stringify(body)});
-    const j=await res.json();
+    const res=await fetch("/api/config",{method:"POST",credentials:"same-origin",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+    const j=await res.json().catch(()=>({}));
     if(!res.ok)throw new Error(j.error||res.status);
     $("msg").textContent="已保存（changed="+j.changed+"），服务重启中…";$("msg").className="msg ok";
     setTimeout(loadStatus,2500);
   }catch(e){$("msg").textContent="保存失败: "+e.message;$("msg").className="msg err"}
 });
-loadStatus();setInterval(loadStatus,10000);
+loadStatus();checkSession();setInterval(loadStatus,10000);
 </script>
 </body>
 </html>

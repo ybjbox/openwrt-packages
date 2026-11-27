@@ -20,8 +20,10 @@ gen_yaml() {
 	config_get enabled main enabled '1'
 	[ "$enabled" = "1" ] || return 1
 
-	local push_url push_token source interval checks
+	local push_url push_username push_password push_token source interval checks
 	push_url=$(uciget main push_url '')
+	push_username=$(uciget main push_username '')
+	push_password=$(uciget main push_password '')
 	push_token=$(uciget main push_token '')
 	source=$(uciget main source 'router')
 	interval=$(uciget main interval '60')
@@ -61,14 +63,17 @@ gen_yaml() {
 	a_fail=$(uciget alerts fail_threshold '3')
 	a_sustain=$(uciget alerts sustain '3')
 
-	local ui_listen ui_password
+	local ui_listen ui_username ui_password
 	ui_listen=$(uciget ui listen ':12900')
+	ui_username=$(uciget ui username 'admin')
 	ui_password=$(uciget ui password '')
 
 	mkdir -p "$RUN_DIR"
 	cat > "$CONF" <<EOF_YAML
 push:
   url: $push_url
+  username: "$push_username"
+  password: "$push_password"
   token: "$push_token"
   source: $source
   interval: ${interval}s
@@ -123,6 +128,7 @@ thresholds:
   conn: $t_conn
 ui:
   listen: "$ui_listen"
+  username: "$ui_username"
   password: "$ui_password"
 EOF_YAML
 	return 0

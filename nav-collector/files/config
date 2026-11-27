@@ -3,9 +3,12 @@
 
 config main 'main'
 	option enabled '1'
-	# 云端摄入地址与令牌（与 Cloudflare COLLECTOR_TOKEN 一致）
+	# 云端摄入地址与登录账号密码（通过 /api/collector/login 自动换取短期 JWT）
 	option push_url 'https://nav.403333.xyz/api/ingest'
-	option push_token 'change-me-collector-token'
+	option push_username ''
+	option push_password ''
+	# 兼容旧版静态令牌（逐步废弃，配置账号密码后留空即可）
+	option push_token ''
 	# 采集器实例标识（云端多源分桶；路由器侧固定 router）
 	option source 'router'
 	# 采样/推送间隔（秒）
@@ -54,5 +57,6 @@ config thresholds 'thresholds'
 config ui 'ui'
 	# 本地配置页（展示 Cloudflare 连接状态、在线改配置）；仅局域网可达
 	option listen ':12900'
-	# 修改配置所需密码；空 = 只读模式（推荐设置）
+	# 本地配置页登录账号与密码；未设置密码则禁止在线修改配置
+	option username 'admin'
 	option password ''
