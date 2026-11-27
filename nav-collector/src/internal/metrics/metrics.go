@@ -53,6 +53,7 @@ type Alert struct {
 type LogPayload struct {
 	OpenWrt   []string `json:"openwrt,omitempty"`
 	OpenClash []string `json:"openclash,omitempty"`
+	NAS       []string `json:"nas,omitempty"`
 }
 
 type Snapshot struct {

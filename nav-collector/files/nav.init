@@ -42,12 +42,13 @@ gen_yaml() {
 	oc_port=$(uciget openclash api_port '9090')
 	oc_secret=$(uciget openclash api_secret '')
 
-	local nas_enabled nas_host nas_user nas_key nas_iface
+	local nas_enabled nas_host nas_user nas_key nas_iface nas_logs
 	nas_enabled=$(uciget nas enabled '0')
 	nas_host=$(uciget nas host '192.168.100.10:22')
 	nas_user=$(uciget nas user 'monitor')
 	nas_key=$(uciget nas key_file '/etc/nav/nas_ed25519')
 	nas_iface=$(uciget nas wan_iface 'eth0')
+	nas_logs=$(uciget nas logs '0')
 
 	local t_cpu t_mem t_disk t_temp t_conn
 	t_cpu=$(uciget thresholds cpu '85')
@@ -105,6 +106,7 @@ EOF_YAML
     host: $nas_host
     user: $nas_user
     key_file: $nas_key
+    logs: $( [ "$nas_logs" = "1" ] && echo true || echo false )
     timeout: 10s
 EOF_YAML
 	fi

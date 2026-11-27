@@ -41,6 +41,8 @@ config nas 'nas'
 	# /etc/init.d/nav keygen 生成密钥对后，把公钥放入 NAS 的 authorized_keys
 	option key_file '/etc/nav/nas_ed25519'
 	option wan_iface 'eth0'
+	# 独立开关：开启后通过 SSH 读取 NAS 系统日志（journalctl/syslog）供云端 AI 联合诊断
+	option logs '0'
 
 config thresholds 'thresholds'
 	option cpu '85'

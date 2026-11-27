@@ -82,6 +82,7 @@ func Serve(listen, password string, cfg *config.Config, statusFn func() push.Sta
 				"enabled": uciGet("nas", "enabled"), "host": uciGet("nas", "host"),
 				"user": uciGet("nas", "user"), "key_file": uciGet("nas", "key_file"),
 				"key_exists": boolStr(fileExists(uciGet("nas", "key_file"))),
+				"logs":       uciGet("nas", "logs"),
 			},
 			"thresholds": map[string]string{
 				"cpu": uciGet("thresholds", "cpu"), "mem": uciGet("thresholds", "mem"),
@@ -110,7 +111,7 @@ func Serve(listen, password string, cfg *config.Config, statusFn func() push.Sta
 			"main":       {"push_url": true, "push_token": true, "source": true, "interval": true, "checks": true},
 			"self":       {"id": true, "name": true, "traffic_iface": true, "fwx": true},
 			"openclash":  {"enabled": true, "host": true, "api_port": true, "api_secret": true},
-			"nas":        {"enabled": true, "host": true, "user": true, "key_file": true},
+			"nas":        {"enabled": true, "host": true, "user": true, "key_file": true, "logs": true},
 			"thresholds": {"cpu": true, "mem": true, "disk": true, "temp": true, "conn": true},
 			"ui":         {"password": true},
 		}

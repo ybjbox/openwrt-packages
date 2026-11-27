@@ -240,6 +240,12 @@ return view.extend({
 		o.default = '/etc/nav/nas_ed25519';
 		o.depends('enabled', '1');
 
+		o = s.option(form.Flag, 'logs', _('采集 NAS 系统日志'),
+			_('独立开关：开启后通过现有 SSH 通道读取最近 80 行 journalctl / syslog 并脱敏上报，用于云端 AI 联合诊断（需只读账号具备读取权限）'));
+		o.default = '0';
+		o.rmempty = false;
+		o.depends('enabled', '1');
+
 		o = s.option(form.DummyValue, '_keygen_hint', _('SSH 密钥指引'));
 		o.depends('enabled', '1');
 		o.cfgvalue = function() {

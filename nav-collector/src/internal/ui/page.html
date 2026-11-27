@@ -87,6 +87,9 @@ h1{font-size:18px;font-weight:650;margin:0 0 4px;display:flex;align-items:center
         <div class="field"><label>NAS SSH 主机</label><input id="f-nas_host"></div>
         <div class="field"><label>NAS SSH 用户</label><input id="f-nas_user"></div>
       </div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin:4px 0 8px;cursor:pointer">
+        <input type="checkbox" id="f-nas_logs"> 采集 NAS 系统日志（独立开关）
+      </label>
       <div class="field"><label>新访问密码（留空不修改）</label><input id="f-ui_password" type="password" autocomplete="off"></div>
       <button class="btn" id="saveBtn">保存并重启服务</button>
     </div>
@@ -142,13 +145,15 @@ $("loadBtn").addEventListener("click",async()=>{
     $("f-th").value=th;
     $("f-nas_host").value=c.nas.host;
     $("f-nas_user").value=c.nas.user;
+    $("f-nas_logs").checked=c.nas.logs==="1";
     $("msg").textContent="配置已加载";$("msg").className="msg ok";
   }catch(e){$("msg").textContent=e.message;$("msg").className="msg err"}
 });
 $("saveBtn").addEventListener("click",async()=>{
   const pw=$("pw").value;
   const body={main:{push_url:$("f-push_url").value.trim(),source:$("f-source").value.trim(),interval:$("f-interval").value.trim(),checks:$("f-checks").value.trim()},
-              openclash:{api_port:$("f-oc_port").value.trim()}};
+              openclash:{api_port:$("f-oc_port").value.trim()},
+              nas:{host:$("f-nas_host").value.trim(),user:$("f-nas_user").value.trim(),logs:$("f-nas_logs").checked?"1":"0"}};
   if($("f-push_token").value)body.main.push_token=$("f-push_token").value;
   if($("f-oc_secret").value)body.openclash.api_secret=$("f-oc_secret").value;
   const th=$("f-th").value.split(",").map(x=>x.trim());

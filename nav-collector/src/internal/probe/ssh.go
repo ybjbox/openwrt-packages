@@ -28,6 +28,19 @@ echo "---TEMP---"
 cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null | sort -n | tail -1
 `
 
+// 只读抓取 NAS（Debian/fnOS）最近 80 行系统日志；若仅配置了指标受限账号则静默返回空
+const sshLogScript = `
+if command -v journalctl >/dev/null 2>&1; then
+  journalctl -n 80 --no-pager -o short-iso 2>/dev/null || journalctl -n 80 --no-pager 2>/dev/null
+elif [ -r /var/log/syslog ]; then
+  tail -n 80 /var/log/syslog
+elif [ -r /var/log/messages ]; then
+  tail -n 80 /var/log/messages
+else
+  dmesg -T 2>/dev/null | tail -n 80 || dmesg 2>/dev/null | tail -n 80
+fi
+`
+
 type SSHProbe struct {
 	cfg config.DeviceConfig
 	mu  sync.Mutex
@@ -166,6 +179,30 @@ func (p *SSHProbe) Collect() (*metrics.DeviceSample, error) {
 		}
 	}
 	return s, nil
+}
+
+// CollectLogs 在开启独立日志开关时抓取 NAS 最近 80 行系统日志并做本地脱敏；失败不影响在线判定
+func (p *SSHProbe) CollectLogs() []string {
+	if !p.cfg.Logs {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	client, err := p.dial()
+	if err != nil {
+		return nil
+	}
+	sess, err := client.NewSession()
+	if err != nil {
+		return nil
+	}
+	defer sess.Close()
+	out, err := sess.CombinedOutput(sshLogScript)
+	if err != nil || len(out) == 0 {
+		return nil
+	}
+	return cleanLines(string(out), maxLogLines)
 }
 
 func (p *SSHProbe) applyTraffic(s *metrics.DeviceSample, iface string, rx, tx uint64) {

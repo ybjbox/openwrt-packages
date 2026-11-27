@@ -45,6 +45,7 @@ type DeviceConfig struct {
 	WANIface string        `yaml:"wan_iface"`
 	ApiPort  int           `yaml:"api_port"`  // openclash: Clash External Controller 端口
 	ApiSecret string       `yaml:"api_secret"` // openclash: Clash API secret
+	Logs      bool         `yaml:"logs"`       // ssh: 是否通过 SSH 采集系统日志（独立开关）
 	Timeout  time.Duration `yaml:"timeout"`
 }
 

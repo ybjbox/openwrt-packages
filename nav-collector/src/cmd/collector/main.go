@@ -183,12 +183,16 @@ func main() {
 			go func() {
 				defer wg.Done()
 				var (
-					s   *metrics.DeviceSample
-					err error
+					s       *metrics.DeviceSample
+					nasLogs []string
+					err     error
 				)
 				switch {
 				case dp.ssh != nil:
 					s, err = dp.ssh.Collect()
+					if err == nil && dp.cfg.Logs {
+						nasLogs = dp.ssh.CollectLogs()
+					}
 				case dp.ping != nil:
 					s, err = dp.ping.Collect()
 				case dp.ubus != nil:
@@ -213,6 +217,12 @@ func main() {
 					}
 				} else {
 					offlineCount[dp.cfg.ID] = 0
+				}
+				if len(nasLogs) > 0 {
+					if snap.Logs == nil {
+						snap.Logs = &metrics.LogPayload{}
+					}
+					snap.Logs.NAS = nasLogs
 				}
 				snap.Devices = append(snap.Devices, *s)
 			}()
