@@ -18,6 +18,7 @@ mem
 message
 mount
 name
+nas
 openclash
 openwrt
 resolved_alert_ids
