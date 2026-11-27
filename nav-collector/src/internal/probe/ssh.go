@@ -28,16 +28,16 @@ echo "---TEMP---"
 cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null | sort -n | tail -1
 `
 
-// 只读抓取 NAS（Debian/fnOS）最近 80 行系统日志；若仅配置了指标受限账号则静默返回空
+// 只读抓取 NAS（Debian/fnOS）最近 150 行系统日志；若仅配置了指标受限账号则静默返回空
 const sshLogScript = `
 if command -v journalctl >/dev/null 2>&1; then
-  journalctl -n 80 --no-pager -o short-iso 2>/dev/null || journalctl -n 80 --no-pager 2>/dev/null
+  journalctl -n 150 --no-pager -o short-iso 2>/dev/null || journalctl -n 150 --no-pager 2>/dev/null
 elif [ -r /var/log/syslog ]; then
-  tail -n 80 /var/log/syslog
+  tail -n 150 /var/log/syslog
 elif [ -r /var/log/messages ]; then
-  tail -n 80 /var/log/messages
+  tail -n 150 /var/log/messages
 else
-  dmesg -T 2>/dev/null | tail -n 80 || dmesg 2>/dev/null | tail -n 80
+  dmesg -T 2>/dev/null | tail -n 150 || dmesg 2>/dev/null | tail -n 150
 fi
 `
 

@@ -15,9 +15,9 @@ import (
 )
 
 const (
-	maxLogLines    = 80
+	maxLogLines    = 150
 	maxLineRunes   = 400
-	tailReadBytes  = 32 * 1024
+	tailReadBytes  = 64 * 1024
 )
 
 var (
@@ -84,7 +84,7 @@ func readOpenWrtLogs() []string {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if path, err := exec.LookPath("logread"); err == nil {
-		cmd := exec.CommandContext(ctx, path, "-l", "80")
+		cmd := exec.CommandContext(ctx, path, "-l", "150")
 		var out bytes.Buffer
 		cmd.Stdout = &out
 		if err := cmd.Run(); err == nil && out.Len() > 0 {
