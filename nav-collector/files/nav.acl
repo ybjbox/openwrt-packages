@@ -1,8 +1,11 @@
 {
   "luci-app-nav": {
-    "description": "Grant NAV collector UCI read/write and service restart",
+    "description": "Grant NAV collector UCI read/write, service status read, and service restart",
     "read": {
-      "uci": [ "nav" ]
+      "uci": [ "nav" ],
+      "ubus": {
+        "service": [ "list" ]
+      }
     },
     "write": {
       "uci": [ "nav" ],
