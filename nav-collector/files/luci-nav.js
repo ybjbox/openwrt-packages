@@ -167,10 +167,6 @@ return view.extend({
 			_('与 NAV 账号对应的密码（PBKDF2 验证）；留空不修改'));
 		o.depends('enabled', '1');
 
-		o = sensitiveOption(s, 'push_token', _('兼容旧静态令牌（可选·即将废弃）'),
-			_('仅在尚未切换账号密码时过渡使用；配置账号密码后请留空'));
-		o.depends('enabled', '1');
-
 		o = s.option(form.Value, 'interval', _('采样间隔（秒）'),
 			_('默认 60 秒；内存紧张设备可调至 120 秒'));
 		o.datatype = 'range(10,3600)';

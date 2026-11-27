@@ -7,8 +7,6 @@ config main 'main'
 	option push_url 'https://nav.403333.xyz/api/ingest'
 	option push_username ''
 	option push_password ''
-	# 兼容旧版静态令牌（逐步废弃，配置账号密码后留空即可）
-	option push_token ''
 	# 采集器实例标识（云端多源分桶；路由器侧固定 router）
 	option source 'router'
 	# 采样/推送间隔（秒）

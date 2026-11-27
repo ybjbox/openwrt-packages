@@ -144,7 +144,6 @@ func Serve(cfg *config.Config, authMode string, statusFn func() push.StatusSnaps
 				"push_url":          uciGet("main", "push_url"),
 				"push_username":     uciGet("main", "push_username"),
 				"push_password_set": boolStr(uciGet("main", "push_password") != ""),
-				"push_token_set":    boolStr(uciGet("main", "push_token") != ""),
 				"source":            uciGet("main", "source"),
 				"interval":          uciGet("main", "interval"),
 				"checks":            uciGet("main", "checks"),
@@ -191,7 +190,7 @@ func Serve(cfg *config.Config, authMode string, statusFn func() push.StatusSnaps
 		}
 		// 仅允许白名单字段；值不允许换行（UCI 单行约束）
 		allowed := map[string]map[string]bool{
-			"main":       {"push_url": true, "push_username": true, "push_password": true, "push_token": true, "source": true, "interval": true, "checks": true},
+			"main":       {"push_url": true, "push_username": true, "push_password": true, "source": true, "interval": true, "checks": true},
 			"self":       {"id": true, "name": true, "traffic_iface": true, "fwx": true},
 			"openclash":  {"enabled": true, "host": true, "api_port": true, "api_secret": true},
 			"nas":        {"enabled": true, "host": true, "user": true, "key_file": true, "logs": true},

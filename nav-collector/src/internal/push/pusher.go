@@ -31,13 +31,10 @@ func New(cfg config.PushConfig) *Pusher {
 	return &Pusher{cfg: cfg, client: &http.Client{Timeout: cfg.Timeout}}
 }
 
-// AuthMode 返回当前云端认证方式：account | legacy_token | none
+// AuthMode 返回当前云端认证方式：account | none
 func (p *Pusher) AuthMode() string {
 	if p.cfg.Username != "" && p.cfg.Password != "" {
 		return "account"
-	}
-	if p.cfg.Token != "" {
-		return "legacy_token"
 	}
 	return "none"
 }
@@ -62,9 +59,6 @@ func (p *Pusher) AuthHeader() (string, error) {
 			return "", err
 		}
 		return "Bearer " + p.token, nil
-	}
-	if p.cfg.Token != "" {
-		return "Bearer " + p.cfg.Token, nil
 	}
 	return "", fmt.Errorf("未配置云端推送账号密码")
 }
@@ -167,7 +161,7 @@ func (p *Pusher) post(body []byte) error {
 			continue
 		}
 		if resp.StatusCode == 401 {
-			log.Println("push: 认证失败（401），请检查推送账号密码或令牌")
+			log.Println("push: 认证失败（401），请检查云端推送账号密码")
 		}
 		if resp.StatusCode >= 300 {
 			return fmt.Errorf("HTTP %d", resp.StatusCode)

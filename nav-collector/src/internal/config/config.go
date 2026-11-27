@@ -13,7 +13,6 @@ type PushConfig struct {
 	URL      string        `yaml:"url"`
 	Username string        `yaml:"username"` // 云端登录账号（调用 /api/collector/login 换取临时 JWT）
 	Password string        `yaml:"password"` // 云端登录密码
-	Token    string        `yaml:"token"`    // 过渡兼容：旧版静态 COLLECTOR_TOKEN（逐步废弃）
 	Source   string        `yaml:"source"`   // 采集器实例标识（多源云端分桶）；缺省用 self.id
 	Interval time.Duration `yaml:"interval"`
 	Timeout  time.Duration `yaml:"timeout"`

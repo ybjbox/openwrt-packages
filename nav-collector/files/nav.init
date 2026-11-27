@@ -20,11 +20,10 @@ gen_yaml() {
 	config_get enabled main enabled '1'
 	[ "$enabled" = "1" ] || return 1
 
-	local push_url push_username push_password push_token source interval checks
+	local push_url push_username push_password source interval checks
 	push_url=$(uciget main push_url '')
 	push_username=$(uciget main push_username '')
 	push_password=$(uciget main push_password '')
-	push_token=$(uciget main push_token '')
 	source=$(uciget main source 'router')
 	interval=$(uciget main interval '60')
 	checks=$(uciget main checks '1')
@@ -74,7 +73,6 @@ push:
   url: $push_url
   username: "$push_username"
   password: "$push_password"
-  token: "$push_token"
   source: $source
   interval: ${interval}s
 self:

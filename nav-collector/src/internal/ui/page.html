@@ -117,7 +117,7 @@ h1{font-size:18px;font-weight:650;margin:0 0 4px;display:flex;align-items:center
 <script>
 const $=(id)=>document.getElementById(id);
 const fmt=(ms)=>ms?new Date(ms).toLocaleTimeString("zh-CN"):"—";
-const authLabel=(m)=>m==="account"?"账号密码（自动换取短期 JWT）":m==="legacy_token"?"旧静态令牌（建议改用账号密码）":"未配置";
+const authLabel=(m)=>m==="account"?"账号密码（自动换取短期 JWT）":"未配置";
 function setDot(el,cls){el.className="dot "+cls}
 async function loadStatus(){
   try{
